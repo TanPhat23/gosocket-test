@@ -1,0 +1,135 @@
+version: "3.8"
+
+networks:
+  ingress:
+    name: agent_ingress
+    driver: bridge
+  backend:
+    name: agent_backend
+    driver: bridge
+    internal: true
+
+volumes:
+  postgres_data:
+    name: agent_postgres_data
+  redis_data:
+    name: agent_redis_data
+  traefik_acme:
+    name: agent_traefik_acme
+
+services:
+  traefik:
+    image: traefik:v3.1
+    container_name: agent-traefik
+    restart: unless-stopped
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "traefik_acme:/letsencrypt"
+    networks:
+      - ingress
+
+  postgres:
+    image: postgres:18-alpine
+    container_name: agent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-agent_tasks}
+      POSTGRES_USER: ${POSTGRES_USER:-agent_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agent_user} -d ${POSTGRES_DB:-agent_tasks}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: agent-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD}"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  control-plane:
+    image: ghcr.io/agent-task-manager/control-plane:latest
+    container_name: agent-control-plane
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      APP_ENV: production
+      PORT: "8080"
+      DATABASE_HOST: postgres
+      DATABASE_PORT: "5432"
+      DATABASE_USER: ${POSTGRES_USER:-agent_user}
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
+      DATABASE_NAME: ${POSTGRES_DB:-agent_tasks}
+      DATABASE_SSLMODE: disable
+      DATABASE_URL: "postgres://${POSTGRES_USER:-agent_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-agent_tasks}?sslmode=disable"
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY}
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
+      OIDC_REDIRECT_URL: https://${DOMAIN}/api/v1/auth/callback
+      SESSION_SECRET: ${SESSION_SECRET}
+      MAX_CONCURRENT_TASKS: ${MAX_CONCURRENT_TASKS:-4}
+      TASK_TIMEOUT_MINUTES: ${TASK_TIMEOUT_MINUTES:-60}
+      HOST_WORKTREE_ROOT: /srv/agent-tasks/worktrees
+      HOST_REPO_ROOT: /srv/agent-tasks/repos
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "/srv/agent-tasks/worktrees:/srv/agent-tasks/worktrees"
+      - "/srv/agent-tasks/repos:/srv/agent-tasks/repos"
+    networks:
+      - ingress
+      - backend
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=agent_ingress"
+      - "traefik.http.routers.control-plane.rule=Host(`${DOMAIN}`) && (PathPrefix(`/api`) || PathPrefix(`/ws`))"
+      - "traefik.http.routers.control-plane.entrypoints=websecure"
+      - "traefik.http.routers.control-plane.tls.certresolver=letsencrypt"
+      - "traefik.http.services.control-plane.loadbalancer.server.port=8080"
+
+  web-ui:
+    image: ghcr.io/agent-task-manager/web-ui:latest
+    container_name: agent-web-ui
+    restart: unless-stopped
+    networks:
+      - ingress
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=agent_ingress"
+      - "traefik.http.routers.web-ui.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.web-ui.entrypoints=websecure"
+      - "traefik.http.routers.web-ui.tls.certresolver=letsencrypt"
+      - "traefik.http.services.web-ui.loadbalancer.server.port=80"
