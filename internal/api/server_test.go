@@ -46,7 +46,7 @@ func (m *mockAuthenticator) Exchange(ctx context.Context, code, codeVerifier str
 		AccessToken: "mock-access-token",
 		TokenType:   "Bearer",
 	}
-	return token.WithExtra(map[string]interface{}{
+	return token.WithExtra(map[string]any{
 		"id_token": "mock-raw-id-token",
 	}), nil
 }
@@ -275,9 +275,9 @@ func TestAuthEndpoints(t *testing.T) {
 			t.Fatalf("expected 200 OK for /me, got: %d, body: %s", meResp.StatusCode, string(body))
 		}
 
-		var meResult map[string]interface{}
+		var meResult map[string]any
 		_ = json.NewDecoder(meResp.Body).Decode(&meResult)
-		userInfo, ok := meResult["user"].(map[string]interface{})
+		userInfo, ok := meResult["user"].(map[string]any)
 		if !ok || userInfo["subject"] != "sub-12345" {
 			t.Errorf("unexpected me user payload: %+v", meResult)
 		}

@@ -176,7 +176,7 @@ func TestRequireAuthMiddleware(t *testing.T) {
 			t.Fatalf("expected 200, got %d", resp.StatusCode)
 		}
 
-		var body map[string]interface{}
+		var body map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&body)
 		if body["user_id"] != user.ID || body["has_token"] != false {
 			t.Errorf("unexpected body: %+v", body)
@@ -195,7 +195,7 @@ func TestRequireAuthMiddleware(t *testing.T) {
 			t.Fatalf("expected 200, got %d", resp.StatusCode)
 		}
 
-		var body map[string]interface{}
+		var body map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&body)
 		if body["user_id"] != user.ID || body["has_token"] != true {
 			t.Errorf("unexpected body: %+v", body)

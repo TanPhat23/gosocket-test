@@ -178,7 +178,7 @@ func (h *AuthHandlers) Callback(c fiber.Ctx) error {
 		})
 	} else {
 		// Update profile info if present
-		updates := map[string]interface{}{}
+		updates := map[string]any{}
 		if claims.Email != "" && claims.Email != user.Email {
 			updates["email"] = claims.Email
 		}

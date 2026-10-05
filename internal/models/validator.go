@@ -9,7 +9,7 @@ var Validate = validator.New()
 
 func init() {
 	_ = Validate.RegisterValidation("team_role", func(fl validator.FieldLevel) bool {
-		return TeamRole(fl.Field().String()).IsValid()
+		return TeamRole(fl.Field().Int()).IsValid()
 	})
 	_ = Validate.RegisterValidation("task_status", func(fl validator.FieldLevel) bool {
 		return TaskStatus(fl.Field().String()).IsValid()

@@ -34,15 +34,15 @@ func TestRoleRanksAndPermissions(t *testing.T) {
 		{"viewer does NOT satisfy admin", models.RoleViewer, models.RoleAdmin, false},
 		{"viewer does NOT satisfy owner", models.RoleViewer, models.RoleOwner, false},
 
-		{"unknown user role returns false", models.TeamRole("invalid"), models.RoleViewer, false},
-		{"unknown required role returns false", models.RoleOwner, models.TeamRole("superadmin"), false},
+		{"unknown user role returns false", models.TeamRole(999), models.RoleViewer, false},
+		{"unknown required role returns false", models.RoleOwner, models.TeamRole(999), false},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got := auth.HasRolePermission(tc.userRole, tc.requiredRole)
 			if got != tc.expected {
-				t.Errorf("HasRolePermission(%q, %q) = %v; want %v", tc.userRole, tc.requiredRole, got, tc.expected)
+				t.Errorf("HasRolePermission(%d, %d) = %v; want %v", tc.userRole, tc.requiredRole, got, tc.expected)
 			}
 		})
 	}

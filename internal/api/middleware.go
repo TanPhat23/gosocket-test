@@ -44,7 +44,7 @@ func CurrentAPIToken(c fiber.Ctx) *models.APIToken {
 func CurrentTeamRole(c fiber.Ctx) models.TeamRole {
 	val := c.Locals(LocalsTeamRoleKey)
 	if val == nil {
-		return ""
+		return 0
 	}
 	role, _ := val.(models.TeamRole)
 	return role

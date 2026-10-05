@@ -33,7 +33,7 @@ type TeamMembership struct {
 	User      User      `gorm:"foreignKey:UserID" json:"user,omitempty"`
 	TeamID    string    `gorm:"type:text;primaryKey" json:"team_id" validate:"required"`
 	UserID    string    `gorm:"type:text;primaryKey;index:idx_team_memberships_user" json:"user_id" validate:"required"`
-	Role      TeamRole  `gorm:"type:text;not null;check:role IN ('owner', 'admin', 'member', 'viewer')" json:"role" validate:"required,team_role"`
+	Role      TeamRole  `gorm:"type:smallint;not null;check:role IN (10, 20, 30, 40)" json:"role" validate:"required,team_role"`
 }
 
 type APIToken struct {

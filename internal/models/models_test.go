@@ -16,8 +16,8 @@ func TestEnumsAndValidation(t *testing.T) {
 	if !models.RoleAdmin.IsValid() || !models.RoleMember.IsValid() || !models.RoleViewer.IsValid() {
 		t.Errorf("expected all defined roles to be valid")
 	}
-	if models.TeamRole("superadmin").IsValid() {
-		t.Errorf("expected superadmin to be invalid TeamRole")
+	if models.TeamRole(999).IsValid() {
+		t.Errorf("expected 999 to be invalid TeamRole")
 	}
 
 	// Verify IntegrationProvider enum
@@ -95,7 +95,7 @@ func TestEnumsAndValidation(t *testing.T) {
 	mem := models.TeamMembership{
 		TeamID: "team-1",
 		UserID: "user-1",
-		Role:   models.TeamRole("invalid-role"),
+		Role:   models.TeamRole(999),
 	}
 	if err := models.Validate.Struct(mem); err == nil {
 		t.Errorf("expected validation error on invalid TeamRole, got nil")
@@ -172,20 +172,20 @@ func TestEnumScanAndValue(t *testing.T) {
 	// TeamRole
 	r := models.RoleOwner
 	val, err := r.Value()
-	if err != nil || val != "owner" {
+	if err != nil || val != int64(40) {
 		t.Errorf("unexpected RoleOwner value: %v, %v", val, err)
 	}
 	var scannedRole models.TeamRole
-	if err := scannedRole.Scan("admin"); err != nil || scannedRole != models.RoleAdmin {
+	if err := scannedRole.Scan(int64(30)); err != nil || scannedRole != models.RoleAdmin {
 		t.Errorf("unexpected scanned role: %v, %v", scannedRole, err)
 	}
-	if err := scannedRole.Scan([]byte("viewer")); err != nil || scannedRole != models.RoleViewer {
-		t.Errorf("unexpected scanned role bytes: %v, %v", scannedRole, err)
+	if err := scannedRole.Scan(int(10)); err != nil || scannedRole != models.RoleViewer {
+		t.Errorf("unexpected scanned role int: %v, %v", scannedRole, err)
 	}
-	if err := scannedRole.Scan("invalid"); err == nil {
+	if err := scannedRole.Scan(int64(999)); err == nil {
 		t.Errorf("expected error scanning invalid role")
 	}
-	if _, err := models.TeamRole("bad").Value(); err == nil {
+	if _, err := models.TeamRole(999).Value(); err == nil {
 		t.Errorf("expected error calling Value() on invalid role")
 	}
 

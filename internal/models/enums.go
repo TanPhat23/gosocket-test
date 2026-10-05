@@ -6,19 +6,19 @@ import (
 	"fmt"
 )
 
-// TeamRole represents the team-level RBAC role.
-type TeamRole string
+// TeamRole represents the team-level RBAC role ordered by ascending privilege.
+type TeamRole int
 
 const (
-	RoleOwner  TeamRole = "owner"
-	RoleAdmin  TeamRole = "admin"
-	RoleMember TeamRole = "member"
-	RoleViewer TeamRole = "viewer"
+	RoleViewer TeamRole = 10
+	RoleMember TeamRole = 20
+	RoleAdmin  TeamRole = 30
+	RoleOwner  TeamRole = 40
 )
 
 func (r TeamRole) IsValid() bool {
 	switch r {
-	case RoleOwner, RoleAdmin, RoleMember, RoleViewer:
+	case RoleViewer, RoleMember, RoleAdmin, RoleOwner:
 		return true
 	}
 	return false
@@ -26,28 +26,42 @@ func (r TeamRole) IsValid() bool {
 
 func (r TeamRole) Value() (driver.Value, error) {
 	if !r.IsValid() {
-		return nil, fmt.Errorf("invalid TeamRole: %q", r)
+		return nil, fmt.Errorf("invalid TeamRole: %d", r)
 	}
-	return string(r), nil
+	return int64(r), nil
 }
 
 func (r *TeamRole) Scan(value any) error {
 	if value == nil {
 		return errors.New("cannot scan nil into TeamRole")
 	}
-	s, ok := value.(string)
-	if !ok {
-		if b, ok := value.([]byte); ok {
-			s = string(b)
-		} else {
-			return errors.New("cannot scan non-string value into TeamRole")
+	switch v := value.(type) {
+	case int64:
+		*r = TeamRole(v)
+	case int:
+		*r = TeamRole(v)
+	case int32:
+		*r = TeamRole(v)
+	case int16:
+		*r = TeamRole(v)
+	case string:
+		var num int
+		if _, err := fmt.Sscanf(v, "%d", &num); err != nil {
+			return fmt.Errorf("invalid TeamRole string in database: %q", v)
 		}
+		*r = TeamRole(num)
+	case []byte:
+		var num int
+		if _, err := fmt.Sscanf(string(v), "%d", &num); err != nil {
+			return fmt.Errorf("invalid TeamRole bytes in database: %q", string(v))
+		}
+		*r = TeamRole(num)
+	default:
+		return fmt.Errorf("unsupported scan type %T for TeamRole", value)
 	}
-	role := TeamRole(s)
-	if !role.IsValid() {
-		return fmt.Errorf("invalid TeamRole in database: %q", s)
+	if !r.IsValid() {
+		return fmt.Errorf("invalid TeamRole in database: %d", *r)
 	}
-	*r = role
 	return nil
 }
 

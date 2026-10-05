@@ -123,7 +123,7 @@ func TestCredentialHandlers(t *testing.T) {
 	}
 
 	t.Run("Create credential encrypts data and omits encrypted_data from JSON", func(t *testing.T) {
-		payload := map[string]interface{}{
+		payload := map[string]any{
 			"provider": "github",
 			"label":    "GitHub PAT for repo access",
 			"secret":   "ghp_super_secret_pat_9999",
@@ -142,9 +142,9 @@ func TestCredentialHandlers(t *testing.T) {
 			t.Fatalf("expected 201 Created, got %d", resp.StatusCode)
 		}
 
-		var respBody map[string]interface{}
+		var respBody map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&respBody)
-		credData, ok := respBody["credential"].(map[string]interface{})
+		credData, ok := respBody["credential"].(map[string]any)
 		if !ok {
 			t.Fatalf("expected credential map in response: %+v", respBody)
 		}
@@ -193,7 +193,7 @@ func TestCredentialHandlers(t *testing.T) {
 	})
 
 	t.Run("Member cannot create credential (403)", func(t *testing.T) {
-		payload := map[string]interface{}{
+		payload := map[string]any{
 			"provider": "jira",
 			"label":    "Jira API Token",
 			"secret":   "jira_token_123",
@@ -225,7 +225,7 @@ func TestCredentialHandlers(t *testing.T) {
 			t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
 		}
 
-		var listResp map[string][]map[string]interface{}
+		var listResp map[string][]map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&listResp)
 		creds := listResp["credentials"]
 		if len(creds) == 0 {

@@ -579,19 +579,19 @@ func init() {
 	})
 }
 
-// TeamRole represents the team-level RBAC role.
-type TeamRole string
+// TeamRole represents the team-level RBAC role ordered by ascending privilege.
+type TeamRole int
 
 const (
-	RoleOwner  TeamRole = "owner"
-	RoleAdmin  TeamRole = "admin"
-	RoleMember TeamRole = "member"
-	RoleViewer TeamRole = "viewer"
+	RoleViewer TeamRole = 10
+	RoleMember TeamRole = 20
+	RoleAdmin  TeamRole = 30
+	RoleOwner  TeamRole = 40
 )
 
 func (r TeamRole) IsValid() bool {
 	switch r {
-	case RoleOwner, RoleAdmin, RoleMember, RoleViewer:
+	case RoleViewer, RoleMember, RoleAdmin, RoleOwner:
 		return true
 	}
 	return false
@@ -599,25 +599,30 @@ func (r TeamRole) IsValid() bool {
 
 func (r TeamRole) Value() (driver.Value, error) {
 	if !r.IsValid() {
-		return nil, fmt.Errorf("invalid TeamRole: %q", r)
+		return nil, fmt.Errorf("invalid TeamRole: %d", r)
 	}
-	return string(r), nil
+	return int64(r), nil
 }
 
 func (r *TeamRole) Scan(value any) error {
-	s, ok := value.(string)
-	if !ok {
-		if b, ok := value.([]byte); ok {
-			s = string(b)
-		} else {
-			return errors.New("cannot scan non-string value into TeamRole")
-		}
+	if value == nil {
+		return errors.New("cannot scan nil into TeamRole")
 	}
-	role := TeamRole(s)
-	if !role.IsValid() {
-		return fmt.Errorf("invalid TeamRole in database: %q", s)
+	switch v := value.(type) {
+	case int64:
+		*r = TeamRole(v)
+	case int:
+		*r = TeamRole(v)
+	case int32:
+		*r = TeamRole(v)
+	case int16:
+		*r = TeamRole(v)
+	default:
+		return fmt.Errorf("unsupported scan type %T for TeamRole", value)
 	}
-	*r = role
+	if !r.IsValid() {
+		return fmt.Errorf("invalid TeamRole in database: %d", *r)
+	}
 	return nil
 }
 
@@ -800,7 +805,7 @@ type TeamMembership struct {
 	User      User      `gorm:"foreignKey:UserID" json:"user,omitempty"`
 	TeamID    string    `gorm:"type:text;primaryKey" json:"team_id" validate:"required"`
 	UserID    string    `gorm:"type:text;primaryKey;index:idx_team_memberships_user" json:"user_id" validate:"required"`
-	Role      TeamRole  `gorm:"type:text;not null;check:role IN ('owner', 'admin', 'member', 'viewer')" json:"role" validate:"required,team_role"`
+	Role      TeamRole  `gorm:"type:smallint;not null;check:role IN (10, 20, 30, 40)" json:"role" validate:"required,team_role"`
 }
 
 type APIToken struct {
@@ -951,7 +956,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS team_memberships (
     team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member', 'viewer')),
+    role SMALLINT NOT NULL CHECK (role IN (10, 20, 30, 40)),
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (team_id, user_id)

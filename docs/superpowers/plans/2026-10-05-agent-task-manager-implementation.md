@@ -152,8 +152,8 @@ func TestEnumsAndValidation(t *testing.T) {
 	if !models.RoleOwner.IsValid() {
 		t.Errorf("expected RoleOwner to be valid")
 	}
-	if models.TeamRole("superadmin").IsValid() {
-		t.Errorf("expected superadmin to be invalid TeamRole")
+	if models.TeamRole(999).IsValid() {
+		t.Errorf("expected 999 to be invalid TeamRole")
 	}
 
 	// Verify IntegrationProvider enum
@@ -175,7 +175,7 @@ func TestEnumsAndValidation(t *testing.T) {
 	mem := models.TeamMembership{
 		TeamID: "team-1",
 		UserID: "user-1",
-		Role:   models.TeamRole("invalid-role"),
+		Role:   models.TeamRole(999),
 	}
 	if err := models.Validate.Struct(mem); err == nil {
 		t.Errorf("expected validation error on invalid TeamRole, got nil")

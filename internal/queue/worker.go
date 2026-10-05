@@ -150,7 +150,7 @@ func (ws *WorkerServer) handleExecuteAgentTask(ctx context.Context, asynqTask *a
 	task.HeartbeatAt = &now
 	if err := ws.db.WithContext(ctx).Model(&models.Task{}).
 		Where("id = ?", task.ID).
-		Updates(map[string]interface{}{
+		Updates(map[string]any{
 			"status":       models.TaskStatusInProgress,
 			"heartbeat_at": now,
 		}).Error; err != nil {
@@ -189,14 +189,14 @@ func (ws *WorkerServer) handleExecuteAgentTask(ctx context.Context, asynqTask *a
 		attempt.Status = models.AttemptSucceeded
 		_ = ws.db.WithContext(ctx).Model(&models.TaskAttempt{}).
 			Where("id = ?", attempt.ID).
-			Updates(map[string]interface{}{
+			Updates(map[string]any{
 				"status":      models.AttemptSucceeded,
 				"finished_at": finishedAt,
 			})
 
 		_ = ws.db.WithContext(ctx).Model(&models.Task{}).
 			Where("id = ?", task.ID).
-			Updates(map[string]interface{}{
+			Updates(map[string]any{
 				"status": models.TaskStatusReview,
 			})
 		return nil
@@ -207,7 +207,7 @@ func (ws *WorkerServer) handleExecuteAgentTask(ctx context.Context, asynqTask *a
 	attempt.FailureReason = &failReason
 	_ = ws.db.WithContext(ctx).Model(&models.TaskAttempt{}).
 		Where("id = ?", attempt.ID).
-		Updates(map[string]interface{}{
+		Updates(map[string]any{
 			"status":         models.AttemptFailed,
 			"finished_at":    finishedAt,
 			"failure_reason": failReason,
@@ -215,7 +215,7 @@ func (ws *WorkerServer) handleExecuteAgentTask(ctx context.Context, asynqTask *a
 
 	_ = ws.db.WithContext(ctx).Model(&models.Task{}).
 		Where("id = ?", task.ID).
-		Updates(map[string]interface{}{
+		Updates(map[string]any{
 			"status": models.TaskStatusFailed,
 		})
 
