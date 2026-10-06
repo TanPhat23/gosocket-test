@@ -28,7 +28,13 @@ describe('apiClient (axios)', () => {
       statusText: 'OK',
       headers: {},
       config: {} as any,
-      data: { id: 'usr-123', email: 'dev@example.com', display_name: 'Developer' },
+      data: {
+        id: 'usr-123',
+        issuer: 'https://auth.example.com',
+        subject: 'sub-456',
+        email: 'dev@example.com',
+        display_name: 'Developer',
+      },
     });
 
     const user = await apiClient.getMe();
