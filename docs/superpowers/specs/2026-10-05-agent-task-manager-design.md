@@ -782,7 +782,7 @@ type Team struct {
 	Memberships []TeamMembership `gorm:"foreignKey:TeamID;constraint:OnDelete:CASCADE" json:"memberships,omitempty"`
 	Projects    []Project        `gorm:"foreignKey:TeamID;constraint:OnDelete:CASCADE" json:"projects,omitempty"`
 	Credentials []Credential     `gorm:"foreignKey:TeamID;constraint:OnDelete:CASCADE" json:"credentials,omitempty"`
-	ID          string           `gorm:"type:text;primaryKey" json:"id" validate:"required"`
+	ID          string           `gorm:"type:uuid;primaryKey" json:"id" validate:"required"`
 	Name        string           `gorm:"type:text;not null" json:"name" validate:"required,min=1,max=100"`
 	Slug        string           `gorm:"type:text;not null;uniqueIndex:idx_teams_slug" json:"slug" validate:"required,min=1,max=50,alphanum"`
 }
@@ -791,7 +791,7 @@ type User struct {
 	CreatedAt   time.Time        `gorm:"type:timestamptz;not null;default:CURRENT_TIMESTAMP" json:"created_at"`
 	UpdatedAt   time.Time        `gorm:"type:timestamptz;not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
 	Memberships []TeamMembership `gorm:"foreignKey:UserID;constraint:OnDelete:CASCADE" json:"memberships,omitempty"`
-	ID          string           `gorm:"type:text;primaryKey" json:"id" validate:"required"`
+	ID          string           `gorm:"type:uuid;primaryKey" json:"id" validate:"required"`
 	Issuer      string           `gorm:"type:text;not null;uniqueIndex:idx_users_issuer_subject,priority:1" json:"issuer" validate:"required,url"`
 	Subject     string           `gorm:"type:text;not null;uniqueIndex:idx_users_issuer_subject,priority:2" json:"subject" validate:"required"`
 	Email       string           `gorm:"type:text" json:"email,omitempty" validate:"omitempty,email"`
@@ -803,8 +803,8 @@ type TeamMembership struct {
 	UpdatedAt time.Time `gorm:"type:timestamptz;not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
 	Team      Team      `gorm:"foreignKey:TeamID" json:"team,omitempty"`
 	User      User      `gorm:"foreignKey:UserID" json:"user,omitempty"`
-	TeamID    string    `gorm:"type:text;primaryKey" json:"team_id" validate:"required"`
-	UserID    string    `gorm:"type:text;primaryKey;index:idx_team_memberships_user" json:"user_id" validate:"required"`
+	TeamID    string    `gorm:"type:uuid;primaryKey" json:"team_id" validate:"required"`
+	UserID    string    `gorm:"type:uuid;primaryKey;index:idx_team_memberships_user" json:"user_id" validate:"required"`
 	Role      TeamRole  `gorm:"type:smallint;not null;check:role IN (10, 20, 30, 40)" json:"role" validate:"required,team_role"`
 }
 
@@ -814,9 +814,9 @@ type APIToken struct {
 	LastUsedAt *time.Time `gorm:"type:timestamptz" json:"last_used_at,omitempty"`
 	User       User       `gorm:"foreignKey:UserID" json:"user,omitempty"`
 	Team       Team       `gorm:"foreignKey:TeamID" json:"team,omitempty"`
-	ID         string     `gorm:"type:text;primaryKey" json:"id" validate:"required"`
-	UserID     string     `gorm:"type:text;not null;index:idx_tokens_user" json:"user_id" validate:"required"`
-	TeamID     string     `gorm:"type:text;not null;index:idx_tokens_team" json:"team_id" validate:"required"`
+	ID         string     `gorm:"type:uuid;primaryKey" json:"id" validate:"required"`
+	UserID     string     `gorm:"type:uuid;not null;index:idx_tokens_user" json:"user_id" validate:"required"`
+	TeamID     string     `gorm:"type:uuid;not null;index:idx_tokens_team" json:"team_id" validate:"required"`
 	Name       string     `gorm:"type:text;not null" json:"name" validate:"required,min=1,max=100"`
 	TokenHash  string     `gorm:"type:text;not null;uniqueIndex:idx_tokens_hash" json:"-"`
 }
@@ -827,8 +827,8 @@ type Project struct {
 	Team         Team                 `gorm:"foreignKey:TeamID" json:"team,omitempty"`
 	Integrations []ProjectIntegration `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE" json:"integrations,omitempty"`
 	Tasks        []Task               `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE" json:"tasks,omitempty"`
-	ID           string               `gorm:"type:text;primaryKey" json:"id" validate:"required"`
-	TeamID       string               `gorm:"type:text;not null;index:idx_projects_team;uniqueIndex:idx_projects_team_name,priority:1" json:"team_id" validate:"required"`
+	ID           string               `gorm:"type:uuid;primaryKey" json:"id" validate:"required"`
+	TeamID       string               `gorm:"type:uuid;not null;index:idx_projects_team;uniqueIndex:idx_projects_team_name,priority:1" json:"team_id" validate:"required"`
 	Name         string               `gorm:"type:text;not null;uniqueIndex:idx_projects_team_name,priority:2" json:"name" validate:"required,min=1,max=100"`
 	RepoPath     string               `gorm:"type:text;not null" json:"repo_path" validate:"required"`
 }
@@ -841,9 +841,9 @@ type ProjectIntegration struct {
 	Project      Project             `gorm:"foreignKey:ProjectID" json:"project,omitempty"`
 	Credential   Credential          `gorm:"foreignKey:CredentialID" json:"credential,omitempty"`
 	Config       JSONMap             `gorm:"type:jsonb;not null;default:'{}'" json:"config"`
-	ID           string              `gorm:"type:text;primaryKey" json:"id" validate:"required"`
-	ProjectID    string              `gorm:"type:text;not null;index:idx_project_integrations_project;uniqueIndex:idx_proj_integ_ext,priority:1" json:"project_id" validate:"required"`
-	CredentialID string              `gorm:"type:text;not null" json:"credential_id" validate:"required"`
+	ID           string              `gorm:"type:uuid;primaryKey" json:"id" validate:"required"`
+	ProjectID    string              `gorm:"type:uuid;not null;index:idx_project_integrations_project;uniqueIndex:idx_proj_integ_ext,priority:1" json:"project_id" validate:"required"`
+	CredentialID string              `gorm:"type:uuid;not null" json:"credential_id" validate:"required"`
 	Provider     IntegrationProvider `gorm:"type:text;not null;uniqueIndex:idx_proj_integ_ext,priority:2;check:provider IN ('github', 'jira', 'trello')" json:"provider" validate:"required,oneof=github jira trello"`
 	ExternalID   string              `gorm:"type:text;not null;uniqueIndex:idx_proj_integ_ext,priority:3" json:"external_id" validate:"required"`
 	Enabled      bool                `gorm:"not null;default:true" json:"enabled"`
@@ -853,8 +853,8 @@ type Credential struct {
 	CreatedAt      time.Time          `gorm:"type:timestamptz;not null;default:CURRENT_TIMESTAMP" json:"created_at"`
 	UpdatedAt      time.Time          `gorm:"type:timestamptz;not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
 	Team           Team               `gorm:"foreignKey:TeamID" json:"team,omitempty"`
-	ID             string             `gorm:"type:text;primaryKey" json:"id" validate:"required"`
-	TeamID         string             `gorm:"type:text;not null;index:idx_credentials_team;uniqueIndex:idx_credentials_team_label,priority:1" json:"team_id" validate:"required"`
+	ID             string             `gorm:"type:uuid;primaryKey" json:"id" validate:"required"`
+	TeamID         string             `gorm:"type:uuid;not null;index:idx_credentials_team;uniqueIndex:idx_credentials_team_label,priority:1" json:"team_id" validate:"required"`
 	Provider       CredentialProvider `gorm:"type:text;not null;check:provider IN ('github', 'jira', 'trello', 'oidc', 'generic')" json:"provider" validate:"required,oneof=github jira trello oidc generic"`
 	Label          string             `gorm:"type:text;not null;uniqueIndex:idx_credentials_team_label,priority:2" json:"label" validate:"required,min=1,max=100"`
 	EncryptedData  string             `gorm:"type:text;not null" json:"-"` // AES-256-GCM base64(nonce || ciphertext || tag)
@@ -865,7 +865,7 @@ type Task struct {
 	CreatedAt     time.Time           `gorm:"type:timestamptz;not null;default:CURRENT_TIMESTAMP" json:"created_at"`
 	UpdatedAt     time.Time           `gorm:"type:timestamptz;not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
 	HeartbeatAt   *time.Time          `gorm:"type:timestamptz" json:"heartbeat_at,omitempty"`
-	IntegrationID *string             `gorm:"type:text;index:idx_tasks_integration" json:"integration_id,omitempty"`
+	IntegrationID *string             `gorm:"type:uuid;index:idx_tasks_integration" json:"integration_id,omitempty"`
 	AsynqTaskID   *string             `gorm:"type:text;index:idx_tasks_asynq_id" json:"asynq_task_id,omitempty"`
 	ExternalID    *string             `gorm:"type:text" json:"external_id,omitempty"`
 	ExternalURL   *string             `gorm:"type:text" json:"external_url,omitempty" validate:"omitempty,url"`
@@ -881,8 +881,8 @@ type Task struct {
 	Logs          []TaskLog           `gorm:"foreignKey:TaskID;constraint:OnDelete:CASCADE" json:"logs,omitempty"`
 	Project       Project             `gorm:"foreignKey:ProjectID" json:"project,omitempty"`
 	Integration   *ProjectIntegration `gorm:"foreignKey:IntegrationID" json:"integration,omitempty"`
-	ID            string              `gorm:"type:text;primaryKey" json:"id" validate:"required"`
-	ProjectID     string              `gorm:"type:text;not null;index:idx_tasks_project" json:"project_id" validate:"required"`
+	ID            string              `gorm:"type:uuid;primaryKey" json:"id" validate:"required"`
+	ProjectID     string              `gorm:"type:uuid;not null;index:idx_tasks_project" json:"project_id" validate:"required"`
 	Title         string              `gorm:"type:text;not null" json:"title" validate:"required,min=1,max=255"`
 	Prompt        string              `gorm:"type:text;not null" json:"prompt" validate:"required"`
 	AssigneeID    string              `gorm:"type:text;not null" json:"assignee_id" validate:"required"`
@@ -901,8 +901,8 @@ type TaskAttempt struct {
 	ExitCode      *int          `gorm:"type:integer" json:"exit_code,omitempty"`
 	FailureReason *string       `gorm:"type:text" json:"failure_reason,omitempty"`
 	Task          Task          `gorm:"foreignKey:TaskID" json:"task,omitempty"`
-	ID            string        `gorm:"type:text;primaryKey" json:"id" validate:"required"`
-	TaskID        string        `gorm:"type:text;not null;uniqueIndex:idx_attempts_task_attempt,priority:1" json:"task_id" validate:"required"`
+	ID            string        `gorm:"type:uuid;primaryKey" json:"id" validate:"required"`
+	TaskID        string        `gorm:"type:uuid;not null;uniqueIndex:idx_attempts_task_attempt,priority:1" json:"task_id" validate:"required"`
 	AttemptNumber int           `gorm:"type:integer;not null;uniqueIndex:idx_attempts_task_attempt,priority:2" json:"attempt_number" validate:"required,min=1"`
 	Status        AttemptStatus `gorm:"type:text;not null;check:status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')" json:"status" validate:"required"`
 }
@@ -913,7 +913,7 @@ type WebhookEvent struct {
 	Project         Project       `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE" json:"project,omitempty"`
 	ErrorMessage    *string       `gorm:"type:text" json:"error_message,omitempty"`
 	Provider        string        `gorm:"type:text;primaryKey" json:"provider" validate:"required,oneof=github jira trello"`
-	ProjectID       string        `gorm:"type:text;primaryKey;index:idx_webhook_project" json:"project_id" validate:"required"`
+	ProjectID       string        `gorm:"type:uuid;primaryKey;index:idx_webhook_project" json:"project_id" validate:"required"`
 	ProviderEventID string        `gorm:"type:text;primaryKey" json:"provider_event_id" validate:"required"`
 	Status          WebhookStatus `gorm:"type:text;not null;check:status IN ('received', 'processed', 'failed')" json:"status" validate:"required"`
 }
@@ -923,8 +923,8 @@ type TaskLog struct {
 	Task      Task         `gorm:"foreignKey:TaskID;constraint:OnDelete:CASCADE" json:"task,omitempty"`
 	Attempt   *TaskAttempt `gorm:"foreignKey:AttemptID;constraint:OnDelete:CASCADE" json:"attempt,omitempty"`
 	ID        int64        `gorm:"primaryKey;autoIncrement" json:"id"`
-	TaskID    string       `gorm:"type:text;not null;index:idx_task_logs_task_attempt,priority:1" json:"task_id" validate:"required"`
-	AttemptID *string      `gorm:"type:text;index:idx_task_logs_task_attempt,priority:2" json:"attempt_id,omitempty"`
+	TaskID    string       `gorm:"type:uuid;not null;index:idx_task_logs_task_attempt,priority:1" json:"task_id" validate:"required"`
+	AttemptID *string      `gorm:"type:uuid;index:idx_task_logs_task_attempt,priority:2" json:"attempt_id,omitempty"`
 	LogChunk  string       `gorm:"type:text;not null" json:"log_chunk" validate:"required"`
 }
 ```
@@ -935,7 +935,7 @@ type TaskLog struct {
 -- PostgreSQL 18 Relational Schema Specification
 
 CREATE TABLE IF NOT EXISTS teams (
-    id TEXT PRIMARY KEY,
+    id UUID PRIMARY KEY,
     name TEXT NOT NULL,
     slug TEXT NOT NULL UNIQUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -943,7 +943,7 @@ CREATE TABLE IF NOT EXISTS teams (
 );
 
 CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
+    id UUID PRIMARY KEY,
     issuer TEXT NOT NULL,
     subject TEXT NOT NULL,
     email TEXT,
@@ -954,8 +954,8 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE TABLE IF NOT EXISTS team_memberships (
-    team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
-    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     role SMALLINT NOT NULL CHECK (role IN (10, 20, 30, 40)),
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -965,9 +965,9 @@ CREATE TABLE IF NOT EXISTS team_memberships (
 CREATE INDEX IF NOT EXISTS idx_team_memberships_user_id ON team_memberships(user_id);
 
 CREATE TABLE IF NOT EXISTS api_tokens (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     token_hash TEXT NOT NULL UNIQUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -980,8 +980,8 @@ CREATE INDEX IF NOT EXISTS idx_api_tokens_team_id ON api_tokens(team_id);
 
 -- Third-party credentials encrypted at rest using AES-256-GCM.
 CREATE TABLE IF NOT EXISTS credentials (
-    id TEXT PRIMARY KEY,
-    team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    id UUID PRIMARY KEY,
+    team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
     provider TEXT NOT NULL CHECK (provider IN ('github', 'jira', 'trello', 'oidc', 'generic')),
     label TEXT NOT NULL,
     encrypted_data TEXT NOT NULL, -- AES-256-GCM base64(nonce || ciphertext || tag)
@@ -994,8 +994,8 @@ CREATE TABLE IF NOT EXISTS credentials (
 CREATE INDEX IF NOT EXISTS idx_credentials_team_id ON credentials(team_id);
 
 CREATE TABLE IF NOT EXISTS projects (
-    id TEXT PRIMARY KEY,
-    team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    id UUID PRIMARY KEY,
+    team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     repo_path TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1007,9 +1007,9 @@ CREATE INDEX IF NOT EXISTS idx_projects_team_id ON projects(team_id);
 
 -- Extensible project-provider integrations (GitHub, Jira, Trello, etc.)
 CREATE TABLE IF NOT EXISTS project_integrations (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    credential_id TEXT NOT NULL REFERENCES credentials(id) ON DELETE RESTRICT,
+    id UUID PRIMARY KEY,
+    project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    credential_id UUID NOT NULL REFERENCES credentials(id) ON DELETE RESTRICT,
     provider TEXT NOT NULL CHECK (provider IN ('github', 'jira', 'trello')),
     external_id TEXT NOT NULL, -- e.g., 'owner/repo', Jira project key, or Trello board ID
     external_url TEXT,
@@ -1025,9 +1025,9 @@ CREATE INDEX IF NOT EXISTS idx_project_integrations_project ON project_integrati
 CREATE INDEX IF NOT EXISTS idx_project_integrations_provider ON project_integrations(provider);
 
 CREATE TABLE IF NOT EXISTS tasks (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    integration_id TEXT REFERENCES project_integrations(id) ON DELETE SET NULL,
+    id UUID PRIMARY KEY,
+    project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    integration_id UUID REFERENCES project_integrations(id) ON DELETE SET NULL,
     asynq_task_id TEXT, -- Correlates with Redis / Asynq for queue cancellation
     title TEXT NOT NULL,
     prompt TEXT NOT NULL,
@@ -1062,8 +1062,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_tasks_external_identity
     WHERE external_id IS NOT NULL AND integration_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS task_attempts (
-    id TEXT PRIMARY KEY,
-    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    id UUID PRIMARY KEY,
+    task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     attempt_number INTEGER NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')),
     container_id TEXT,
@@ -1081,7 +1081,7 @@ CREATE INDEX IF NOT EXISTS idx_task_attempts_task_id ON task_attempts(task_id);
 
 CREATE TABLE IF NOT EXISTS webhook_events (
     provider TEXT NOT NULL,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     provider_event_id TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('received', 'processed', 'failed')),
     error_message TEXT,
@@ -1094,8 +1094,8 @@ CREATE INDEX IF NOT EXISTS idx_webhook_events_project_id ON webhook_events(proje
 
 CREATE TABLE IF NOT EXISTS task_logs (
     id BIGSERIAL PRIMARY KEY,
-    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-    attempt_id TEXT REFERENCES task_attempts(id) ON DELETE CASCADE,
+    task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    attempt_id UUID REFERENCES task_attempts(id) ON DELETE CASCADE,
     timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     log_chunk TEXT NOT NULL
 );

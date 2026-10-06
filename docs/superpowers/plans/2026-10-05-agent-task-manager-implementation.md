@@ -13,6 +13,7 @@
 ## Global Constraints
 
 - **Language & Runtime:** Go 1.27 for the backend; Node.js 22+ with Bun/Vite for frontend asset compilation.
+- **Entity Identity & UUIDv7:** All entity primary and foreign keys use native 16-byte `UUID` in PostgreSQL 18 and are generated via Go 1.27 standard library `uuid.NewV7()` for time-ordered (K-sortable) monotonic B-tree index efficiency with zero page fragmentation.
 - **API Framework & Routing:** Fiber v3 (`github.com/gofiber/fiber/v3`) exposing RESTful `/api/v1` resources and WebSockets. Request payloads are validated via Fiber v3's built-in `c.Bind().Body()` powered by `validator/v10`.
 - **Database & ORM:** PostgreSQL 18 with GORM v2 (`gorm.io/gorm` and `gorm.io/driver/postgres`); connection pooling managed via `*sql.DB`. Domain enumerations are strongly typed Go idiomatic enums implementing `driver.Valuer` and `sql.Scanner`.
 - **Validation & Memory Optimization:** All API boundaries, DTOs, and domain mutations are validated using `github.com/go-playground/validator/v10` with custom enum validators. Structs are ordered for optimal 64-bit memory alignment to eliminate padding holes (verified via `fieldalignment`).
