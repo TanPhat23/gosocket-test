@@ -5,26 +5,24 @@ import (
 	"time"
 
 	"agent-task-manager/internal/auth"
-	"agent-task-manager/internal/models"
+	"agent-task-manager/internal/dto"
+	"agent-task-manager/internal/service"
 
 	"github.com/gofiber/fiber/v3"
-	"gorm.io/gorm"
 )
 
 // AuthHandlers holds dependencies for authentication endpoints.
 type AuthHandlers struct {
-	db             *gorm.DB
+	authService    service.AuthService
 	sessionManager *auth.SessionManager
-	authenticator  auth.Authenticator
 	secureCookies  bool
 }
 
 // NewAuthHandlers creates a new AuthHandlers instance.
-func NewAuthHandlers(db *gorm.DB, sm *auth.SessionManager, authenticator auth.Authenticator, secureCookies bool) *AuthHandlers {
+func NewAuthHandlers(authService service.AuthService, sm *auth.SessionManager, secureCookies bool) *AuthHandlers {
 	return &AuthHandlers{
-		db:             db,
+		authService:    authService,
 		sessionManager: sm,
-		authenticator:  authenticator,
 		secureCookies:  secureCookies,
 	}
 }
@@ -32,23 +30,15 @@ func NewAuthHandlers(db *gorm.DB, sm *auth.SessionManager, authenticator auth.Au
 // Login initiates the OIDC authorization code flow with PKCE.
 // GET /api/v1/auth/login
 func (h *AuthHandlers) Login(c fiber.Ctx) error {
-	if h.authenticator == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-			"error": "OIDC authentication is not configured",
-		})
-	}
-
-	state, challenge, err := h.authenticator.GenerateOIDCState()
+	authURL, signedState, state, err := h.authService.GenerateLoginURL()
 	if err != nil {
+		if errors.Is(err, service.ErrOIDCNotConfigured) {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+				"error": "OIDC authentication is not configured",
+			})
+		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to generate authorization state",
-		})
-	}
-
-	signedState, err := h.authenticator.SignOIDCState(state)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to sign authorization state",
 		})
 	}
 
@@ -63,7 +53,6 @@ func (h *AuthHandlers) Login(c fiber.Ctx) error {
 		SameSite: "Lax",
 	})
 
-	authURL := h.authenticator.AuthCodeURL(state.State, challenge, state.Nonce)
 	return c.Redirect().To(authURL)
 }
 
@@ -71,12 +60,6 @@ func (h *AuthHandlers) Login(c fiber.Ctx) error {
 // upserts user, and establishes an atm_session cookie.
 // GET /api/v1/auth/callback
 func (h *AuthHandlers) Callback(c fiber.Ctx) error {
-	if h.authenticator == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-			"error": "OIDC authentication is not configured",
-		})
-	}
-
 	code := c.Query("code")
 	stateParam := c.Query("state")
 	if code == "" || stateParam == "" {
@@ -104,89 +87,41 @@ func (h *AuthHandlers) Callback(c fiber.Ctx) error {
 		SameSite: "Lax",
 	})
 
-	storedState, err := h.authenticator.VerifyOIDCState(stateCookie)
+	user, err := h.authService.HandleCallback(c.Context(), stateCookie, stateParam, code)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Invalid or expired authorization state",
-		})
-	}
-
-	if storedState.State != stateParam {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Mismatched authorization state",
-		})
-	}
-
-	token, err := h.authenticator.Exchange(c.Context(), code, storedState.CodeVerifier)
-	if err != nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-			"error": "Failed to exchange authorization code",
-		})
-	}
-
-	rawIDToken, ok := token.Extra("id_token").(string)
-	if !ok || rawIDToken == "" {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-			"error": "Missing id_token in token response",
-		})
-	}
-
-	idToken, err := h.authenticator.VerifyIDToken(c.Context(), rawIDToken)
-	if err != nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-			"error": "Failed to verify ID token",
-		})
-	}
-
-	if idToken.Nonce != storedState.Nonce {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-			"error": "Nonce mismatch",
-		})
-	}
-
-	var claims struct {
-		Email string `json:"email"`
-		Name  string `json:"name"`
-	}
-	_ = idToken.Claims(&claims)
-
-	issuer := idToken.Issuer
-	subject := idToken.Subject
-
-	// Upsert user strictly keyed by (issuer, subject)
-	var user models.User
-	result := h.db.Where("issuer = ? AND subject = ?", issuer, subject).First(&user)
-	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-		now := time.Now()
-		user = models.User{
-			ID:          "usr_" + idToken.Subject,
-			Issuer:      issuer,
-			Subject:     subject,
-			Email:       claims.Email,
-			DisplayName: claims.Name,
-			CreatedAt:   now,
-			UpdatedAt:   now,
-		}
-		if err := h.db.Create(&user).Error; err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "Failed to create user record",
+		switch {
+		case errors.Is(err, service.ErrOIDCNotConfigured):
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+				"error": "OIDC authentication is not configured",
 			})
-		}
-	} else if result.Error != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Database error retrieving user",
-		})
-	} else {
-		// Update profile info if present
-		updates := map[string]any{}
-		if claims.Email != "" && claims.Email != user.Email {
-			updates["email"] = claims.Email
-		}
-		if claims.Name != "" && claims.Name != user.DisplayName {
-			updates["display_name"] = claims.Name
-		}
-		if len(updates) > 0 {
-			_ = h.db.Model(&user).Updates(updates).Error
+		case errors.Is(err, service.ErrInvalidState):
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "Invalid or expired authorization state",
+			})
+		case errors.Is(err, service.ErrStateMismatch):
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "Mismatched authorization state",
+			})
+		case errors.Is(err, service.ErrTokenExchange):
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "Failed to exchange authorization code",
+			})
+		case errors.Is(err, service.ErrMissingIDToken):
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "Missing id_token in token response",
+			})
+		case errors.Is(err, service.ErrVerifyIDToken):
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "Failed to verify ID token",
+			})
+		case errors.Is(err, service.ErrNonceMismatch):
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "Nonce mismatch",
+			})
+		default:
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "Authentication failed",
+			})
 		}
 	}
 
@@ -200,12 +135,12 @@ func (h *AuthHandlers) Callback(c fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{
 		"status": "authenticated",
-		"user": fiber.Map{
-			"id":           user.ID,
-			"issuer":       user.Issuer,
-			"subject":      user.Subject,
-			"email":        user.Email,
-			"display_name": user.DisplayName,
+		"user": dto.UserResponseDTO{
+			ID:          user.ID,
+			Issuer:      user.Issuer,
+			Subject:     user.Subject,
+			Email:       user.Email,
+			DisplayName: user.DisplayName,
 		},
 	})
 }
@@ -229,25 +164,20 @@ func (h *AuthHandlers) Me(c fiber.Ctx) error {
 		})
 	}
 
-	var user models.User
-	if err := h.db.Where("id = ?", claims.UserID).First(&user).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"error": "User not found",
-			})
-		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Database error",
+	user, err := h.authService.GetUserByID(c.Context(), claims.UserID)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"error": "User not found",
 		})
 	}
 
 	return c.JSON(fiber.Map{
-		"user": fiber.Map{
-			"id":           user.ID,
-			"issuer":       user.Issuer,
-			"subject":      user.Subject,
-			"email":        user.Email,
-			"display_name": user.DisplayName,
+		"user": dto.UserResponseDTO{
+			ID:          user.ID,
+			Issuer:      user.Issuer,
+			Subject:     user.Subject,
+			Email:       user.Email,
+			DisplayName: user.DisplayName,
 		},
 	})
 }

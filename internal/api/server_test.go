@@ -13,7 +13,11 @@ import (
 	"agent-task-manager/internal/api"
 	"agent-task-manager/internal/auth"
 	"agent-task-manager/internal/config"
+	"agent-task-manager/internal/crypto"
+	"agent-task-manager/internal/integrations"
 	"agent-task-manager/internal/models"
+	"agent-task-manager/internal/repository"
+	"agent-task-manager/internal/service"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/glebarez/sqlite"
@@ -164,7 +168,24 @@ func TestAuthEndpoints(t *testing.T) {
 		issuerURL: "https://idp.example.com",
 	}
 
-	server := api.NewServer(cfg, db, mockAuth)
+	sessionSecret := []byte(cfg.SessionSecret)
+	sessionManager := auth.NewSessionManager(sessionSecret, 24*time.Hour, false)
+
+	userRepo := repository.NewUserRepository(db)
+	teamRepo := repository.NewTeamRepository(db)
+	tokenRepo := repository.NewTokenRepository(db)
+	credentialRepo := repository.NewCredentialRepository(db)
+	integrationRepo := repository.NewIntegrationRepository(db)
+	taskRepo := repository.NewTaskRepository(db)
+
+	cipher, _ := crypto.NewSecretCipher([]byte("12345678901234567890123456789012"))
+	idempotencyStore := integrations.NewDBIdempotencyStore(db)
+
+	authService := service.NewAuthService(userRepo, teamRepo, tokenRepo, mockAuth)
+	credService := service.NewCredentialService(credentialRepo, cipher)
+	webhookService := service.NewWebhookService(integrationRepo, taskRepo, idempotencyStore, cipher, nil)
+
+	server := api.NewServer(cfg, sessionManager, authService, credService, webhookService)
 
 	t.Run("GET /api/v1/auth/login redirects and sets state cookie", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/api/v1/auth/login", nil)

@@ -3,21 +3,20 @@ package api
 import (
 	"errors"
 	"strings"
-	"time"
 
 	"agent-task-manager/internal/auth"
 	"agent-task-manager/internal/models"
+	"agent-task-manager/internal/service"
 
 	"github.com/gofiber/fiber/v3"
-	"gorm.io/gorm"
 )
 
 const (
-	LocalsUserKey        = "currentUser"
-	LocalsAPITokenKey    = "currentAPIToken"
-	LocalsTeamRoleKey    = "currentTeamRole"
-	LocalsTeamIDKey      = "currentTeamID"
-	BearerPrefix         = "Bearer "
+	LocalsUserKey     = "currentUser"
+	LocalsAPITokenKey = "currentAPIToken"
+	LocalsTeamRoleKey = "currentTeamRole"
+	LocalsTeamIDKey   = "currentTeamID"
+	BearerPrefix      = "Bearer "
 )
 
 // CurrentUser retrieves the authenticated models.User from the Fiber context.
@@ -51,19 +50,18 @@ func CurrentTeamRole(c fiber.Ctx) models.TeamRole {
 }
 
 // RequireAuth provides dual authentication via session cookie (atm_session) or Bearer Personal Access Token.
-// For session cookies: extracts claims and loads user from DB.
-// For Bearer tokens: verifies atm_pat_ prefix, hashes with SHA-256, verifies in `api_tokens` (non-expired),
-// updates last_used_at, and loads associated user.
+// For session cookies: extracts claims and loads user via AuthService.
+// For Bearer tokens: authenticates token via AuthService.
 // Returns 401 Unauthorized if neither is present or valid.
-func RequireAuth(db *gorm.DB, sm *auth.SessionManager) fiber.Handler {
+func RequireAuth(authService service.AuthService, sm *auth.SessionManager) fiber.Handler {
 	return func(c fiber.Ctx) error {
 		// 1. Check atm_session cookie first
 		if sm != nil {
 			claims, err := sm.ValidateFiberRequest(c)
 			if err == nil && claims != nil {
-				var user models.User
-				if err := db.Where("id = ?", claims.UserID).First(&user).Error; err == nil {
-					c.Locals(LocalsUserKey, &user)
+				user, err := authService.GetUserByID(c.Context(), claims.UserID)
+				if err == nil && user != nil {
+					c.Locals(LocalsUserKey, user)
 					return c.Next()
 				}
 			}
@@ -73,26 +71,11 @@ func RequireAuth(db *gorm.DB, sm *auth.SessionManager) fiber.Handler {
 		authHeader := c.Get(fiber.HeaderAuthorization)
 		if strings.HasPrefix(authHeader, BearerPrefix) {
 			rawToken := strings.TrimSpace(strings.TrimPrefix(authHeader, BearerPrefix))
-			if strings.HasPrefix(rawToken, auth.TokenPrefix) {
-				tokenHash := auth.HashToken(rawToken)
-
-				var apiToken models.APIToken
-				err := db.Where("token_hash = ?", tokenHash).First(&apiToken).Error
-				if err == nil {
-					// Check expiration
-					if apiToken.ExpiresAt == nil || apiToken.ExpiresAt.After(time.Now()) {
-						var user models.User
-						if err := db.Where("id = ?", apiToken.UserID).First(&user).Error; err == nil {
-							// Update last_used_at asynchronously or in-line
-							now := time.Now()
-							_ = db.Model(&apiToken).Update("last_used_at", &now).Error
-
-							c.Locals(LocalsUserKey, &user)
-							c.Locals(LocalsAPITokenKey, &apiToken)
-							return c.Next()
-						}
-					}
-				}
+			user, apiToken, err := authService.AuthenticatePAT(c.Context(), rawToken)
+			if err == nil && user != nil {
+				c.Locals(LocalsUserKey, user)
+				c.Locals(LocalsAPITokenKey, apiToken)
+				return c.Next()
 			}
 		}
 
@@ -105,7 +88,7 @@ func RequireAuth(db *gorm.DB, sm *auth.SessionManager) fiber.Handler {
 // RequireTeamRole enforces team-level RBAC based on team_id in params or queries.
 // It checks the authenticated user's role against minRole: owner > admin > member > viewer.
 // Returns 403 Forbidden if the user is not in the team or lacks sufficient permission.
-func RequireTeamRole(db *gorm.DB, minRole models.TeamRole) fiber.Handler {
+func RequireTeamRole(authService service.AuthService, minRole models.TeamRole) fiber.Handler {
 	return func(c fiber.Ctx) error {
 		user := CurrentUser(c)
 		if user == nil {
@@ -124,12 +107,16 @@ func RequireTeamRole(db *gorm.DB, minRole models.TeamRole) fiber.Handler {
 			})
 		}
 
-		var membership models.TeamMembership
-		err := db.Where("team_id = ? AND user_id = ?", teamID, user.ID).First(&membership).Error
+		actualRole, err := authService.AuthorizeTeamRole(c.Context(), teamID, user.ID, minRole)
 		if err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
+			if errors.Is(err, service.ErrNotTeamMember) {
 				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
 					"error": "Access denied: you are not a member of this team",
+				})
+			}
+			if errors.Is(err, service.ErrForbidden) {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+					"error": "Forbidden: insufficient team role permissions",
 				})
 			}
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -137,13 +124,7 @@ func RequireTeamRole(db *gorm.DB, minRole models.TeamRole) fiber.Handler {
 			})
 		}
 
-		if !auth.HasRolePermission(membership.Role, minRole) {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-				"error": "Forbidden: insufficient team role permissions",
-			})
-		}
-
-		c.Locals(LocalsTeamRoleKey, membership.Role)
+		c.Locals(LocalsTeamRoleKey, actualRole)
 		c.Locals(LocalsTeamIDKey, teamID)
 
 		return c.Next()

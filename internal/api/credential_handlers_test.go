@@ -12,6 +12,8 @@ import (
 	"agent-task-manager/internal/auth"
 	"agent-task-manager/internal/crypto"
 	"agent-task-manager/internal/models"
+	"agent-task-manager/internal/repository"
+	"agent-task-manager/internal/service"
 
 	"github.com/glebarez/sqlite"
 	"github.com/gofiber/fiber/v3"
@@ -109,9 +111,17 @@ func TestCredentialHandlers(t *testing.T) {
 		StructValidator: api.NewStructValidator(),
 	})
 
-	credHandlers := api.NewCredentialHandlers(db, cipher)
-	teamsGroup := app.Group("/api/v1/teams/:team_id", api.RequireAuth(db, sm))
-	credentialsGroup := teamsGroup.Group("/credentials", api.RequireTeamRole(db, models.RoleOwner))
+	userRepo := repository.NewUserRepository(db)
+	teamRepo := repository.NewTeamRepository(db)
+	tokenRepo := repository.NewTokenRepository(db)
+	credRepo := repository.NewCredentialRepository(db)
+
+	authService := service.NewAuthService(userRepo, teamRepo, tokenRepo, nil)
+	credService := service.NewCredentialService(credRepo, cipher)
+
+	credHandlers := api.NewCredentialHandlers(credService)
+	teamsGroup := app.Group("/api/v1/teams/:team_id", api.RequireAuth(authService, sm))
+	credentialsGroup := teamsGroup.Group("/credentials", api.RequireTeamRole(authService, models.RoleOwner))
 	credentialsGroup.Get("", credHandlers.List)
 	credentialsGroup.Post("", credHandlers.Create)
 	credentialsGroup.Delete("/:credential_id", credHandlers.Delete)
@@ -261,6 +271,19 @@ func TestCredentialHandlers(t *testing.T) {
 		err = db.First(&check, "id = ?", cred.ID).Error
 		if err == nil {
 			t.Errorf("expected credential to be deleted from db")
+		}
+	})
+
+	t.Run("Delete nonexistent credential returns 404", func(t *testing.T) {
+		req := httptest.NewRequest("DELETE", "/api/v1/teams/team_1/credentials/cred_nonexistent", nil)
+		req.AddCookie(makeAuthCookie(owner.ID))
+
+		resp, err := app.Test(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("expected 404 Not Found on delete nonexistent, got %d", resp.StatusCode)
 		}
 	})
 }

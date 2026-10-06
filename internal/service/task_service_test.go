@@ -7,6 +7,7 @@ import (
 
 	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/models"
+	"agent-task-manager/internal/repository"
 	"agent-task-manager/internal/service"
 	"agent-task-manager/internal/ws"
 	"github.com/glebarez/sqlite"
@@ -38,6 +39,47 @@ func setupTestDB(t *testing.T) *gorm.DB {
 			subject TEXT NOT NULL,
 			email TEXT,
 			display_name TEXT
+		);
+		CREATE TABLE team_memberships (
+			team_id TEXT NOT NULL,
+			user_id TEXT NOT NULL,
+			role TEXT NOT NULL,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (team_id, user_id)
+		);
+		CREATE TABLE api_tokens (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			team_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			token_hash TEXT NOT NULL,
+			expires_at DATETIME,
+			last_used_at DATETIME,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE credentials (
+			id TEXT PRIMARY KEY,
+			team_id TEXT NOT NULL,
+			provider TEXT NOT NULL,
+			label TEXT NOT NULL,
+			encrypted_data TEXT NOT NULL,
+			key_fingerprint TEXT NOT NULL,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE project_integrations (
+			id TEXT PRIMARY KEY,
+			project_id TEXT NOT NULL,
+			credential_id TEXT NOT NULL,
+			provider TEXT NOT NULL,
+			external_id TEXT NOT NULL,
+			external_url TEXT,
+			config TEXT NOT NULL DEFAULT '{}',
+			enabled BOOLEAN NOT NULL DEFAULT 1,
+			last_synced_at DATETIME,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);
 		CREATE TABLE projects (
 			id TEXT PRIMARY KEY,
@@ -169,6 +211,7 @@ func createTestUserAndTask(t *testing.T, gormDB *gorm.DB) (*models.User, *models
 func TestTaskServiceTransitionsAndCancellation(t *testing.T) {
 	gormDB := setupTestDB(t)
 	_, _, task := createTestUserAndTask(t, gormDB)
+	taskRepo := repository.NewTaskRepository(gormDB)
 
 	hub := ws.NewHub()
 	go hub.Run()
@@ -179,7 +222,7 @@ func TestTaskServiceTransitionsAndCancellation(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	mockQueue := &mockQueueClient{}
-	taskSvc := service.NewTaskService(gormDB, mockQueue, hub)
+	taskSvc := service.NewTaskService(taskRepo, mockQueue, hub)
 
 	ctx := context.Background()
 
@@ -201,7 +244,6 @@ func TestTaskServiceTransitionsAndCancellation(t *testing.T) {
 	// Verify WebSocket received status broadcast
 	select {
 	case msg := <-client.Messages():
-		// Received status update
 		if len(msg) == 0 {
 			t.Errorf("empty status broadcast")
 		}
@@ -232,6 +274,7 @@ func TestTaskServiceTransitionsAndCancellation(t *testing.T) {
 func TestLogServiceAppendAndBroadcast(t *testing.T) {
 	gormDB := setupTestDB(t)
 	_, _, task := createTestUserAndTask(t, gormDB)
+	logRepo := repository.NewLogRepository(gormDB)
 
 	hub := ws.NewHub()
 	go hub.Run()
@@ -241,7 +284,7 @@ func TestLogServiceAppendAndBroadcast(t *testing.T) {
 	hub.Register(client)
 	time.Sleep(10 * time.Millisecond)
 
-	logSvc := service.NewLogService(gormDB, hub)
+	logSvc := service.NewLogService(logRepo, hub)
 	ctx := context.Background()
 
 	attemptID := "attempt-1"

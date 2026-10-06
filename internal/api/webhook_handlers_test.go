@@ -13,6 +13,8 @@ import (
 	"agent-task-manager/internal/crypto"
 	"agent-task-manager/internal/integrations"
 	"agent-task-manager/internal/models"
+	"agent-task-manager/internal/repository"
+	"agent-task-manager/internal/service"
 
 	"github.com/glebarez/sqlite"
 	"github.com/gofiber/fiber/v3"
@@ -118,7 +120,11 @@ func setupWebhookTestApp(t *testing.T) (*fiber.App, *gorm.DB, integrations.Idemp
 	idempotencyStore := integrations.NewMemoryIdempotencyStore()
 
 	app := fiber.New()
-	handler := api.NewWebhookHandlers(db, idempotencyStore, cipher, nil)
+	integRepo := repository.NewIntegrationRepository(db)
+	taskRepo := repository.NewTaskRepository(db)
+	webhookSvc := service.NewWebhookService(integRepo, taskRepo, idempotencyStore, cipher, nil)
+
+	handler := api.NewWebhookHandlers(webhookSvc)
 	app.Post("/api/v1/webhooks/:provider", handler.HandleWebhook)
 
 	return app, db, idempotencyStore, cipher

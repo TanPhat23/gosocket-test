@@ -2,14 +2,13 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/queue"
+	"agent-task-manager/internal/repository"
 	"agent-task-manager/internal/ws"
-	"gorm.io/gorm"
 )
 
 // TaskService defines the business operations for tasks.
@@ -20,15 +19,15 @@ type TaskService interface {
 }
 
 type taskService struct {
-	db          *gorm.DB
+	taskRepo    repository.TaskRepository
 	queueClient queue.Client
 	hub         *ws.Hub
 }
 
 // NewTaskService creates a new TaskService implementation.
-func NewTaskService(db *gorm.DB, queueClient queue.Client, hub *ws.Hub) TaskService {
+func NewTaskService(taskRepo repository.TaskRepository, queueClient queue.Client, hub *ws.Hub) TaskService {
 	return &taskService{
-		db:          db,
+		taskRepo:    taskRepo,
 		queueClient: queueClient,
 		hub:         hub,
 	}
@@ -36,38 +35,17 @@ func NewTaskService(db *gorm.DB, queueClient queue.Client, hub *ws.Hub) TaskServ
 
 // GetTask retrieves a task by ID.
 func (s *taskService) GetTask(ctx context.Context, taskID string) (*models.Task, error) {
-	if taskID == "" {
-		return nil, errors.New("task ID cannot be empty")
-	}
-
-	var task models.Task
-	if err := s.db.WithContext(ctx).First(&task, "id = ?", taskID).Error; err != nil {
-		return nil, err
-	}
-	return &task, nil
+	return s.taskRepo.GetByID(ctx, taskID)
 }
 
 // UpdateStatus updates the task status in the database and broadcasts the change via WebSocket.
 func (s *taskService) UpdateStatus(ctx context.Context, taskID string, status models.TaskStatus) error {
-	if taskID == "" {
-		return errors.New("task ID cannot be empty")
-	}
 	if !status.IsValid() {
 		return fmt.Errorf("invalid status: %s", status)
 	}
 
-	res := s.db.WithContext(ctx).Model(&models.Task{}).
-		Where("id = ?", taskID).
-		Updates(map[string]any{
-			"status":     status,
-			"updated_at": time.Now().UTC(),
-		})
-
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected == 0 {
-		return fmt.Errorf("task not found: %s", taskID)
+	if err := s.taskRepo.UpdateStatus(ctx, taskID, status); err != nil {
+		return fmt.Errorf("task not found or update failed: %w", err)
 	}
 
 	if s.hub != nil {
@@ -99,24 +77,20 @@ type LogService interface {
 }
 
 type logService struct {
-	db  *gorm.DB
-	hub *ws.Hub
+	logRepo repository.LogRepository
+	hub     *ws.Hub
 }
 
 // NewLogService creates a new LogService implementation.
-func NewLogService(db *gorm.DB, hub *ws.Hub) LogService {
+func NewLogService(logRepo repository.LogRepository, hub *ws.Hub) LogService {
 	return &logService{
-		db:  db,
-		hub: hub,
+		logRepo: logRepo,
+		hub:     hub,
 	}
 }
 
 // AppendLog persists a chunk of log to TaskLog and broadcasts to WebSocket subscribers.
 func (s *logService) AppendLog(ctx context.Context, taskID string, attemptID *string, chunk string) error {
-	if taskID == "" {
-		return errors.New("task ID cannot be empty")
-	}
-
 	logEntry := models.TaskLog{
 		TaskID:    taskID,
 		AttemptID: attemptID,
@@ -124,7 +98,7 @@ func (s *logService) AppendLog(ctx context.Context, taskID string, attemptID *st
 		Timestamp: time.Now().UTC(),
 	}
 
-	if err := s.db.WithContext(ctx).Create(&logEntry).Error; err != nil {
+	if err := s.logRepo.Append(ctx, &logEntry); err != nil {
 		return fmt.Errorf("failed to persist log entry: %w", err)
 	}
 
@@ -137,17 +111,5 @@ func (s *logService) AppendLog(ctx context.Context, taskID string, attemptID *st
 
 // GetLogs returns all persisted log entries for a given task ID ordered by timestamp.
 func (s *logService) GetLogs(ctx context.Context, taskID string) ([]models.TaskLog, error) {
-	if taskID == "" {
-		return nil, errors.New("task ID cannot be empty")
-	}
-
-	var logs []models.TaskLog
-	err := s.db.WithContext(ctx).
-		Where("task_id = ?", taskID).
-		Order("timestamp ASC, id ASC").
-		Find(&logs).Error
-	if err != nil {
-		return nil, err
-	}
-	return logs, nil
+	return s.logRepo.ListByTaskID(ctx, taskID)
 }

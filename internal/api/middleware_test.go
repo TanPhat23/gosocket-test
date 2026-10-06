@@ -10,6 +10,8 @@ import (
 	"agent-task-manager/internal/api"
 	"agent-task-manager/internal/auth"
 	"agent-task-manager/internal/models"
+	"agent-task-manager/internal/repository"
+	"agent-task-manager/internal/service"
 
 	"github.com/glebarez/sqlite"
 	"github.com/gofiber/fiber/v3"
@@ -129,8 +131,13 @@ func TestRequireAuthMiddleware(t *testing.T) {
 	}
 
 	// Setup Fiber App
+	userRepo := repository.NewUserRepository(db)
+	teamRepo := repository.NewTeamRepository(db)
+	tokenRepo := repository.NewTokenRepository(db)
+	authSvc := service.NewAuthService(userRepo, teamRepo, tokenRepo, nil)
+
 	app := fiber.New()
-	app.Get("/protected", api.RequireAuth(db, sm), func(c fiber.Ctx) error {
+	app.Get("/protected", api.RequireAuth(authSvc, sm), func(c fiber.Ctx) error {
 		u := api.CurrentUser(c)
 		token := api.CurrentAPIToken(c)
 		return c.JSON(fiber.Map{
@@ -260,10 +267,15 @@ func TestRequireTeamRoleMiddleware(t *testing.T) {
 	db.Create(&models.TeamMembership{TeamID: team.ID, UserID: member.ID, Role: models.RoleMember})
 	db.Create(&models.TeamMembership{TeamID: team.ID, UserID: viewer.ID, Role: models.RoleViewer})
 
+	userRepo := repository.NewUserRepository(db)
+	teamRepo := repository.NewTeamRepository(db)
+	tokenRepo := repository.NewTokenRepository(db)
+	authSvc := service.NewAuthService(userRepo, teamRepo, tokenRepo, nil)
+
 	app := fiber.New()
 	app.Get("/teams/:team_id/admin-only",
-		api.RequireAuth(db, sm),
-		api.RequireTeamRole(db, models.RoleAdmin),
+		api.RequireAuth(authSvc, sm),
+		api.RequireTeamRole(authSvc, models.RoleAdmin),
 		func(c fiber.Ctx) error {
 			role := api.CurrentTeamRole(c)
 			return c.JSON(fiber.Map{"role": role})
