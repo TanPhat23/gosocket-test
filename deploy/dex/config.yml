@@ -1,0 +1,40 @@
+issuer: http://localhost/dex
+
+storage:
+  type: memory
+
+web:
+  http: 0.0.0.0:5556
+
+telemetry:
+  http: 0.0.0.0:5558
+
+frontend:
+  theme: "dark"
+  issuer: "Agent Task Manager"
+
+oauth2:
+  responseTypes: ["code"]
+  skipApprovalScreen: true
+
+staticClients:
+  - id: agent-control-plane
+    redirectURIs:
+      - 'http://localhost/api/v1/auth/callback'
+      - 'http://localhost:8080/api/v1/auth/callback'
+    name: 'Agent Task Manager'
+    secret: 'dev-oidc-secret-change-in-prod-1234'
+
+enablePasswordDB: true
+
+staticPasswords:
+  - email: "admin@example.com"
+    # bcrypt hash of 'password123'
+    hash: "$2a$10$kky4TaVOWLyxpZsBNNktmeSgy0pqobTo1aYbjlpgCG.IxEReQpgqi"
+    username: "admin"
+    userID: "08a52c63-444a-4d56-9833-4152bb0d44ac"
+  - email: "developer@example.com"
+    # bcrypt hash of 'password123'
+    hash: "$2a$10$kky4TaVOWLyxpZsBNNktmeSgy0pqobTo1aYbjlpgCG.IxEReQpgqi"
+    username: "developer"
+    userID: "18a52c63-444a-4d56-9833-4152bb0d44ad"

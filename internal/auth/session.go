@@ -134,6 +134,28 @@ func (sm *SessionManager) CreateSession(w http.ResponseWriter, userID, issuer, s
 	return token, nil
 }
 
+// IsSecureCookie determines whether the Secure attribute should be set on cookies,
+// taking into account reverse proxy headers (X-Forwarded-Proto, X-Forwarded-Host) and localhost.
+func IsSecureCookie(configuredSecure bool, c fiber.Ctx) bool {
+	proto := c.Protocol()
+	if xfp := c.Get("X-Forwarded-Proto"); xfp != "" {
+		proto = xfp
+	}
+	if proto == "https" {
+		return true
+	}
+
+	host := c.Hostname()
+	if xfh := c.Get("X-Forwarded-Host"); xfh != "" {
+		host = xfh
+	}
+	if strings.Contains(host, "localhost") || strings.Contains(host, "127.0.0.1") {
+		return false
+	}
+
+	return configuredSecure
+}
+
 // CreateSessionFiber creates a signed session token and sets the cookie on a Fiber context.
 func (sm *SessionManager) CreateSessionFiber(c fiber.Ctx, userID, issuer, subject string) (string, error) {
 	claims := SessionClaims{
@@ -148,6 +170,8 @@ func (sm *SessionManager) CreateSessionFiber(c fiber.Ctx, userID, issuer, subjec
 		return "", err
 	}
 
+	secure := IsSecureCookie(sm.secure, c)
+
 	c.Cookie(&fiber.Cookie{
 		Name:     SessionCookieName,
 		Value:    token,
@@ -155,7 +179,7 @@ func (sm *SessionManager) CreateSessionFiber(c fiber.Ctx, userID, issuer, subjec
 		Expires:  claims.ExpiresAt,
 		MaxAge:   int(sm.ttl.Seconds()),
 		HTTPOnly: true,
-		Secure:   sm.secure,
+		Secure:   secure,
 		SameSite: "Lax",
 	})
 

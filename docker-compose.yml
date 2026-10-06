@@ -70,6 +70,22 @@ services:
       timeout: 5s
       retries: 5
 
+  dex:
+    image: dexidp/dex:v2.41.1
+    container_name: agent-dex
+    restart: unless-stopped
+    volumes:
+      - ./deploy/dex/config.yml:/etc/dex/config.docker.yaml:ro
+    networks:
+      - ingress
+      - backend
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=agent_ingress"
+      - "traefik.http.routers.dex.rule=Host(`${DOMAIN:-localhost}`) && PathPrefix(`/dex`)"
+      - "traefik.http.routers.dex.entrypoints=web,websecure"
+      - "traefik.http.services.dex.loadbalancer.server.port=5556"
+
   control-plane:
     build:
       context: .
@@ -82,6 +98,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      dex:
+        condition: service_started
     environment:
       APP_ENV: production
       PORT: "8080"
@@ -95,10 +113,11 @@ services:
       REDIS_ADDR: redis:6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-secretredis}
       SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY:-01234567890123456789012345678901}
-      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-}
-      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
-      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
-      OIDC_REDIRECT_URL: https://${DOMAIN:-localhost}/api/v1/auth/callback
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-http://${DOMAIN:-localhost}/dex}
+      OIDC_INTERNAL_ISSUER_URL: ${OIDC_INTERNAL_ISSUER_URL:-http://dex:5556/dex}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-agent-control-plane}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-dev-oidc-secret-change-in-prod-1234}
+      OIDC_REDIRECT_URL: ${OIDC_REDIRECT_URL:-http://${DOMAIN:-localhost}/api/v1/auth/callback}
       SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret-change-in-prod-1234}
       MAX_CONCURRENT_TASKS: ${MAX_CONCURRENT_TASKS:-4}
       TASK_TIMEOUT_MINUTES: ${TASK_TIMEOUT_MINUTES:-60}

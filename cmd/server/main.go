@@ -84,18 +84,28 @@ func main() {
 	// OIDC Authenticator if configured
 	var authenticator auth.Authenticator
 	if cfg.OIDCIssuerURL != "" && cfg.OIDCClientID != "" {
-		oidcClient, err := auth.NewOIDCClient(context.Background(), auth.OIDCConfig{
-			IssuerURL:    cfg.OIDCIssuerURL,
-			ClientID:     cfg.OIDCClientID,
-			ClientSecret: cfg.OIDCClientSecret,
-			RedirectURL:  cfg.OIDCRedirectURL,
-			CookieSecret: []byte(cfg.SessionSecret),
-			SecureCookie: cfg.AppEnv == "production",
-		})
-		if err != nil {
-			log.Printf("warning: failed to initialize OIDC client: %v", err)
-		} else {
-			authenticator = oidcClient
+		oidcCfg := auth.OIDCConfig{
+			IssuerURL:         cfg.OIDCIssuerURL,
+			InternalIssuerURL: cfg.OIDCInternalIssuerURL,
+			ClientID:          cfg.OIDCClientID,
+			ClientSecret:      cfg.OIDCClientSecret,
+			RedirectURL:       cfg.OIDCRedirectURL,
+			CookieSecret:      []byte(cfg.SessionSecret),
+			SecureCookie:      cfg.AppEnv == "production",
+		}
+		for attempt := 1; attempt <= 10; attempt++ {
+			oidcClient, err := auth.NewOIDCClient(context.Background(), oidcCfg)
+			if err == nil {
+				authenticator = oidcClient
+				log.Printf("OIDC client successfully initialized with issuer: %s", cfg.OIDCIssuerURL)
+				break
+			}
+			if attempt == 10 {
+				log.Printf("warning: failed to initialize OIDC client after 10 attempts: %v", err)
+			} else {
+				log.Printf("OIDC initialization attempt %d waiting for provider (%v), retrying in 1s...", attempt, err)
+				time.Sleep(1 * time.Second)
+			}
 		}
 	}
 

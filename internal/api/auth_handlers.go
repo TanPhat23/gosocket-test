@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"agent-task-manager/internal/auth"
@@ -27,6 +28,10 @@ func NewAuthHandlers(authService service.AuthService, sm *auth.SessionManager, s
 	}
 }
 
+func (h *AuthHandlers) isSecure(c fiber.Ctx) bool {
+	return auth.IsSecureCookie(h.secureCookies, c)
+}
+
 // Login initiates the OIDC authorization code flow with PKCE.
 // GET /api/v1/auth/login
 func (h *AuthHandlers) Login(c fiber.Ctx) error {
@@ -49,7 +54,7 @@ func (h *AuthHandlers) Login(c fiber.Ctx) error {
 		Expires:  state.ExpiresAt,
 		MaxAge:   int(auth.StateTTL.Seconds()),
 		HTTPOnly: true,
-		Secure:   h.secureCookies,
+		Secure:   h.isSecure(c),
 		SameSite: "Lax",
 	})
 
@@ -83,7 +88,7 @@ func (h *AuthHandlers) Callback(c fiber.Ctx) error {
 		Expires:  time.Unix(0, 0),
 		MaxAge:   -1,
 		HTTPOnly: true,
-		Secure:   h.secureCookies,
+		Secure:   h.isSecure(c),
 		SameSite: "Lax",
 	})
 
@@ -131,6 +136,10 @@ func (h *AuthHandlers) Callback(c fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to create session",
 		})
+	}
+
+	if strings.Contains(c.Get("Accept"), "text/html") {
+		return c.Redirect().To("/")
 	}
 
 	return c.JSON(fiber.Map{

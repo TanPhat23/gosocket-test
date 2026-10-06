@@ -34,10 +34,11 @@ type Config struct {
 	HostRepoRoot     string
 
 	// OIDC authentication settings
-	OIDCIssuerURL    string
-	OIDCClientID     string
-	OIDCClientSecret string
-	OIDCRedirectURL  string
+	OIDCIssuerURL         string
+	OIDCInternalIssuerURL string
+	OIDCClientID          string
+	OIDCClientSecret      string
+	OIDCRedirectURL       string
 }
 
 // Load loads the configuration from environment variables with sensible defaults.
@@ -56,10 +57,11 @@ func Load() (*Config, error) {
 		TaskTimeoutMinutes:  60,
 		HostWorktreeRoot:    getEnv("HOST_WORKTREE_ROOT", "/srv/agent-tasks/worktrees"),
 		HostRepoRoot:        getEnv("HOST_REPO_ROOT", "/srv/agent-tasks/repos"),
-		OIDCIssuerURL:       os.Getenv("OIDC_ISSUER_URL"),
-		OIDCClientID:        os.Getenv("OIDC_CLIENT_ID"),
-		OIDCClientSecret:    os.Getenv("OIDC_CLIENT_SECRET"),
-		OIDCRedirectURL:     os.Getenv("OIDC_REDIRECT_URL"),
+		OIDCIssuerURL:         os.Getenv("OIDC_ISSUER_URL"),
+		OIDCInternalIssuerURL: os.Getenv("OIDC_INTERNAL_ISSUER_URL"),
+		OIDCClientID:          os.Getenv("OIDC_CLIENT_ID"),
+		OIDCClientSecret:      os.Getenv("OIDC_CLIENT_SECRET"),
+		OIDCRedirectURL:       os.Getenv("OIDC_REDIRECT_URL"),
 	}
 
 	if stmtTimeoutStr := getEnvFirst("DATABASE_STATEMENT_TIMEOUT_SECONDS", "DB_STATEMENT_TIMEOUT_SECONDS"); stmtTimeoutStr != "" {

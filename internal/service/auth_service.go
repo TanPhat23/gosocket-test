@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agent-task-manager/internal/auth"
+	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/repository"
 )
@@ -122,7 +123,7 @@ func (s *authService) HandleCallback(ctx context.Context, stateCookie, statePara
 		// Create new user
 		now := time.Now()
 		newUser := &models.User{
-			ID:          "usr_" + subject,
+			ID:          common.NewID(),
 			Issuer:      issuer,
 			Subject:     subject,
 			Email:       claims.Email,

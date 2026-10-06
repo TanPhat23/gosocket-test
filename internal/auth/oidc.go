@@ -8,6 +8,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -47,12 +49,30 @@ type Authenticator interface {
 
 // OIDCConfig contains configuration for the OIDC client.
 type OIDCConfig struct {
-	IssuerURL    string
-	ClientID     string
-	ClientSecret string
-	RedirectURL  string
-	CookieSecret []byte
-	SecureCookie bool
+	IssuerURL         string
+	InternalIssuerURL string
+	ClientID          string
+	ClientSecret      string
+	RedirectURL       string
+	CookieSecret      []byte
+	SecureCookie      bool
+}
+
+type rewritingTransport struct {
+	base    http.RoundTripper
+	fromURL *url.URL
+	toURL   *url.URL
+}
+
+func (t *rewritingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Scheme == t.fromURL.Scheme && req.URL.Host == t.fromURL.Host && strings.HasPrefix(req.URL.Path, t.fromURL.Path) {
+		newReq := req.Clone(req.Context())
+		newReq.URL.Scheme = t.toURL.Scheme
+		newReq.URL.Host = t.toURL.Host
+		newReq.URL.Path = strings.Replace(req.URL.Path, t.fromURL.Path, t.toURL.Path, 1)
+		return t.base.RoundTrip(newReq)
+	}
+	return t.base.RoundTrip(req)
 }
 
 // OIDCClient implements Authenticator.
@@ -61,11 +81,33 @@ type OIDCClient struct {
 	provider     *oidc.Provider
 	oauth2Config oauth2.Config
 	verifier     *oidc.IDTokenVerifier
+	httpClient   *http.Client
 }
 
 // NewOIDCClient initializes an OIDC provider and verifier.
 func NewOIDCClient(ctx context.Context, cfg OIDCConfig) (*OIDCClient, error) {
-	provider, err := oidc.NewProvider(ctx, cfg.IssuerURL)
+	var httpClient *http.Client
+	provCtx := ctx
+
+	if cfg.InternalIssuerURL != "" {
+		fromU, err := url.Parse(cfg.IssuerURL)
+		if err == nil {
+			toU, err := url.Parse(cfg.InternalIssuerURL)
+			if err == nil {
+				httpClient = &http.Client{
+					Transport: &rewritingTransport{
+						base:    http.DefaultTransport,
+						fromURL: fromU,
+						toURL:   toU,
+					},
+				}
+				provCtx = oidc.ClientContext(ctx, httpClient)
+				provCtx = context.WithValue(provCtx, oauth2.HTTPClient, httpClient)
+			}
+		}
+	}
+
+	provider, err := oidc.NewProvider(provCtx, cfg.IssuerURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize oidc provider: %w", err)
 	}
@@ -87,6 +129,7 @@ func NewOIDCClient(ctx context.Context, cfg OIDCConfig) (*OIDCClient, error) {
 		provider:     provider,
 		oauth2Config: oauth2Config,
 		verifier:     verifier,
+		httpClient:   httpClient,
 	}, nil
 }
 
@@ -107,12 +150,20 @@ func (c *OIDCClient) AuthCodeURL(state, codeChallenge, nonce string) string {
 
 // Exchange exchanges the authorization code for tokens using PKCE verifier.
 func (c *OIDCClient) Exchange(ctx context.Context, code, codeVerifier string) (*oauth2.Token, error) {
-	return c.oauth2Config.Exchange(ctx, code, oauth2.SetAuthURLParam("code_verifier", codeVerifier))
+	exCtx := ctx
+	if c.httpClient != nil {
+		exCtx = context.WithValue(exCtx, oauth2.HTTPClient, c.httpClient)
+	}
+	return c.oauth2Config.Exchange(exCtx, code, oauth2.SetAuthURLParam("code_verifier", codeVerifier))
 }
 
 // VerifyIDToken verifies the raw ID token against the OIDC provider.
 func (c *OIDCClient) VerifyIDToken(ctx context.Context, rawIDToken string) (*oidc.IDToken, error) {
-	return c.verifier.Verify(ctx, rawIDToken)
+	verCtx := ctx
+	if c.httpClient != nil {
+		verCtx = oidc.ClientContext(verCtx, c.httpClient)
+	}
+	return c.verifier.Verify(verCtx, rawIDToken)
 }
 
 // GenerateRandomString generates cryptographically secure base64url-encoded random string.
