@@ -11,6 +11,7 @@ import (
 type TeamRepository interface {
 	GetByID(ctx context.Context, id string) (*models.Team, error)
 	GetMembership(ctx context.Context, teamID, userID string) (*models.TeamMembership, error)
+	List(ctx context.Context) ([]models.Team, error)
 }
 
 type teamRepo struct {
@@ -36,4 +37,8 @@ func (r *teamRepo) GetMembership(ctx context.Context, teamID, userID string) (*m
 		return nil, err
 	}
 	return &membership, nil
+}
+
+func (r *teamRepo) List(ctx context.Context) ([]models.Team, error) {
+	return gorm.G[models.Team](r.db).Order("created_at DESC").Find(ctx)
 }

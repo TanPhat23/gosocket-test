@@ -17,6 +17,35 @@ var wsUpgrader = websocket.FastHTTPUpgrader{
 	},
 }
 
+// WSHandler handles WebSocket connections for terminal and log streaming.
+type WSHandler struct {
+	hub     *ws.Hub
+	taskSvc service.TaskService
+	logSvc  service.LogService
+}
+
+// NewWSHandler creates a new WSHandler.
+func NewWSHandler(hub *ws.Hub, opts ...func(*WSHandler)) *WSHandler {
+	h := &WSHandler{hub: hub}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
+}
+
+// WithWSServices injects optional task and log services into WSHandler.
+func WithWSServices(taskSvc service.TaskService, logSvc service.LogService) func(*WSHandler) {
+	return func(h *WSHandler) {
+		h.taskSvc = taskSvc
+		h.logSvc = logSvc
+	}
+}
+
+// HandleTerminalWS upgrades connection to WebSocket for terminal logs streaming.
+func (h *WSHandler) HandleTerminalWS(c fiber.Ctx) error {
+	return WebSocketLogsHandler(h.hub, h.taskSvc, h.logSvc)(c)
+}
+
 // WebSocketLogsHandler streams real-time terminal ANSI logs and task status events over WebSocket.
 func WebSocketLogsHandler(hub *ws.Hub, taskSvc service.TaskService, logSvc service.LogService) fiber.Handler {
 	return func(c fiber.Ctx) error {

@@ -50,6 +50,11 @@ func NewSecretCipher(masterKey []byte) (*SecretCipher, error) {
 	}, nil
 }
 
+// NewGCMCipher is an alias for NewSecretCipher for convenience.
+func NewGCMCipher(masterKey []byte) (*SecretCipher, error) {
+	return NewSecretCipher(masterKey)
+}
+
 // KeyFingerprint returns the 16-character hex fingerprint of the encryption key.
 func (c *SecretCipher) KeyFingerprint() string {
 	return c.keyFingerprint

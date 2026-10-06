@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"agent-task-manager/internal/common"
+	"agent-task-manager/internal/dto"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/queue"
 	"agent-task-manager/internal/repository"
@@ -18,6 +20,8 @@ type TaskRunner = queue.TaskRunner
 // TaskService defines the business operations for tasks.
 type TaskService interface {
 	GetTask(ctx context.Context, taskID string) (*models.Task, error)
+	ListTasks(ctx context.Context, projectID string) ([]models.Task, error)
+	CreateTask(ctx context.Context, req *dto.CreateTaskRequest) (*models.Task, error)
 	UpdateStatus(ctx context.Context, taskID string, status models.TaskStatus) error
 	CancelTask(ctx context.Context, taskID string) error
 	ExecuteTask(ctx context.Context, taskID string, runner TaskRunner) error
@@ -48,6 +52,55 @@ func NewTaskService(
 // GetTask retrieves a task by ID.
 func (s *taskService) GetTask(ctx context.Context, taskID string) (*models.Task, error) {
 	return s.taskRepo.GetByID(ctx, taskID)
+}
+
+// ListTasks lists tasks, optionally filtered by project ID.
+func (s *taskService) ListTasks(ctx context.Context, projectID string) ([]models.Task, error) {
+	return s.taskRepo.List(ctx, projectID)
+}
+
+// CreateTask validates input, creates a new task in DB, enqueues to Asynq queue if queued, and broadcasts status via WebSocket.
+func (s *taskService) CreateTask(ctx context.Context, req *dto.CreateTaskRequest) (*models.Task, error) {
+	if req == nil {
+		return nil, errors.New("request cannot be nil")
+	}
+
+	priority := models.TaskPriority(req.Priority)
+	if !priority.IsValid() {
+		priority = models.PriorityNormal
+	}
+
+	task := &models.Task{
+		ID:           common.NewID(),
+		ProjectID:    req.ProjectID,
+		Title:        req.Title,
+		Prompt:       req.Prompt,
+		AssigneeID:   req.AssigneeID,
+		AssigneeType: req.AssigneeType,
+		Priority:     priority,
+		Model:        req.Model,
+		Skills:       models.StringArray(req.Skills),
+		MCPServers:   models.StringArray(req.MCPServers),
+		Status:       models.TaskStatusQueued,
+	}
+
+	if err := s.taskRepo.Create(ctx, task); err != nil {
+		return nil, fmt.Errorf("failed to create task: %w", err)
+	}
+
+	if s.queueClient != nil {
+		asynqID, err := s.queueClient.EnqueueTask(ctx, task)
+		if err == nil {
+			task.AsynqTaskID = &asynqID
+			_ = s.taskRepo.Update(ctx, task)
+		}
+	}
+
+	if s.hub != nil {
+		_ = s.hub.BroadcastTaskStatus(task.ID, task.Status)
+	}
+
+	return task, nil
 }
 
 // UpdateStatus updates the task status in the database and broadcasts the change via WebSocket.
