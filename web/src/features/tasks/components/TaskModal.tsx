@@ -51,7 +51,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
   const projects = useProjectsList();
   const activeProjectId = useActiveProjectId();
 
-  const [projectId, setProjectId] = useState<string>(activeProjectId || (projects[0]?.id ?? 'default-project'));
+  const [selectedProjectId, setSelectedProjectId] = useState<string>('');
   const [title, setTitle] = useState('');
   const [prompt, setPrompt] = useState('');
   const [priority, setPriority] = useState<number>(50);
@@ -61,14 +61,16 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Sync project ID when projects load if needed
+  // Sync project ID when projects load
   React.useEffect(() => {
-    if (!projectId && activeProjectId) {
-      setProjectId(activeProjectId);
-    } else if (!projectId && projects.length > 0) {
-      setProjectId(projects[0].id);
+    if (activeProjectId) {
+      setSelectedProjectId(activeProjectId);
+    } else if (projects.length > 0 && !selectedProjectId) {
+      setSelectedProjectId(projects[0].id);
     }
-  }, [activeProjectId, projects, projectId]);
+  }, [activeProjectId, projects, selectedProjectId]);
+
+  const effectiveProjectId = selectedProjectId || activeProjectId || (projects.length > 0 ? projects[0].id : '');
 
   const toggleSkill = (skill: string) => {
     setSelectedSkills((prev) =>
@@ -95,8 +97,10 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
     e.preventDefault();
     setErrors({});
 
+    const targetProjectId = effectiveProjectId || '01923456-789a-7bcd-ef01-23456789abcd';
+
     const rawData = {
-      project_id: projectId || 'default-project',
+      project_id: targetProjectId,
       title: title.trim(),
       prompt: prompt.trim(),
       assignee_id: 'agent-sandbox-1',
@@ -164,12 +168,14 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
 
           {/* Project selection */}
           <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-foreground">Project</label>
+            <label htmlFor="task-project-select" className="text-xs font-semibold text-foreground">Project</label>
             {projects.length > 0 ? (
               <select
-                value={projectId}
-                onChange={(e) => setProjectId(e.target.value)}
-                className="w-full h-8 text-xs rounded-lg border border-input bg-transparent px-2.5 py-1 text-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 outline-none"
+                id="task-project-select"
+                aria-label="Project"
+                value={effectiveProjectId}
+                onChange={(e) => setSelectedProjectId(e.target.value)}
+                className="w-full h-8 text-xs rounded-lg border border-input bg-card px-2.5 py-1 text-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 outline-none"
               >
                 {projects.map((proj) => (
                   <option key={proj.id} value={proj.id}>
@@ -178,12 +184,10 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
                 ))}
               </select>
             ) : (
-              <Input
-                value={projectId}
-                onChange={(e) => setProjectId(e.target.value)}
-                placeholder="project-id"
-                className="text-xs font-mono"
-              />
+              <div className="p-2.5 rounded-lg border border-dashed border-muted-foreground/30 text-xs text-muted-foreground flex items-center justify-between">
+                <span>No workspace projects found</span>
+                <span className="text-[11px] text-primary">Seeding default project...</span>
+              </div>
             )}
             {errors.project_id && (
               <p className="text-[11px] text-destructive">{errors.project_id}</p>

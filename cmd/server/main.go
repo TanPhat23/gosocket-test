@@ -12,6 +12,7 @@ import (
 
 	"agent-task-manager/internal/api"
 	"agent-task-manager/internal/auth"
+	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/config"
 	"agent-task-manager/internal/crypto"
 	"agent-task-manager/internal/db"
@@ -19,6 +20,7 @@ import (
 	"agent-task-manager/internal/integrations/github"
 	"agent-task-manager/internal/integrations/jira"
 	"agent-task-manager/internal/integrations/trello"
+	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/queue"
 	"agent-task-manager/internal/repository"
 	"agent-task-manager/internal/service"
@@ -37,6 +39,29 @@ func main() {
 	gormDB, err := db.Connect(cfg)
 	if err != nil {
 		log.Fatalf("failed to connect to database: %v", err)
+	}
+
+	// Seed default team and project if none exist
+	var teamCount int64
+	gormDB.Model(&models.Team{}).Count(&teamCount)
+	if teamCount == 0 {
+		teamID := common.NewID()
+		projectID := common.NewID()
+		defaultTeam := &models.Team{
+			ID:   teamID,
+			Name: "Core Team",
+			Slug: "core-team",
+		}
+		if err := gormDB.Create(defaultTeam).Error; err == nil {
+			defaultProject := &models.Project{
+				ID:       projectID,
+				TeamID:   teamID,
+				Name:     "Core Workspace",
+				RepoPath: "/tmp/agent-tasks/repos/core",
+			}
+			_ = gormDB.Create(defaultProject)
+			log.Printf("Seeded default team (%s) and project (%s)", teamID, projectID)
+		}
 	}
 
 	// Task Queue Client

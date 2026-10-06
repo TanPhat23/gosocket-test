@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 
+	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/config"
 	"agent-task-manager/internal/db"
 	"agent-task-manager/internal/models"
@@ -50,6 +51,34 @@ func main() {
 	fmt.Println("Running database automigrations...")
 	if err := gormDB.AutoMigrate(modelList...); err != nil {
 		log.Fatalf("failed to run database automigrations: %v", err)
+	}
+
+	// Seed default team and project if none exist
+	var teamCount int64
+	gormDB.Model(&models.Team{}).Count(&teamCount)
+	if teamCount == 0 {
+		teamID := common.NewID()
+		projectID := common.NewID()
+		defaultTeam := &models.Team{
+			ID:   teamID,
+			Name: "Core Team",
+			Slug: "core-team",
+		}
+		if err := gormDB.Create(defaultTeam).Error; err != nil {
+			log.Printf("warning: failed to seed default team: %v", err)
+		} else {
+			defaultProject := &models.Project{
+				ID:       projectID,
+				TeamID:   teamID,
+				Name:     "Core Workspace",
+				RepoPath: "/tmp/agent-tasks/repos/core",
+			}
+			if err := gormDB.Create(defaultProject).Error; err != nil {
+				log.Printf("warning: failed to seed default project: %v", err)
+			} else {
+				fmt.Printf("Seeded default team (%s) and project (%s)\n", teamID, projectID)
+			}
+		}
 	}
 
 	fmt.Println("Database automigrations completed successfully.")
