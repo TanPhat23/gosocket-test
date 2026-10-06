@@ -46,6 +46,30 @@ func (h *WSHandler) HandleTerminalWS(c fiber.Ctx) error {
 	return WebSocketLogsHandler(h.hub, h.taskSvc, h.logSvc)(c)
 }
 
+// HandleEventsWS upgrades connection to WebSocket for streaming all task status changes in real-time.
+func (h *WSHandler) HandleEventsWS(c fiber.Ctx) error {
+	err := wsUpgrader.Upgrade(c.RequestCtx(), func(conn *websocket.Conn) {
+		clientID := common.NewID()
+		client := ws.NewConnClient(clientID, "global", conn)
+		h.hub.Register(client)
+		defer func() {
+			h.hub.Unregister(client)
+			_ = client.Close()
+		}()
+
+		// Read loop to detect disconnects and handle pings
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				break
+			}
+		}
+	})
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "websocket upgrade failed"})
+	}
+	return nil
+}
+
 // WebSocketLogsHandler streams real-time terminal ANSI logs and task status events over WebSocket.
 func WebSocketLogsHandler(hub *ws.Hub, taskSvc service.TaskService, logSvc service.LogService) fiber.Handler {
 	return func(c fiber.Ctx) error {

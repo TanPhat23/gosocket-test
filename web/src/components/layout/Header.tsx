@@ -1,6 +1,7 @@
 import React from 'react';
 import { UserNav } from '@/features/auth/components/UserNav';
 import { TeamSwitcher } from '@/features/teams/components/TeamSwitcher';
+import { ThemeSettingsDialog } from '@/components/theme/ThemeSettingsDialog';
 
 export const Header: React.FC = () => {
   return (
@@ -19,7 +20,10 @@ export const Header: React.FC = () => {
         <TeamSwitcher />
       </div>
 
-      <UserNav />
+      <div className="flex items-center gap-3">
+        <ThemeSettingsDialog />
+        <UserNav />
+      </div>
     </header>
   );
 };

@@ -112,7 +112,7 @@ export const TaskInspectorModal: React.FC = () => {
                     <span className="text-muted-foreground flex items-center gap-1.5">
                       <Cpu className="size-3.5" /> Model Engine:
                     </span>
-                    <span className="font-mono">{task.model || 'claude-3-7-sonnet'}</span>
+                    <span className="font-mono">{task.model || 'google/gemini-3.8-flash'}</span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-muted-foreground flex items-center gap-1.5">

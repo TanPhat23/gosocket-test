@@ -13,6 +13,7 @@ interface TaskState {
   fetchTasks: (projectId?: string) => Promise<void>;
   createTask: (req: CreateTaskRequest) => Promise<Task>;
   updateTask: (task: Task) => void;
+  updateTaskStatus: (taskId: string, status: TaskStatus) => void;
   selectTask: (taskId: string | null) => void;
   cancelTask: (taskId: string) => Promise<void>;
 }
@@ -58,6 +59,26 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     set((state) => ({
       tasks: { ...state.tasks, [task.id]: task },
     }));
+  },
+
+  updateTaskStatus: (taskId, status) => {
+    const existing = get().tasks[taskId];
+    if (existing) {
+      if (existing.status === status) return;
+      set((state) => ({
+        tasks: {
+          ...state.tasks,
+          [taskId]: {
+            ...existing,
+            status,
+            updated_at: new Date().toISOString(),
+          },
+        },
+      }));
+    } else {
+      // Re-fetch if newly created elsewhere
+      get().fetchTasks();
+    }
   },
 
   selectTask: (taskId) => {

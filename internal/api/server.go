@@ -134,8 +134,9 @@ func (s *Server) setupRoutes() {
 		}
 	}
 
-	// WebSocket terminal logs route
+	// WebSocket routes: live events & terminal logs
 	if s.WSHandler != nil {
+		v1.Get("/ws/events", s.WSHandler.HandleEventsWS)
 		v1.Get("/ws/terminal/:task_id", s.WSHandler.HandleTerminalWS)
 	}
 

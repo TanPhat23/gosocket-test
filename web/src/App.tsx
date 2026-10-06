@@ -2,6 +2,7 @@ import React, { useEffect } from 'react';
 import { useAuthStore } from '@/features/auth/store/useAuthStore';
 import { useTaskStore } from '@/features/tasks/store/useTaskStore';
 import { useTeamStore } from '@/features/teams/store/useTeamStore';
+import { useTaskSubscription } from '@/features/tasks/hooks/useTaskSubscription';
 import { Header } from '@/components/layout/Header';
 import { Footer } from '@/components/layout/Footer';
 import { TaskMetricsGrid } from '@/features/tasks/components/TaskMetricsGrid';
@@ -13,6 +14,9 @@ export const App: React.FC = () => {
   const fetchUser = useAuthStore((state) => state.fetchUser);
   const fetchTasks = useTaskStore((state) => state.fetchTasks);
   const fetchTeams = useTeamStore((state) => state.fetchTeams);
+
+  // Maintain real-time task status updates across the Kanban board
+  useTaskSubscription();
 
   useEffect(() => {
     fetchUser();
