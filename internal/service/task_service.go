@@ -5,29 +5,41 @@ import (
 	"fmt"
 	"time"
 
+	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/queue"
 	"agent-task-manager/internal/repository"
 	"agent-task-manager/internal/ws"
 )
 
+// TaskRunner is aliased from queue.TaskRunner.
+type TaskRunner = queue.TaskRunner
+
 // TaskService defines the business operations for tasks.
 type TaskService interface {
 	GetTask(ctx context.Context, taskID string) (*models.Task, error)
 	UpdateStatus(ctx context.Context, taskID string, status models.TaskStatus) error
 	CancelTask(ctx context.Context, taskID string) error
+	ExecuteTask(ctx context.Context, taskID string, runner TaskRunner) error
 }
 
 type taskService struct {
 	taskRepo    repository.TaskRepository
+	attemptRepo repository.AttemptRepository
 	queueClient queue.Client
 	hub         *ws.Hub
 }
 
 // NewTaskService creates a new TaskService implementation.
-func NewTaskService(taskRepo repository.TaskRepository, queueClient queue.Client, hub *ws.Hub) TaskService {
+func NewTaskService(
+	taskRepo repository.TaskRepository,
+	attemptRepo repository.AttemptRepository,
+	queueClient queue.Client,
+	hub *ws.Hub,
+) TaskService {
 	return &taskService{
 		taskRepo:    taskRepo,
+		attemptRepo: attemptRepo,
 		queueClient: queueClient,
 		hub:         hub,
 	}
@@ -68,6 +80,71 @@ func (s *taskService) CancelTask(ctx context.Context, taskID string) error {
 	}
 
 	return s.UpdateStatus(ctx, taskID, models.TaskStatusCancelled)
+}
+
+// ExecuteTask orchestrates the task execution lifecycle: status transition, attempt tracking, runner execution, and status completion.
+func (s *taskService) ExecuteTask(ctx context.Context, taskID string, runner TaskRunner) error {
+	task, err := s.taskRepo.GetByID(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("failed to find task %q: %w", taskID, err)
+	}
+
+	// If cancelled, skip execution
+	if task.Status == models.TaskStatusCancelled {
+		return nil
+	}
+
+	// Update task status to in_progress and record heartbeat
+	now := time.Now().UTC()
+	task.Status = models.TaskStatusInProgress
+	task.HeartbeatAt = &now
+	if err := s.taskRepo.Update(ctx, task); err != nil {
+		return fmt.Errorf("failed to mark task as in_progress: %w", err)
+	}
+	if s.hub != nil {
+		_ = s.hub.BroadcastTaskStatus(task.ID, models.TaskStatusInProgress)
+	}
+
+	// Count existing attempts for this task
+	count, err := s.attemptRepo.CountByTaskID(ctx, task.ID)
+	if err != nil {
+		return fmt.Errorf("failed to count task attempts: %w", err)
+	}
+
+	startedAt := time.Now().UTC()
+	attempt := &models.TaskAttempt{
+		ID:            common.NewID(),
+		TaskID:        task.ID,
+		AttemptNumber: int(count) + 1,
+		Status:        models.AttemptRunning,
+		StartedAt:     &startedAt,
+	}
+	if err := s.attemptRepo.Create(ctx, attempt); err != nil {
+		return fmt.Errorf("failed to create task attempt: %w", err)
+	}
+
+	var runErr error
+	if runner != nil {
+		runErr = runner.RunTask(ctx, task, attempt)
+	}
+
+	finishedAt := time.Now().UTC()
+	attempt.FinishedAt = &finishedAt
+
+	if runErr == nil {
+		attempt.Status = models.AttemptSucceeded
+		_ = s.attemptRepo.Update(ctx, attempt)
+		_ = s.UpdateStatus(ctx, task.ID, models.TaskStatusReview)
+		return nil
+	}
+
+	failReason := runErr.Error()
+	attempt.Status = models.AttemptFailed
+	attempt.FailureReason = &failReason
+	_ = s.attemptRepo.Update(ctx, attempt)
+	_ = s.UpdateStatus(ctx, task.ID, models.TaskStatusFailed)
+
+	return runErr
 }
 
 // LogService defines the business operations for appending and streaming task logs.

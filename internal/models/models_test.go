@@ -117,13 +117,12 @@ func TestEnumsAndValidation(t *testing.T) {
 		t.Errorf("expected invalid user issuer URL error")
 	}
 
-	// Verify validator on Project with embedded Team
+	// Verify validator on Project
 	validProj := models.Project{
 		ID:       "proj-1",
 		TeamID:   "team-1",
 		Name:     "Project Alpha",
 		RepoPath: "/srv/agent-tasks/repos/proj-1",
-		Team:     team,
 	}
 	if err := models.Validate.Struct(validProj); err != nil {
 		t.Errorf("expected valid project, got: %v", err)
@@ -135,7 +134,6 @@ func TestEnumsAndValidation(t *testing.T) {
 		TeamID:   "team-1",
 		Provider: models.ProviderGitHub,
 		Label:    "Team GitHub App",
-		Team:     team,
 	}
 	if err := models.Validate.Struct(validCred); err != nil {
 		t.Errorf("expected valid credential, got: %v", err)
@@ -156,7 +154,6 @@ func TestEnumsAndValidation(t *testing.T) {
 		Status:       models.TaskStatusQueued,
 		AssigneeType: models.AssigneeAgent,
 		Priority:     models.PriorityNormal,
-		Project:      validProj,
 	}
 	if err := models.Validate.Struct(validTask); err != nil {
 		t.Errorf("expected valid task, got: %v", err)
@@ -267,25 +264,39 @@ func TestModelCreationSanity(t *testing.T) {
 		Name: "Core Team",
 		Slug: "core-team",
 	}
+	if err := models.Validate.Struct(team); err != nil {
+		t.Errorf("expected valid Team, got %v", err)
+	}
+
 	user := models.User{
 		ID:      "user-1",
 		Issuer:  "https://issuer.example.com",
 		Subject: "subject-1",
 	}
+	if err := models.Validate.Struct(user); err != nil {
+		t.Errorf("expected valid User, got %v", err)
+	}
+
 	proj := models.Project{
 		ID:       "proj-1",
 		TeamID:   "team-1",
 		Name:     "Project A",
 		RepoPath: "/repos/proj-1",
-		Team:     team,
 	}
+	if err := models.Validate.Struct(proj); err != nil {
+		t.Errorf("expected valid Project, got %v", err)
+	}
+
 	cred := models.Credential{
 		ID:       "cred-1",
 		TeamID:   "team-1",
 		Provider: models.ProviderGitHub,
 		Label:    "Cred GitHub",
-		Team:     team,
 	}
+	if err := models.Validate.Struct(cred); err != nil {
+		t.Errorf("expected valid Credential, got %v", err)
+	}
+
 	task := models.Task{
 		ID:           "task-1",
 		ProjectID:    "proj-1",
@@ -295,7 +306,9 @@ func TestModelCreationSanity(t *testing.T) {
 		Status:       models.TaskStatusQueued,
 		AssigneeType: models.AssigneeAgent,
 		Priority:     models.PriorityNormal,
-		Project:      proj,
+	}
+	if err := models.Validate.Struct(task); err != nil {
+		t.Errorf("expected valid Task, got %v", err)
 	}
 
 	token := models.APIToken{
@@ -305,8 +318,6 @@ func TestModelCreationSanity(t *testing.T) {
 		Name:      "test-token",
 		TokenHash: "hash-xyz",
 		CreatedAt: now,
-		User:      user,
-		Team:      team,
 	}
 	if err := models.Validate.Struct(token); err != nil {
 		t.Errorf("expected valid APIToken, got %v", err)
@@ -320,8 +331,6 @@ func TestModelCreationSanity(t *testing.T) {
 		ExternalID:   "github-repo-123",
 		Config:       models.JSONMap{"repo": "owner/repo"},
 		Enabled:      true,
-		Project:      proj,
-		Credential:   cred,
 	}
 	if err := models.Validate.Struct(integ); err != nil {
 		t.Errorf("expected valid ProjectIntegration, got %v", err)
@@ -332,7 +341,6 @@ func TestModelCreationSanity(t *testing.T) {
 		TaskID:        "task-1",
 		AttemptNumber: 1,
 		Status:        models.AttemptRunning,
-		Task:          task,
 	}
 	if err := models.Validate.Struct(attempt); err != nil {
 		t.Errorf("expected valid TaskAttempt, got %v", err)
@@ -341,7 +349,6 @@ func TestModelCreationSanity(t *testing.T) {
 	log := models.TaskLog{
 		TaskID:   "task-1",
 		LogChunk: "worker started",
-		Task:     task,
 	}
 	if err := models.Validate.Struct(log); err != nil {
 		t.Errorf("expected valid TaskLog, got %v", err)
@@ -352,7 +359,6 @@ func TestModelCreationSanity(t *testing.T) {
 		ProjectID:       "proj-1",
 		ProviderEventID: "evt-99",
 		Status:          models.WebhookReceived,
-		Project:         proj,
 	}
 	if err := models.Validate.Struct(webhook); err != nil {
 		t.Errorf("expected valid WebhookEvent, got %v", err)

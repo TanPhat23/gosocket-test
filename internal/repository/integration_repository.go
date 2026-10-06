@@ -16,17 +16,17 @@ type integrationRepo struct {
 	db *gorm.DB
 }
 
-// NewIntegrationRepository creates a new IntegrationRepository backed by GORM.
+// NewIntegrationRepository creates a new IntegrationRepository backed by GORM generic API.
 func NewIntegrationRepository(db *gorm.DB) IntegrationRepository {
 	return &integrationRepo{db: db}
 }
 
 func (r *integrationRepo) GetActiveByProviderAndExternalID(ctx context.Context, provider models.IntegrationProvider, externalID string) (*models.ProjectIntegration, error) {
-	var integration models.ProjectIntegration
-	if err := r.db.WithContext(ctx).Preload("Credential").
+	integ, err := gorm.G[models.ProjectIntegration](r.db).
 		Where("provider = ? AND external_id = ? AND enabled = ?", provider, externalID, true).
-		First(&integration).Error; err != nil {
+		First(ctx)
+	if err != nil {
 		return nil, err
 	}
-	return &integration, nil
+	return &integ, nil
 }

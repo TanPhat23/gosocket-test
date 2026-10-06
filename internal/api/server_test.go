@@ -183,7 +183,7 @@ func TestAuthEndpoints(t *testing.T) {
 
 	authService := service.NewAuthService(userRepo, teamRepo, tokenRepo, mockAuth)
 	credService := service.NewCredentialService(credentialRepo, cipher)
-	webhookService := service.NewWebhookService(integrationRepo, taskRepo, idempotencyStore, cipher, nil)
+	webhookService := service.NewWebhookService(integrationRepo, credentialRepo, taskRepo, idempotencyStore, cipher, nil)
 
 	server := api.NewServer(cfg, sessionManager, authService, credService, webhookService)
 

@@ -19,29 +19,29 @@ type userRepo struct {
 	db *gorm.DB
 }
 
-// NewUserRepository creates a new UserRepository backed by GORM.
+// NewUserRepository creates a new UserRepository backed by GORM generic API.
 func NewUserRepository(db *gorm.DB) UserRepository {
 	return &userRepo{db: db}
 }
 
 func (r *userRepo) GetByID(ctx context.Context, id string) (*models.User, error) {
-	var user models.User
-	if err := r.db.WithContext(ctx).First(&user, "id = ?", id).Error; err != nil {
+	user, err := gorm.G[models.User](r.db).Where("id = ?", id).First(ctx)
+	if err != nil {
 		return nil, err
 	}
 	return &user, nil
 }
 
 func (r *userRepo) GetByIssuerSubject(ctx context.Context, issuer, subject string) (*models.User, error) {
-	var user models.User
-	if err := r.db.WithContext(ctx).Where("issuer = ? AND subject = ?", issuer, subject).First(&user).Error; err != nil {
+	user, err := gorm.G[models.User](r.db).Where("issuer = ? AND subject = ?", issuer, subject).First(ctx)
+	if err != nil {
 		return nil, err
 	}
 	return &user, nil
 }
 
 func (r *userRepo) Create(ctx context.Context, user *models.User) error {
-	return r.db.WithContext(ctx).Create(user).Error
+	return gorm.G[models.User](r.db).Create(ctx, user)
 }
 
 func (r *userRepo) Update(ctx context.Context, user *models.User, updates map[string]any) error {

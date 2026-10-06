@@ -32,6 +32,7 @@ type WebhookService interface {
 
 type webhookService struct {
 	integrationRepo  repository.IntegrationRepository
+	credRepo         repository.CredentialRepository
 	taskRepo         repository.TaskRepository
 	idempotencyStore integrations.IdempotencyStore
 	cipher           *crypto.SecretCipher
@@ -41,6 +42,7 @@ type webhookService struct {
 // NewWebhookService creates a new WebhookService implementation.
 func NewWebhookService(
 	integrationRepo repository.IntegrationRepository,
+	credRepo repository.CredentialRepository,
 	taskRepo repository.TaskRepository,
 	idempotencyStore integrations.IdempotencyStore,
 	cipher *crypto.SecretCipher,
@@ -48,6 +50,7 @@ func NewWebhookService(
 ) WebhookService {
 	return &webhookService{
 		integrationRepo:  integrationRepo,
+		credRepo:         credRepo,
 		taskRepo:         taskRepo,
 		idempotencyStore: idempotencyStore,
 		cipher:           cipher,
@@ -89,7 +92,12 @@ func (s *webhookService) HandleGitHubWebhook(ctx context.Context, payload []byte
 		return nil, errors.New("cipher not configured")
 	}
 
-	plainSecret, err := s.cipher.Decrypt(integration.Credential.EncryptedData)
+	cred, err := s.credRepo.GetByID(ctx, integration.CredentialID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load integration credential: %w", err)
+	}
+
+	plainSecret, err := s.cipher.Decrypt(cred.EncryptedData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt integration secret: %w", err)
 	}

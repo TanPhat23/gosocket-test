@@ -9,6 +9,7 @@ import (
 
 // CredentialRepository defines data access methods for credentials.
 type CredentialRepository interface {
+	GetByID(ctx context.Context, id string) (*models.Credential, error)
 	ListByTeamID(ctx context.Context, teamID string) ([]models.Credential, error)
 	GetByIDAndTeam(ctx context.Context, id, teamID string) (*models.Credential, error)
 	Create(ctx context.Context, cred *models.Credential) error
@@ -19,37 +20,41 @@ type credRepo struct {
 	db *gorm.DB
 }
 
-// NewCredentialRepository creates a new CredentialRepository backed by GORM.
+// NewCredentialRepository creates a new CredentialRepository backed by GORM generic API.
 func NewCredentialRepository(db *gorm.DB) CredentialRepository {
 	return &credRepo{db: db}
 }
 
-func (r *credRepo) ListByTeamID(ctx context.Context, teamID string) ([]models.Credential, error) {
-	var credentials []models.Credential
-	if err := r.db.WithContext(ctx).Where("team_id = ?", teamID).Find(&credentials).Error; err != nil {
+func (r *credRepo) GetByID(ctx context.Context, id string) (*models.Credential, error) {
+	cred, err := gorm.G[models.Credential](r.db).Where("id = ?", id).First(ctx)
+	if err != nil {
 		return nil, err
 	}
-	return credentials, nil
+	return &cred, nil
+}
+
+func (r *credRepo) ListByTeamID(ctx context.Context, teamID string) ([]models.Credential, error) {
+	return gorm.G[models.Credential](r.db).Where("team_id = ?", teamID).Find(ctx)
 }
 
 func (r *credRepo) GetByIDAndTeam(ctx context.Context, id, teamID string) (*models.Credential, error) {
-	var cred models.Credential
-	if err := r.db.WithContext(ctx).Where("id = ? AND team_id = ?", id, teamID).First(&cred).Error; err != nil {
+	cred, err := gorm.G[models.Credential](r.db).Where("id = ? AND team_id = ?", id, teamID).First(ctx)
+	if err != nil {
 		return nil, err
 	}
 	return &cred, nil
 }
 
 func (r *credRepo) Create(ctx context.Context, cred *models.Credential) error {
-	return r.db.WithContext(ctx).Create(cred).Error
+	return gorm.G[models.Credential](r.db).Create(ctx, cred)
 }
 
 func (r *credRepo) Delete(ctx context.Context, id, teamID string) error {
-	res := r.db.WithContext(ctx).Where("id = ? AND team_id = ?", id, teamID).Delete(&models.Credential{})
-	if res.Error != nil {
-		return res.Error
+	rows, err := gorm.G[models.Credential](r.db).Where("id = ? AND team_id = ?", id, teamID).Delete(ctx)
+	if err != nil {
+		return err
 	}
-	if res.RowsAffected == 0 {
+	if rows == 0 {
 		return gorm.ErrRecordNotFound
 	}
 	return nil

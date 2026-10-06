@@ -121,8 +121,9 @@ func setupWebhookTestApp(t *testing.T) (*fiber.App, *gorm.DB, integrations.Idemp
 
 	app := fiber.New()
 	integRepo := repository.NewIntegrationRepository(db)
+	credRepo := repository.NewCredentialRepository(db)
 	taskRepo := repository.NewTaskRepository(db)
-	webhookSvc := service.NewWebhookService(integRepo, taskRepo, idempotencyStore, cipher, nil)
+	webhookSvc := service.NewWebhookService(integRepo, credRepo, taskRepo, idempotencyStore, cipher, nil)
 
 	handler := api.NewWebhookHandlers(webhookSvc)
 	app.Post("/api/v1/webhooks/:provider", handler.HandleWebhook)

@@ -10,6 +10,8 @@ import (
 	"agent-task-manager/internal/config"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/queue"
+	"agent-task-manager/internal/repository"
+	"agent-task-manager/internal/service"
 
 	"github.com/hibiken/asynq"
 	"gorm.io/gorm"
@@ -88,8 +90,12 @@ func TestWorkerExecutionHandler_Success(t *testing.T) {
 		MaxConcurrentTasks: 2,
 	}
 
+	taskRepo := repository.NewTaskRepository(db)
+	attemptRepo := repository.NewAttemptRepository(db)
+	taskSvc := service.NewTaskService(taskRepo, attemptRepo, nil, nil)
+
 	runner := &mockTaskRunner{}
-	srv := queue.NewWorkerServer(cfg, db, runner)
+	srv := queue.NewWorkerServer(cfg, taskSvc, runner)
 
 	task := models.Task{
 		ID:           "task-exec-1",
@@ -157,8 +163,12 @@ func TestWorkerExecutionHandler_CancelledSkipsRunner(t *testing.T) {
 		MaxConcurrentTasks: 2,
 	}
 
+	taskRepo := repository.NewTaskRepository(db)
+	attemptRepo := repository.NewAttemptRepository(db)
+	taskSvc := service.NewTaskService(taskRepo, attemptRepo, nil, nil)
+
 	runner := &mockTaskRunner{}
-	srv := queue.NewWorkerServer(cfg, db, runner)
+	srv := queue.NewWorkerServer(cfg, taskSvc, runner)
 
 	task := models.Task{
 		ID:           "task-cancelled",
@@ -204,9 +214,13 @@ func TestWorkerExecutionHandler_RunnerFailure(t *testing.T) {
 		MaxConcurrentTasks: 2,
 	}
 
+	taskRepo := repository.NewTaskRepository(db)
+	attemptRepo := repository.NewAttemptRepository(db)
+	taskSvc := service.NewTaskService(taskRepo, attemptRepo, nil, nil)
+
 	runnerErr := errors.New("container execution failed with exit code 1")
 	runner := &mockTaskRunner{runErr: runnerErr}
-	srv := queue.NewWorkerServer(cfg, db, runner)
+	srv := queue.NewWorkerServer(cfg, taskSvc, runner)
 
 	task := models.Task{
 		ID:           "task-fail",
@@ -265,8 +279,12 @@ func TestWorkerExecutionHandler_SecondAttemptNumber(t *testing.T) {
 		MaxConcurrentTasks: 2,
 	}
 
+	taskRepo := repository.NewTaskRepository(db)
+	attemptRepo := repository.NewAttemptRepository(db)
+	taskSvc := service.NewTaskService(taskRepo, attemptRepo, nil, nil)
+
 	runner := &mockTaskRunner{}
-	srv := queue.NewWorkerServer(cfg, db, runner)
+	srv := queue.NewWorkerServer(cfg, taskSvc, runner)
 
 	task := models.Task{
 		ID:           "task-retry",
@@ -342,7 +360,11 @@ func TestWorkerExecutionHandler_TaskNotFoundInDB(t *testing.T) {
 	cfg := &config.Config{
 		RedisAddr: "localhost:6379",
 	}
-	srv := queue.NewWorkerServer(cfg, db, nil)
+	taskRepo := repository.NewTaskRepository(db)
+	attemptRepo := repository.NewAttemptRepository(db)
+	taskSvc := service.NewTaskService(taskRepo, attemptRepo, nil, nil)
+
+	srv := queue.NewWorkerServer(cfg, taskSvc, nil)
 	handler := srv.Handler()
 
 	payloadBytes, _ := json.Marshal(queue.TaskExecutionPayload{TaskID: "non-existent-task"})
@@ -353,24 +375,42 @@ func TestWorkerExecutionHandler_TaskNotFoundInDB(t *testing.T) {
 	}
 }
 
-func TestWorkerExecutionHandler_NoDBRunWithRunner(t *testing.T) {
+type mockTaskExecutor struct {
+	called bool
+	taskID string
+}
+
+func (m *mockTaskExecutor) ExecuteTask(ctx context.Context, taskID string, runner queue.TaskRunner) error {
+	m.called = true
+	m.taskID = taskID
+	if runner != nil {
+		return runner.RunTask(ctx, &models.Task{ID: taskID}, &models.TaskAttempt{})
+	}
+	return nil
+}
+
+func TestWorkerExecutionHandler_RunWithExecutor(t *testing.T) {
 	cfg := &config.Config{
 		RedisAddr: "localhost:6379",
 	}
 	runner := &mockTaskRunner{}
-	srv := queue.NewWorkerServer(cfg, nil, runner)
+	executor := &mockTaskExecutor{}
+	srv := queue.NewWorkerServer(cfg, executor, runner)
 	handler := srv.Handler()
 
-	payloadBytes, _ := json.Marshal(queue.TaskExecutionPayload{TaskID: "task-no-db", ProjectID: "proj-no-db"})
+	payloadBytes, _ := json.Marshal(queue.TaskExecutionPayload{TaskID: "task-test-id", ProjectID: "proj-1"})
 	task := asynq.NewTask(queue.TypeExecuteAgentTask, payloadBytes)
 
 	if err := handler.ProcessTask(context.Background(), task); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if !executor.called {
+		t.Errorf("expected executor to be called")
+	}
+	if executor.taskID != "task-test-id" {
+		t.Errorf("expected task id task-test-id, got %s", executor.taskID)
+	}
 	if runner.calls != 1 {
 		t.Fatalf("expected runner to be called once, got %d", runner.calls)
-	}
-	if runner.lastTask.ID != "task-no-db" {
-		t.Errorf("expected task id task-no-db, got %s", runner.lastTask.ID)
 	}
 }

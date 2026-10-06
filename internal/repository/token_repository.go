@@ -18,25 +18,25 @@ type tokenRepo struct {
 	db *gorm.DB
 }
 
-// NewTokenRepository creates a new TokenRepository backed by GORM.
+// NewTokenRepository creates a new TokenRepository backed by GORM generic API.
 func NewTokenRepository(db *gorm.DB) TokenRepository {
 	return &tokenRepo{db: db}
 }
 
 func (r *tokenRepo) GetByHash(ctx context.Context, tokenHash string) (*models.APIToken, error) {
-	var token models.APIToken
-	if err := r.db.WithContext(ctx).Where("token_hash = ?", tokenHash).First(&token).Error; err != nil {
+	token, err := gorm.G[models.APIToken](r.db).Where("token_hash = ?", tokenHash).First(ctx)
+	if err != nil {
 		return nil, err
 	}
 	return &token, nil
 }
 
 func (r *tokenRepo) UpdateLastUsed(ctx context.Context, tokenID string, lastUsed time.Time) error {
-	res := r.db.WithContext(ctx).Model(&models.APIToken{}).Where("id = ?", tokenID).Update("last_used_at", lastUsed)
-	if res.Error != nil {
-		return res.Error
+	rows, err := gorm.G[models.APIToken](r.db).Where("id = ?", tokenID).Update(ctx, "last_used_at", lastUsed)
+	if err != nil {
+		return err
 	}
-	if res.RowsAffected == 0 {
+	if rows == 0 {
 		return gorm.ErrRecordNotFound
 	}
 	return nil

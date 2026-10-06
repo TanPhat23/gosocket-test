@@ -231,12 +231,13 @@ func TestCredentialService_EncryptionAndSecurityInvariants(t *testing.T) {
 func TestWebhookService_GitHubHMACAndIdempotency(t *testing.T) {
 	db := setupTestDB(t)
 	integRepo := repository.NewIntegrationRepository(db)
+	credRepo := repository.NewCredentialRepository(db)
 	taskRepo := repository.NewTaskRepository(db)
 	idempStore := integrations.NewMemoryIdempotencyStore()
 	cipher, _ := crypto.NewSecretCipher([]byte("01234567890123456789012345678901"))
 
 	mockQueue := &mockQueueClient{}
-	webhookSvc := service.NewWebhookService(integRepo, taskRepo, idempStore, cipher, mockQueue)
+	webhookSvc := service.NewWebhookService(integRepo, credRepo, taskRepo, idempStore, cipher, mockQueue)
 	ctx := context.Background()
 
 	// Seed team, project, credential, integration

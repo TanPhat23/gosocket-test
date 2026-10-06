@@ -222,7 +222,8 @@ func TestTaskServiceTransitionsAndCancellation(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	mockQueue := &mockQueueClient{}
-	taskSvc := service.NewTaskService(taskRepo, mockQueue, hub)
+	attemptRepo := repository.NewAttemptRepository(gormDB)
+	taskSvc := service.NewTaskService(taskRepo, attemptRepo, mockQueue, hub)
 
 	ctx := context.Background()
 

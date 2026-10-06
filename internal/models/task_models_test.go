@@ -101,7 +101,6 @@ func TestTaskMetadataAndRelationships(t *testing.T) {
 		BranchName:    &branch,
 		ExitCode:      &exitCode,
 		FailureReason: &attemptFailReason,
-		Task:          task,
 	}
 
 	if err := models.Validate.Struct(attempt); err != nil {
@@ -123,8 +122,6 @@ func TestTaskMetadataAndRelationships(t *testing.T) {
 		AttemptID: &attemptID,
 		LogChunk:  "Build started successfully\n",
 		Timestamp: now,
-		Task:      task,
-		Attempt:   &attempt,
 	}
 
 	if err := models.Validate.Struct(log); err != nil {

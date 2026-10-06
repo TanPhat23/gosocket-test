@@ -37,10 +37,8 @@ func NewDefaultHostConfig(worktreeHostPath string) *container.HostConfig {
 		SecurityOpt: []string{"no-new-privileges:true"},
 		NetworkMode: container.NetworkMode("bridge"),
 		Binds:       []string{bindPath},
-		Resources: container.Resources{
-			Memory:   4 * 1024 * 1024 * 1024,
-			NanoCPUs: 2 * 1e9,
-		},
+		Memory:      4 * 1024 * 1024 * 1024,
+		NanoCPUs:    2 * 1e9,
 	}
 }
 

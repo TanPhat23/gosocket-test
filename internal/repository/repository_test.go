@@ -286,8 +286,8 @@ func TestIntegrationRepository(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetActiveByProviderAndExternalID failed: %v", err)
 	}
-	if got.Credential.EncryptedData != "enc-data" {
-		t.Errorf("expected preloaded credential data, got %s", got.Credential.EncryptedData)
+	if got.CredentialID != "cred-1" {
+		t.Errorf("expected CredentialID cred-1, got %s", got.CredentialID)
 	}
 }
 

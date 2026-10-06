@@ -17,23 +17,18 @@ type logRepo struct {
 	db *gorm.DB
 }
 
-// NewLogRepository creates a new LogRepository backed by GORM.
+// NewLogRepository creates a new LogRepository backed by GORM generic API.
 func NewLogRepository(db *gorm.DB) LogRepository {
 	return &logRepo{db: db}
 }
 
 func (r *logRepo) Append(ctx context.Context, log *models.TaskLog) error {
-	return r.db.WithContext(ctx).Create(log).Error
+	return gorm.G[models.TaskLog](r.db).Create(ctx, log)
 }
 
 func (r *logRepo) ListByTaskID(ctx context.Context, taskID string) ([]models.TaskLog, error) {
-	var logs []models.TaskLog
-	err := r.db.WithContext(ctx).
+	return gorm.G[models.TaskLog](r.db).
 		Where("task_id = ?", taskID).
 		Order("timestamp ASC, id ASC").
-		Find(&logs).Error
-	if err != nil {
-		return nil, err
-	}
-	return logs, nil
+		Find(ctx)
 }

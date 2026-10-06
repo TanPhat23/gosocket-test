@@ -5,14 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	"agent-task-manager/internal/config"
 	"agent-task-manager/internal/models"
 
-	"github.com/google/uuid"
 	"github.com/hibiken/asynq"
-	"gorm.io/gorm"
 )
 
 // TaskRunner defines the interface for executing a task and tracking its attempt.
@@ -20,17 +17,22 @@ type TaskRunner interface {
 	RunTask(ctx context.Context, task *models.Task, attempt *models.TaskAttempt) error
 }
 
+// TaskExecutor defines the contract for executing a task by ID.
+type TaskExecutor interface {
+	ExecuteTask(ctx context.Context, taskID string, runner TaskRunner) error
+}
+
 // WorkerServer wraps an Asynq Server and dispatches tasks to execution handlers.
 type WorkerServer struct {
 	server      *asynq.Server
 	mux         *asynq.ServeMux
-	db          *gorm.DB
+	executor    TaskExecutor
 	runner      TaskRunner
 	concurrency int
 }
 
 // NewWorkerServer creates a new WorkerServer configured with bounded concurrency and priority queue distribution.
-func NewWorkerServer(cfg *config.Config, db *gorm.DB, runner TaskRunner) *WorkerServer {
+func NewWorkerServer(cfg *config.Config, executor TaskExecutor, runner TaskRunner) *WorkerServer {
 	concurrency := 4
 	var redisOpt asynq.RedisClientOpt
 
@@ -59,7 +61,7 @@ func NewWorkerServer(cfg *config.Config, db *gorm.DB, runner TaskRunner) *Worker
 	ws := &WorkerServer{
 		server:      srv,
 		mux:         mux,
-		db:          db,
+		executor:    executor,
 		runner:      runner,
 		concurrency: concurrency,
 	}
@@ -119,105 +121,9 @@ func (ws *WorkerServer) handleExecuteAgentTask(ctx context.Context, asynqTask *a
 		return errors.New("payload task_id is empty")
 	}
 
-	if ws.db == nil {
-		// If no DB is attached, direct dispatch to runner if runner is provided
-		if ws.runner != nil {
-			dummyTask := &models.Task{ID: payload.TaskID, ProjectID: payload.ProjectID}
-			dummyAttempt := &models.TaskAttempt{
-				ID:            uuid.New().String(),
-				TaskID:        payload.TaskID,
-				AttemptNumber: 1,
-				Status:        models.AttemptRunning,
-			}
-			return ws.runner.RunTask(ctx, dummyTask, dummyAttempt)
-		}
+	if ws.executor == nil {
 		return nil
 	}
 
-	var task models.Task
-	if err := ws.db.WithContext(ctx).First(&task, "id = ?", payload.TaskID).Error; err != nil {
-		return fmt.Errorf("failed to find task %q: %w", payload.TaskID, err)
-	}
-
-	// If cancelled, skip execution
-	if task.Status == models.TaskStatusCancelled {
-		return nil
-	}
-
-	// Update task status to in_progress and record heartbeat
-	now := time.Now().UTC()
-	task.Status = models.TaskStatusInProgress
-	task.HeartbeatAt = &now
-	if err := ws.db.WithContext(ctx).Model(&models.Task{}).
-		Where("id = ?", task.ID).
-		Updates(map[string]any{
-			"status":       models.TaskStatusInProgress,
-			"heartbeat_at": now,
-		}).Error; err != nil {
-		return fmt.Errorf("failed to mark task as in_progress: %w", err)
-	}
-
-	// Count existing attempts for this task
-	var count int64
-	if err := ws.db.WithContext(ctx).Model(&models.TaskAttempt{}).
-		Where("task_id = ?", task.ID).
-		Count(&count).Error; err != nil {
-		return fmt.Errorf("failed to count task attempts: %w", err)
-	}
-
-	startedAt := time.Now().UTC()
-	attempt := models.TaskAttempt{
-		ID:            uuid.New().String(),
-		TaskID:        task.ID,
-		AttemptNumber: int(count) + 1,
-		Status:        models.AttemptRunning,
-		StartedAt:     &startedAt,
-	}
-	if err := ws.db.WithContext(ctx).Create(&attempt).Error; err != nil {
-		return fmt.Errorf("failed to create task attempt: %w", err)
-	}
-
-	var runErr error
-	if ws.runner != nil {
-		runErr = ws.runner.RunTask(ctx, &task, &attempt)
-	}
-
-	finishedAt := time.Now().UTC()
-	attempt.FinishedAt = &finishedAt
-
-	if runErr == nil {
-		attempt.Status = models.AttemptSucceeded
-		_ = ws.db.WithContext(ctx).Model(&models.TaskAttempt{}).
-			Where("id = ?", attempt.ID).
-			Updates(map[string]any{
-				"status":      models.AttemptSucceeded,
-				"finished_at": finishedAt,
-			})
-
-		_ = ws.db.WithContext(ctx).Model(&models.Task{}).
-			Where("id = ?", task.ID).
-			Updates(map[string]any{
-				"status": models.TaskStatusReview,
-			})
-		return nil
-	}
-
-	failReason := runErr.Error()
-	attempt.Status = models.AttemptFailed
-	attempt.FailureReason = &failReason
-	_ = ws.db.WithContext(ctx).Model(&models.TaskAttempt{}).
-		Where("id = ?", attempt.ID).
-		Updates(map[string]any{
-			"status":         models.AttemptFailed,
-			"finished_at":    finishedAt,
-			"failure_reason": failReason,
-		})
-
-	_ = ws.db.WithContext(ctx).Model(&models.Task{}).
-		Where("id = ?", task.ID).
-		Updates(map[string]any{
-			"status": models.TaskStatusFailed,
-		})
-
-	return runErr
+	return ws.executor.ExecuteTask(ctx, payload.TaskID, ws.runner)
 }
