@@ -17,7 +17,7 @@ volumes:
 
 services:
   traefik:
-    image: traefik:v3.1
+    image: traefik:latest
     container_name: agent-traefik
     restart: unless-stopped
     command:
@@ -44,7 +44,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
     networks:
       - backend
     healthcheck:
@@ -102,12 +102,12 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret-change-in-prod-1234}
       MAX_CONCURRENT_TASKS: ${MAX_CONCURRENT_TASKS:-4}
       TASK_TIMEOUT_MINUTES: ${TASK_TIMEOUT_MINUTES:-60}
-      HOST_WORKTREE_ROOT: /srv/agent-tasks/worktrees
-      HOST_REPO_ROOT: /srv/agent-tasks/repos
+      HOST_WORKTREE_ROOT: ${HOST_WORKTREE_ROOT:-/tmp/agent-tasks/worktrees}
+      HOST_REPO_ROOT: ${HOST_REPO_ROOT:-/tmp/agent-tasks/repos}
     volumes:
       - "/var/run/docker.sock:/var/run/docker.sock"
-      - "/srv/agent-tasks/worktrees:/srv/agent-tasks/worktrees"
-      - "/srv/agent-tasks/repos:/srv/agent-tasks/repos"
+      - "${HOST_WORKTREE_ROOT:-/tmp/agent-tasks/worktrees}:${HOST_WORKTREE_ROOT:-/tmp/agent-tasks/worktrees}"
+      - "${HOST_REPO_ROOT:-/tmp/agent-tasks/repos}:${HOST_REPO_ROOT:-/tmp/agent-tasks/repos}"
     networks:
       - ingress
       - backend
