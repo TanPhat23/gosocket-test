@@ -4,7 +4,9 @@ import (
 	"agent-task-manager/internal/auth"
 	"agent-task-manager/internal/config"
 	"agent-task-manager/internal/crypto"
+	"agent-task-manager/internal/integrations"
 	"agent-task-manager/internal/models"
+	"agent-task-manager/internal/queue"
 
 	"github.com/gofiber/fiber/v3"
 	"gorm.io/gorm"
@@ -12,12 +14,14 @@ import (
 
 // Server encapsulates the Fiber application and dependencies.
 type Server struct {
-	App            *fiber.App
-	Config         *config.Config
-	DB             *gorm.DB
-	SessionManager *auth.SessionManager
-	Authenticator  auth.Authenticator
-	Cipher         *crypto.SecretCipher
+	App              *fiber.App
+	Config           *config.Config
+	DB               *gorm.DB
+	SessionManager   *auth.SessionManager
+	Authenticator    auth.Authenticator
+	Cipher           *crypto.SecretCipher
+	IdempotencyStore integrations.IdempotencyStore
+	QueueClient      queue.Client
 }
 
 // NewServer creates and configures a Fiber v3 app.
@@ -39,13 +43,16 @@ func NewServer(cfg *config.Config, db *gorm.DB, authenticator auth.Authenticator
 		cipher, _ = crypto.NewSecretCipher([]byte(cfg.SecretEncryptionKey))
 	}
 
+	idempotencyStore := integrations.NewDBIdempotencyStore(db)
+
 	server := &Server{
-		App:            app,
-		Config:         cfg,
-		DB:             db,
-		SessionManager: sessionManager,
-		Authenticator:  authenticator,
-		Cipher:         cipher,
+		App:              app,
+		Config:           cfg,
+		DB:               db,
+		SessionManager:   sessionManager,
+		Authenticator:    authenticator,
+		Cipher:           cipher,
+		IdempotencyStore: idempotencyStore,
 	}
 
 	server.setupRoutes()
@@ -56,6 +63,7 @@ func NewServer(cfg *config.Config, db *gorm.DB, authenticator auth.Authenticator
 func (s *Server) setupRoutes() {
 	authHandlers := NewAuthHandlers(s.DB, s.SessionManager, s.Authenticator, s.Config.AppEnv == "production")
 	credHandlers := NewCredentialHandlers(s.DB, s.Cipher)
+	webhookHandlers := NewWebhookHandlers(s.DB, s.IdempotencyStore, s.Cipher, s.QueueClient)
 
 	v1 := s.App.Group("/api/v1")
 	authGroup := v1.Group("/auth")
@@ -64,6 +72,9 @@ func (s *Server) setupRoutes() {
 	authGroup.Get("/callback", authHandlers.Callback)
 	authGroup.Post("/logout", authHandlers.Logout)
 	authGroup.Get("/me", authHandlers.Me)
+
+	// Webhook endpoint
+	v1.Post("/webhooks/:provider", webhookHandlers.HandleWebhook)
 
 	// Team credential routes protected by RequireAuth and RequireTeamRole(owner)
 	teamsGroup := v1.Group("/teams/:team_id", RequireAuth(s.DB, s.SessionManager))
