@@ -35,7 +35,7 @@ func InjectSandboxedConfig(worktreePath string, skills []string, mcpServers []st
 	}
 
 	// Ensure worktree directory exists
-	if err := os.MkdirAll(worktreePath, 0755); err != nil {
+	if err := os.MkdirAll(worktreePath, 0777); err != nil {
 		return fmt.Errorf("failed to create worktree directory: %w", err)
 	}
 
@@ -49,13 +49,13 @@ func InjectSandboxedConfig(worktreePath string, skills []string, mcpServers []st
 		return fmt.Errorf("failed to marshal opencode config: %w", err)
 	}
 	opencodePath := filepath.Join(worktreePath, "opencode.json")
-	if err := os.WriteFile(opencodePath, opencodeData, 0644); err != nil {
+	if err := os.WriteFile(opencodePath, opencodeData, 0666); err != nil {
 		return fmt.Errorf("failed to write opencode.json: %w", err)
 	}
 
 	// 2. Write .claude/config.json
 	claudeDir := filepath.Join(worktreePath, ".claude")
-	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+	if err := os.MkdirAll(claudeDir, 0777); err != nil {
 		return fmt.Errorf("failed to create .claude directory: %w", err)
 	}
 	claudeConfig := ClaudeConfigFile{
@@ -67,7 +67,7 @@ func InjectSandboxedConfig(worktreePath string, skills []string, mcpServers []st
 		return fmt.Errorf("failed to marshal claude config: %w", err)
 	}
 	claudePath := filepath.Join(claudeDir, "config.json")
-	if err := os.WriteFile(claudePath, claudeData, 0644); err != nil {
+	if err := os.WriteFile(claudePath, claudeData, 0666); err != nil {
 		return fmt.Errorf("failed to write .claude/config.json: %w", err)
 	}
 

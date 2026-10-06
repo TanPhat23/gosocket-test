@@ -1,8 +1,10 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 )
 
@@ -39,6 +41,14 @@ type Config struct {
 	OIDCClientID          string
 	OIDCClientSecret      string
 	OIDCRedirectURL       string
+
+	// OpenCode integration settings
+	OpenCodeServerURL string
+	OpenCodePassword  string
+	OpenCodeBinPath   string
+	OpenCodeHomePath  string
+	OpenCodeConfigDir string
+	OpenCodeDataDir   string
 }
 
 // Load loads the configuration from environment variables with sensible defaults.
@@ -62,6 +72,24 @@ func Load() (*Config, error) {
 		OIDCClientID:          os.Getenv("OIDC_CLIENT_ID"),
 		OIDCClientSecret:      os.Getenv("OIDC_CLIENT_SECRET"),
 		OIDCRedirectURL:       os.Getenv("OIDC_REDIRECT_URL"),
+		OpenCodeServerURL:     getEnv("OPENCODE_SERVER_URL", "http://127.0.0.1:49374"),
+		OpenCodePassword:      os.Getenv("OPENCODE_PASSWORD"),
+		OpenCodeBinPath:       getEnv("OPENCODE_BIN_PATH", "/home/ghug/.opencode/bin/opencode"),
+		OpenCodeHomePath:      getEnv("OPENCODE_HOME_PATH", "/home/ghug/.opencode"),
+		OpenCodeConfigDir:     getEnv("OPENCODE_CONFIG_DIR", "/home/ghug/.config/opencode"),
+		OpenCodeDataDir:       getEnv("OPENCODE_DATA_DIR", "/home/ghug/.local/share/opencode"),
+	}
+
+	if cfg.OpenCodePassword == "" {
+		serviceJSON := filepath.Join(cfg.OpenCodeConfigDir, "service.json")
+		if data, err := os.ReadFile(serviceJSON); err == nil {
+			var s struct {
+				Password string `json:"password"`
+			}
+			if json.Unmarshal(data, &s) == nil && s.Password != "" {
+				cfg.OpenCodePassword = s.Password
+			}
+		}
 	}
 
 	if stmtTimeoutStr := getEnvFirst("DATABASE_STATEMENT_TIMEOUT_SECONDS", "DB_STATEMENT_TIMEOUT_SECONDS"); stmtTimeoutStr != "" {

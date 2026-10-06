@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"agent-task-manager/internal/config"
 	"agent-task-manager/internal/crypto"
 	"agent-task-manager/internal/db"
+	"agent-task-manager/internal/git"
 	"agent-task-manager/internal/integrations"
 	"agent-task-manager/internal/integrations/github"
 	"agent-task-manager/internal/integrations/jira"
@@ -23,8 +25,12 @@ import (
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/queue"
 	"agent-task-manager/internal/repository"
+	"agent-task-manager/internal/runner"
+	"agent-task-manager/internal/sandbox"
 	"agent-task-manager/internal/service"
 	"agent-task-manager/internal/ws"
+
+	dockerclient "github.com/docker/docker/client"
 )
 
 func main() {
@@ -57,7 +63,7 @@ func main() {
 				ID:       projectID,
 				TeamID:   teamID,
 				Name:     "Core Workspace",
-				RepoPath: "/tmp/agent-tasks/repos/core",
+				RepoPath: filepath.Join(cfg.HostRepoRoot, "core"),
 			}
 			_ = gormDB.Create(defaultProject)
 			log.Printf("Seeded default team (%s) and project (%s)", teamID, projectID)
@@ -143,6 +149,29 @@ func main() {
 	webhookService := service.NewWebhookService(integrationRepo, credRepo, taskRepo, idempotencyStore, cipher, queueClient)
 	taskService := service.NewTaskService(taskRepo, attemptRepo, queueClient, hub)
 	logService := service.NewLogService(logRepo, hub)
+
+	// Worktree Manager & Sandbox Docker Runner
+	worktreeMgr := git.NewWorktreeManager(cfg.HostWorktreeRoot)
+	var dockerCli sandbox.DockerClient
+	var dockerRunner *sandbox.Runner
+	if dCli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation()); err == nil {
+		dockerCli = dCli
+		dockerRunner = sandbox.NewRunner(dCli)
+		log.Println("Docker client initialized successfully for containerized agent execution")
+	} else {
+		log.Printf("warning: Docker client initialization failed: %v", err)
+	}
+
+	// Concrete Agent Task Runner (orchestrating worktrees, OpenCode, and diff snapshots)
+	agentRunner := runner.NewAgentTaskRunner(cfg, projectRepo, taskRepo, logRepo, worktreeMgr, dockerRunner, dockerCli, hub)
+
+	// Concurrency-bounded Asynq Worker Server
+	workerServer := queue.NewWorkerServer(cfg, taskService, agentRunner)
+	if err := workerServer.Start(); err != nil {
+		log.Fatalf("failed to start Asynq worker server: %v", err)
+	}
+	log.Printf("Asynq worker server started with %d workers", workerServer.Concurrency())
+	defer workerServer.Shutdown()
 
 	// WebSocket handler
 	wsHandler := api.NewWSHandler(hub, api.WithWSServices(taskService, logService))

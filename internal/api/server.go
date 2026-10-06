@@ -110,6 +110,10 @@ func (s *Server) setupRoutes() {
 	// Webhook endpoint
 	v1.Post("/webhooks/:provider", webhookHandlers.HandleWebhook)
 
+	// Model discovery endpoint
+	modelHandlers := NewModelHandlers(s.Config)
+	v1.Get("/models", modelHandlers.ListModels)
+
 	// Task routes
 	if s.TaskService != nil {
 		taskHandlers := NewTaskHandlers(s.TaskService)

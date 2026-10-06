@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useTaskStore } from '../store/useTaskStore';
+import { taskApi } from '../api/taskApi';
 import { useProjectsList, useActiveProjectId } from '@/features/teams/store/useTeamStore';
 import { CreateTaskRequestSchema } from '../schemas/taskSchemas';
 import {
@@ -14,15 +15,26 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Plus, Check, Sparkles, Server, Wrench, AlertCircle } from 'lucide-react';
+import { Plus, Check, Sparkles, Server, Wrench, AlertCircle, Cpu } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-const AVAILABLE_MODELS = [
-  'claude-3-7-sonnet',
-  'claude-3-5-sonnet',
-  'gpt-4o',
-  'o3-mini',
-  'gemini-2.5-pro',
+export interface ModelOption {
+  id: string;
+  name: string;
+  provider: string;
+  active?: boolean;
+}
+
+const DEFAULT_OPENCODE_MODELS: ModelOption[] = [
+  { id: 'google/gemini-3.8-flash', name: 'Gemini 3.8 Flash (Active)', provider: 'google', active: true },
+  { id: 'google/gemini-2.5-pro', name: 'Gemini 2.5 Pro', provider: 'google' },
+  { id: 'anthropic/claude-sonnet-4-5', name: 'Claude Sonnet 4.5', provider: 'anthropic' },
+  { id: 'anthropic/claude-opus-4-6', name: 'Claude Opus 4.6', provider: 'anthropic' },
+  { id: 'openai/gpt-5.5', name: 'GPT-5.5', provider: 'openai' },
+  { id: 'openai/gpt-5.6-luna', name: 'GPT-5.6 Luna', provider: 'openai' },
+  { id: 'opencode-go/qwen3.8-max', name: 'Qwen 3.8 Max', provider: 'opencode-go' },
+  { id: 'opencode-go/deepseek-v4-pro', name: 'DeepSeek V4 Pro', provider: 'opencode-go' },
+  { id: 'opencode/big-pickle', name: 'Big Pickle', provider: 'opencode' },
 ];
 
 const AVAILABLE_SKILLS = [
@@ -51,15 +63,29 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
   const projects = useProjectsList();
   const activeProjectId = useActiveProjectId();
 
+  const [availableModels, setAvailableModels] = useState<ModelOption[]>(DEFAULT_OPENCODE_MODELS);
   const [selectedProjectId, setSelectedProjectId] = useState<string>('');
   const [title, setTitle] = useState('');
   const [prompt, setPrompt] = useState('');
   const [priority, setPriority] = useState<number>(50);
-  const [selectedModel, setSelectedModel] = useState<string>('claude-3-7-sonnet');
+  const [selectedModel, setSelectedModel] = useState<string>('google/gemini-3.8-flash');
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [selectedMcps, setSelectedMcps] = useState<string[]>([]);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Load available models from OpenCode
+  React.useEffect(() => {
+    taskApi.getModels()
+      .then((models) => {
+        if (models && models.length > 0) {
+          setAvailableModels(models);
+        }
+      })
+      .catch(() => {
+        // Fallback to DEFAULT_OPENCODE_MODELS
+      });
+  }, []);
 
   // Sync project ID when projects load
   React.useEffect(() => {
@@ -97,16 +123,14 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
     e.preventDefault();
     setErrors({});
 
-    const targetProjectId = effectiveProjectId || '01923456-789a-7bcd-ef01-23456789abcd';
-
     const rawData = {
-      project_id: targetProjectId,
+      project_id: effectiveProjectId.trim(),
       title: title.trim(),
       prompt: prompt.trim(),
       assignee_id: 'agent-sandbox-1',
       assignee_type: 'agent' as const,
       priority: Number(priority),
-      model: selectedModel,
+      model: selectedModel.trim() || undefined,
       skills: selectedSkills,
       mcp_servers: selectedMcps,
     };
@@ -177,6 +201,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
                 onChange={(e) => setSelectedProjectId(e.target.value)}
                 className="w-full h-8 text-xs rounded-lg border border-input bg-card px-2.5 py-1 text-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 outline-none"
               >
+                <option value="">-- No Project (Empty) --</option>
                 {projects.map((proj) => (
                   <option key={proj.id} value={proj.id}>
                     {proj.name}
@@ -184,10 +209,14 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
                 ))}
               </select>
             ) : (
-              <div className="p-2.5 rounded-lg border border-dashed border-muted-foreground/30 text-xs text-muted-foreground flex items-center justify-between">
-                <span>No workspace projects found</span>
-                <span className="text-[11px] text-primary">Seeding default project...</span>
-              </div>
+              <Input
+                id="task-project-input"
+                aria-label="Project"
+                value={selectedProjectId}
+                onChange={(e) => setSelectedProjectId(e.target.value)}
+                placeholder="Project UUID (leave empty to test)"
+                className="text-xs font-mono"
+              />
             )}
             {errors.project_id && (
               <p className="text-[11px] text-destructive">{errors.project_id}</p>
@@ -246,17 +275,22 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
               />
             </div>
 
-            {/* Model */}
+            {/* Model Engine */}
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-foreground">Model Engine</label>
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                  <Cpu className="size-3.5 text-primary" />
+                  Model Engine (OpenCode)
+                </label>
+              </div>
               <select
                 value={selectedModel}
                 onChange={(e) => setSelectedModel(e.target.value)}
-                className="w-full h-8 text-xs rounded-lg border border-input bg-transparent px-2.5 py-1 text-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 outline-none"
+                className="w-full h-8 text-xs rounded-lg border border-input bg-card px-2.5 py-1 text-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 outline-none font-mono"
               >
-                {AVAILABLE_MODELS.map((model) => (
-                  <option key={model} value={model}>
-                    {model}
+                {availableModels.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.name} ({model.id})
                   </option>
                 ))}
               </select>

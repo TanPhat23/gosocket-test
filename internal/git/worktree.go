@@ -74,6 +74,9 @@ func (m *WorktreeManager) CreateWorktree(ctx context.Context, repoPath, taskID, 
 		}
 	}
 
+	// Ensure permissive permissions so non-root agent runners (e.g. OpenCode uid 1000) can read and write files without sudo
+	_ = exec.CommandContext(ctx, "chmod", "-R", "0777", localPath).Run()
+
 	return localPath, hostPath, bindPath, nil
 }
 

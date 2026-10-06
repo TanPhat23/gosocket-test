@@ -27,4 +27,9 @@ export const taskApi = {
     const res = await axiosClient.post<{ status: string }>(`/tasks/${encodeURIComponent(taskId)}/cancel`);
     return res.data;
   },
+
+  async getModels(): Promise<{ id: string; name: string; provider: string; active?: boolean }[]> {
+    const res = await axiosClient.get<{ id: string; name: string; provider: string; active?: boolean }[]>('/models');
+    return res.data;
+  },
 };

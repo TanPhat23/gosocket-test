@@ -121,12 +121,17 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret-change-in-prod-1234}
       MAX_CONCURRENT_TASKS: ${MAX_CONCURRENT_TASKS:-4}
       TASK_TIMEOUT_MINUTES: ${TASK_TIMEOUT_MINUTES:-60}
-      HOST_WORKTREE_ROOT: ${HOST_WORKTREE_ROOT:-/tmp/agent-tasks/worktrees}
-      HOST_REPO_ROOT: ${HOST_REPO_ROOT:-/tmp/agent-tasks/repos}
+      HOST_WORKTREE_ROOT: ${HOST_WORKTREE_ROOT:-/home/ghug/Code/Go/agent-task-manager/data/worktrees}
+      HOST_REPO_ROOT: ${HOST_REPO_ROOT:-/home/ghug/Code/Go/agent-task-manager/data/repos}
+      OPENCODE_SERVER_URL: ${OPENCODE_SERVER_URL:-http://127.0.0.1:49374}
+      OPENCODE_PASSWORD: ${OPENCODE_PASSWORD:-4YXQ3udRl8k_UkFdyhHSFF-bdInQgKk0F9Qz6zp2y0U}
     volumes:
       - "/var/run/docker.sock:/var/run/docker.sock"
-      - "${HOST_WORKTREE_ROOT:-/tmp/agent-tasks/worktrees}:${HOST_WORKTREE_ROOT:-/tmp/agent-tasks/worktrees}"
-      - "${HOST_REPO_ROOT:-/tmp/agent-tasks/repos}:${HOST_REPO_ROOT:-/tmp/agent-tasks/repos}"
+      - "${HOST_WORKTREE_ROOT:-/home/ghug/Code/Go/agent-task-manager/data/worktrees}:${HOST_WORKTREE_ROOT:-/home/ghug/Code/Go/agent-task-manager/data/worktrees}"
+      - "${HOST_REPO_ROOT:-/home/ghug/Code/Go/agent-task-manager/data/repos}:${HOST_REPO_ROOT:-/home/ghug/Code/Go/agent-task-manager/data/repos}"
+      - "/home/ghug/.opencode:/home/ghug/.opencode:ro"
+      - "/home/ghug/.config/opencode:/home/ghug/.config/opencode:ro"
+      - "/home/ghug/.local/share/opencode:/home/ghug/.local/share/opencode:rw"
     networks:
       - ingress
       - backend

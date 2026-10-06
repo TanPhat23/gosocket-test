@@ -1,0 +1,338 @@
+package runner
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"time"
+
+	"agent-task-manager/internal/config"
+	"agent-task-manager/internal/git"
+	"agent-task-manager/internal/models"
+	"agent-task-manager/internal/repository"
+	"agent-task-manager/internal/sandbox"
+	"agent-task-manager/internal/ws"
+
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/pkg/stdcopy"
+)
+
+// AgentTaskRunner implements queue.TaskRunner to execute agent tasks via OpenCode.
+type AgentTaskRunner struct {
+	cfg          *config.Config
+	projectRepo  repository.ProjectRepository
+	taskRepo     repository.TaskRepository
+	logRepo      repository.LogRepository
+	worktreeMgr  *git.WorktreeManager
+	dockerRunner *sandbox.Runner
+	dockerCli    sandbox.DockerClient
+	hub          *ws.Hub
+}
+
+// NewAgentTaskRunner creates a new AgentTaskRunner.
+func NewAgentTaskRunner(
+	cfg *config.Config,
+	projectRepo repository.ProjectRepository,
+	taskRepo repository.TaskRepository,
+	logRepo repository.LogRepository,
+	worktreeMgr *git.WorktreeManager,
+	dockerRunner *sandbox.Runner,
+	dockerCli sandbox.DockerClient,
+	hub *ws.Hub,
+) *AgentTaskRunner {
+	return &AgentTaskRunner{
+		cfg:          cfg,
+		projectRepo:  projectRepo,
+		taskRepo:     taskRepo,
+		logRepo:      logRepo,
+		worktreeMgr:  worktreeMgr,
+		dockerRunner: dockerRunner,
+		dockerCli:    dockerCli,
+		hub:          hub,
+	}
+}
+
+// EnsureGitRepo verifies that a valid Git repository exists at repoPath with an initial commit, creating one if missing.
+func EnsureGitRepo(repoPath string) error {
+	_ = exec.Command("git", "config", "--global", "--add", "safe.directory", "*").Run()
+
+	if repoPath == "" {
+		return errors.New("repoPath cannot be empty")
+	}
+
+	gitDir := filepath.Join(repoPath, ".git")
+	if info, err := os.Stat(gitDir); err == nil && info.IsDir() {
+		return nil
+	}
+
+	if err := os.MkdirAll(repoPath, 0755); err != nil {
+		return fmt.Errorf("failed to create repo directory %s: %w", repoPath, err)
+	}
+
+	initCmd := exec.Command("git", "init", "-b", "main")
+	initCmd.Dir = repoPath
+	if out, err := initCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git init failed: %w (output: %s)", err, string(out))
+	}
+
+	cfgName := exec.Command("git", "config", "user.name", "Agent Task Manager")
+	cfgName.Dir = repoPath
+	_ = cfgName.Run()
+
+	cfgEmail := exec.Command("git", "config", "user.email", "agent@task-manager.local")
+	cfgEmail.Dir = repoPath
+	_ = cfgEmail.Run()
+
+	commitCmd := exec.Command("git", "commit", "--allow-empty", "-m", "Initial repository commit")
+	commitCmd.Dir = repoPath
+	if out, err := commitCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("initial commit failed: %w (output: %s)", err, string(out))
+	}
+
+	return nil
+}
+
+// RunTask executes an individual task attempt in an isolated worktree and runs OpenCode.
+func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attempt *models.TaskAttempt) error {
+	if task == nil {
+		return errors.New("task cannot be nil")
+	}
+
+	project, err := r.projectRepo.GetByID(ctx, task.ProjectID)
+	if err != nil {
+		return fmt.Errorf("failed to lookup project %s: %w", task.ProjectID, err)
+	}
+
+	repoPath := project.RepoPath
+	if repoPath == "" {
+		repoPath = filepath.Join(r.cfg.HostRepoRoot, "core")
+	}
+
+	if err := EnsureGitRepo(repoPath); err != nil {
+		return fmt.Errorf("failed to ensure git repo at %s: %w", repoPath, err)
+	}
+
+	branchName := fmt.Sprintf("task/%s", task.ID)
+	localWorktreePath, hostWorktreePath, _, err := r.worktreeMgr.CreateWorktree(ctx, repoPath, task.ID, branchName)
+	if err != nil {
+		return fmt.Errorf("failed to create worktree: %w", err)
+	}
+
+	// Guarantee full 0777 permissions across worktree so host OpenCode user (e.g. uid 1000) has write access
+	_ = exec.CommandContext(ctx, "chmod", "-R", "0777", localWorktreePath).Run()
+
+	task.WorktreePath = &hostWorktreePath
+	task.BranchName = &branchName
+	_ = r.taskRepo.Update(ctx, task)
+
+	attempt.WorktreePath = &hostWorktreePath
+	attempt.BranchName = &branchName
+
+	if err := InjectSandboxedConfig(localWorktreePath, task.Skills, task.MCPServers); err != nil {
+		log.Printf("warning: failed to inject sandboxed configs into worktree: %v", err)
+	}
+
+	selectedModel := "google/gemini-3.8-flash"
+	if task.Model != nil && *task.Model != "" {
+		selectedModel = *task.Model
+	}
+
+	r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[36m[Agent Control Plane]\x1b[0m Starting autonomous task execution...\r\n"))
+	r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[36m[Agent Control Plane]\x1b[0m Model: %s\r\n", selectedModel))
+	r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[36m[Agent Control Plane]\x1b[0m Worktree: %s\r\n\r\n", hostWorktreePath))
+
+	var execErr error
+	if r.dockerRunner != nil && r.dockerCli != nil {
+		execErr = r.runInDocker(ctx, task, attempt, hostWorktreePath, selectedModel)
+	} else {
+		execErr = r.runOnHost(ctx, task, attempt, localWorktreePath, selectedModel)
+	}
+
+	if execErr != nil {
+		r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\r\n\x1b[31m[Agent Control Plane] Execution failed: %v\x1b[0m\r\n", execErr))
+		return execErr
+	}
+
+	diffRes, diffErr := git.CaptureSnapshot(ctx, localWorktreePath, "main")
+	if diffErr == nil && diffRes != nil {
+		if r.hub != nil {
+			_ = r.hub.BroadcastTaskDiff(task.ID, diffRes.RawDiff)
+		}
+		r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\r\n\x1b[32m✔ Snapshot captured: %d files changed (+%d/-%d)\x1b[0m\r\n",
+			len(diffRes.Files), diffRes.TotalAdditions, diffRes.TotalDeletions))
+	} else if diffErr != nil {
+		log.Printf("warning: failed to capture snapshot diff: %v", diffErr)
+	}
+
+	r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[32m✔ Autonomous task run finished. Ready for review.\x1b[0m\r\n"))
+	return nil
+}
+
+func (r *AgentTaskRunner) runInDocker(ctx context.Context, task *models.Task, attempt *models.TaskAttempt, hostPath, model string) error {
+	imageName := "debian:bookworm-slim"
+
+	cmd := []string{
+		"/root/.opencode/bin/opencode",
+		"run",
+		"--server", r.cfg.OpenCodeServerURL,
+		"--model", model,
+		"--auto",
+		task.Prompt,
+	}
+
+	env := []string{
+		"HOME=/root",
+		"OPENCODE_PASSWORD=" + r.cfg.OpenCodePassword,
+		"ATM_TASK_ID=" + task.ID,
+		"ATM_PROJECT_ID=" + task.ProjectID,
+		"ATM_TASK_MODEL=" + model,
+	}
+
+	containerCfg := &container.Config{
+		Image:        imageName,
+		Cmd:          cmd,
+		Env:          env,
+		WorkingDir:   hostPath,
+		AttachStdout: true,
+		AttachStderr: true,
+	}
+
+	hostCfg := &container.HostConfig{
+		NetworkMode: container.NetworkMode("host"),
+		Binds: []string{
+			fmt.Sprintf("%s:%s:rw", hostPath, hostPath),
+			fmt.Sprintf("%s:/root/.opencode:ro", r.cfg.OpenCodeHomePath),
+			fmt.Sprintf("%s:/root/.config/opencode:ro", r.cfg.OpenCodeConfigDir),
+			fmt.Sprintf("%s:/root/.local/share/opencode:rw", r.cfg.OpenCodeDataDir),
+		},
+		Resources: container.Resources{
+			Memory: 4 * 1024 * 1024 * 1024,
+		},
+	}
+
+	resp, err := r.dockerCli.ContainerCreate(ctx, containerCfg, hostCfg, nil, nil, "")
+	if err != nil {
+		log.Printf("container create failed with debian:bookworm-slim (%v), falling back to host execution", err)
+		return r.runOnHost(ctx, task, attempt, hostPath, model)
+	}
+
+	containerID := resp.ID
+	defer func() {
+		_ = r.dockerCli.ContainerRemove(context.Background(), containerID, container.RemoveOptions{Force: true})
+	}()
+
+	if err := r.dockerCli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
+		return fmt.Errorf("failed to start agent sandbox container: %w", err)
+	}
+
+	logsReader, err := r.dockerRunner.Logs(ctx, containerID)
+	if err == nil {
+		defer logsReader.Close()
+		go r.streamDemuxedLogs(ctx, task.ID, attempt.ID, logsReader)
+	}
+
+	statusCh, errCh := r.dockerCli.ContainerWait(ctx, containerID, container.WaitConditionNotRunning)
+	select {
+	case waitErr := <-errCh:
+		if waitErr != nil {
+			return fmt.Errorf("error waiting for container: %w", waitErr)
+		}
+	case status := <-statusCh:
+		if status.StatusCode != 0 {
+			return fmt.Errorf("agent container exited with status code %d", status.StatusCode)
+		}
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	return nil
+}
+
+func (r *AgentTaskRunner) runOnHost(ctx context.Context, task *models.Task, attempt *models.TaskAttempt, worktreeDir, model string) error {
+	binPath := r.cfg.OpenCodeBinPath
+	if _, err := os.Stat(binPath); err != nil {
+		binPath = "opencode"
+	}
+
+	args := []string{
+		"run",
+		"--server", r.cfg.OpenCodeServerURL,
+		"--model", model,
+		"--auto",
+		task.Prompt,
+	}
+
+	cmd := exec.CommandContext(ctx, binPath, args...)
+	cmd.Dir = worktreeDir
+	cmd.Env = append(cmd.Environ(),
+		"HOME=/home/ghug",
+		"OPENCODE_PASSWORD="+r.cfg.OpenCodePassword,
+		"ATM_TASK_ID="+task.ID,
+		"ATM_PROJECT_ID="+task.ProjectID,
+		"ATM_TASK_MODEL="+model,
+	)
+
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("failed to capture stdout: %w", err)
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("failed to capture stderr: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start opencode on host: %w", err)
+	}
+
+	go r.streamPipe(ctx, task.ID, attempt.ID, stdoutPipe, "stdout")
+	go r.streamPipe(ctx, task.ID, attempt.ID, stderrPipe, "stderr")
+
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("opencode run exited with error: %w", err)
+	}
+
+	return nil
+}
+
+func (r *AgentTaskRunner) streamDemuxedLogs(ctx context.Context, taskID, attemptID string, reader io.Reader) {
+	outReader, outWriter := io.Pipe()
+	errReader, errWriter := io.Pipe()
+
+	go func() {
+		defer outWriter.Close()
+		defer errWriter.Close()
+		_, _ = stdcopy.StdCopy(outWriter, errWriter, reader)
+	}()
+
+	go r.streamPipe(ctx, taskID, attemptID, outReader, "stdout")
+	go r.streamPipe(ctx, taskID, attemptID, errReader, "stderr")
+}
+
+func (r *AgentTaskRunner) streamPipe(ctx context.Context, taskID, attemptID string, reader io.Reader, stream string) {
+	scanner := bufio.NewScanner(reader)
+	for scanner.Scan() {
+		line := scanner.Text() + "\r\n"
+		r.broadcastLog(ctx, taskID, attemptID, line)
+	}
+}
+
+func (r *AgentTaskRunner) broadcastLog(ctx context.Context, taskID, attemptID, content string) {
+	if r.hub != nil {
+		r.hub.BroadcastToTask(taskID, []byte(content))
+	}
+	if r.logRepo != nil {
+		_ = r.logRepo.Append(ctx, &models.TaskLog{
+			TaskID:    taskID,
+			AttemptID: &attemptID,
+			LogChunk:  content,
+			Timestamp: time.Now().UTC(),
+		})
+	}
+}

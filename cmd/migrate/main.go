@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"path/filepath"
 
 	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/config"
@@ -71,7 +72,7 @@ func main() {
 				ID:       projectID,
 				TeamID:   teamID,
 				Name:     "Core Workspace",
-				RepoPath: "/tmp/agent-tasks/repos/core",
+				RepoPath: filepath.Join(cfg.HostRepoRoot, "core"),
 			}
 			if err := gormDB.Create(defaultProject).Error; err != nil {
 				log.Printf("warning: failed to seed default project: %v", err)

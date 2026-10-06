@@ -16,7 +16,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-w -s" -o /app/bin/ser
 FROM alpine:3.21
 
 # Install ca-certificates, git, and docker-cli for task container interactions
-RUN apk add --no-cache ca-certificates git docker-cli
+RUN apk add --no-cache ca-certificates git docker-cli && \
+    git config --global --add safe.directory '*'
 
 WORKDIR /app
 

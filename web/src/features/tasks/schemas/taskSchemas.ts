@@ -15,7 +15,7 @@ export const AssigneeTypeSchema = z.enum(['agent', 'human']);
 export type AssigneeType = z.infer<typeof AssigneeTypeSchema>;
 
 export const CreateTaskRequestSchema = z.object({
-  project_id: z.string().uuid({ message: 'Valid Project ID is required' }).or(z.string().min(1)),
+  project_id: z.string().optional().default(''),
   title: z.string().min(1, 'Title is required').max(255, 'Title too long'),
   prompt: z.string().min(1, 'Prompt is required'),
   assignee_id: z.string().min(1, 'Assignee ID is required'),
