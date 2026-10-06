@@ -33,55 +33,45 @@ type memoryEventRecord struct {
 	processedAt  *time.Time
 }
 
-// MemoryIdempotencyStore provides an in-memory implementation for tests.
+// MemoryIdempotencyStore provides an in-memory implementation for tests using sync.Map.
 type MemoryIdempotencyStore struct {
-	mu     sync.Mutex
-	events map[memoryEventKey]*memoryEventRecord
+	events sync.Map // map[memoryEventKey]*memoryEventRecord
 }
 
 // NewMemoryIdempotencyStore creates an in-memory IdempotencyStore.
 func NewMemoryIdempotencyStore() IdempotencyStore {
-	return &MemoryIdempotencyStore{
-		events: make(map[memoryEventKey]*memoryEventRecord),
-	}
+	return &MemoryIdempotencyStore{}
 }
 
 func (m *MemoryIdempotencyStore) RecordEvent(ctx context.Context, provider string, projectID string, providerEventID string) (bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	key := memoryEventKey{
 		provider:        provider,
 		projectID:       projectID,
 		providerEventID: providerEventID,
 	}
 
-	if _, exists := m.events[key]; exists {
-		return false, nil
-	}
-
-	m.events[key] = &memoryEventRecord{
+	record := &memoryEventRecord{
 		status:     models.WebhookReceived,
 		receivedAt: time.Now().UTC(),
 	}
-	return true, nil
+
+	_, loaded := m.events.LoadOrStore(key, record)
+	return !loaded, nil
 }
 
 func (m *MemoryIdempotencyStore) MarkProcessed(ctx context.Context, provider string, projectID string, providerEventID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	key := memoryEventKey{
 		provider:        provider,
 		projectID:       projectID,
 		providerEventID: providerEventID,
 	}
 
-	rec, exists := m.events[key]
+	val, exists := m.events.Load(key)
 	if !exists {
 		return fmt.Errorf("webhook event not found: %s/%s/%s", provider, projectID, providerEventID)
 	}
 
+	rec := val.(*memoryEventRecord)
 	now := time.Now().UTC()
 	rec.status = models.WebhookProcessed
 	rec.processedAt = &now
@@ -89,20 +79,18 @@ func (m *MemoryIdempotencyStore) MarkProcessed(ctx context.Context, provider str
 }
 
 func (m *MemoryIdempotencyStore) MarkFailed(ctx context.Context, provider string, projectID string, providerEventID string, errMsg string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	key := memoryEventKey{
 		provider:        provider,
 		projectID:       projectID,
 		providerEventID: providerEventID,
 	}
 
-	rec, exists := m.events[key]
+	val, exists := m.events.Load(key)
 	if !exists {
 		return fmt.Errorf("webhook event not found: %s/%s/%s", provider, projectID, providerEventID)
 	}
 
+	rec := val.(*memoryEventRecord)
 	now := time.Now().UTC()
 	rec.status = models.WebhookFailed
 	rec.processedAt = &now
