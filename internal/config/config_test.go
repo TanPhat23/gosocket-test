@@ -10,7 +10,10 @@ import (
 func TestConfigLoadDefaultsAndEnv(t *testing.T) {
 	// Clear any environment variables that might interfere
 	envKeys := []string{
-		"PORT", "APP_ENV", "DATABASE_URL", "REDIS_ADDR", "REDIS_PASSWORD",
+		"PORT", "APP_ENV", "DATABASE_URL",
+		"DATABASE_STATEMENT_TIMEOUT_SECONDS", "DB_STATEMENT_TIMEOUT_SECONDS",
+		"DATABASE_CONNECT_TIMEOUT_SECONDS", "DB_CONNECT_TIMEOUT_SECONDS",
+		"REDIS_ADDR", "REDIS_PASSWORD",
 		"SECRET_ENCRYPTION_KEY", "SESSION_SECRET", "MAX_CONCURRENT_TASKS",
 		"TASK_TIMEOUT_MINUTES", "HOST_WORKTREE_ROOT", "HOST_REPO_ROOT",
 		"OIDC_ISSUER_URL", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "OIDC_REDIRECT_URL",
@@ -26,6 +29,12 @@ func TestConfigLoadDefaultsAndEnv(t *testing.T) {
 	}
 	if defaultCfg.Port != 8080 {
 		t.Errorf("expected default port 8080, got %d", defaultCfg.Port)
+	}
+	if defaultCfg.DatabaseStatementTimeoutSeconds != 15 {
+		t.Errorf("expected default DatabaseStatementTimeoutSeconds 15, got %d", defaultCfg.DatabaseStatementTimeoutSeconds)
+	}
+	if defaultCfg.DatabaseConnectTimeoutSeconds != 5 {
+		t.Errorf("expected default DatabaseConnectTimeoutSeconds 5, got %d", defaultCfg.DatabaseConnectTimeoutSeconds)
 	}
 	if defaultCfg.MaxConcurrentTasks != 4 {
 		t.Errorf("expected default max concurrent tasks 4, got %d", defaultCfg.MaxConcurrentTasks)
@@ -49,6 +58,8 @@ func TestConfigLoadDefaultsAndEnv(t *testing.T) {
 	// Now set custom env vars
 	os.Setenv("PORT", "8080")
 	os.Setenv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/agent_tasks?sslmode=disable")
+	os.Setenv("DATABASE_STATEMENT_TIMEOUT_SECONDS", "30")
+	os.Setenv("DATABASE_CONNECT_TIMEOUT_SECONDS", "10")
 	os.Setenv("REDIS_ADDR", "localhost:6379")
 	os.Setenv("REDIS_PASSWORD", "redispass123")
 	os.Setenv("SECRET_ENCRYPTION_KEY", "01234567890123456789012345678901")
@@ -66,6 +77,12 @@ func TestConfigLoadDefaultsAndEnv(t *testing.T) {
 
 	if cfg.Port != 8080 {
 		t.Errorf("expected port 8080, got %d", cfg.Port)
+	}
+	if cfg.DatabaseStatementTimeoutSeconds != 30 {
+		t.Errorf("expected DatabaseStatementTimeoutSeconds 30, got %d", cfg.DatabaseStatementTimeoutSeconds)
+	}
+	if cfg.DatabaseConnectTimeoutSeconds != 10 {
+		t.Errorf("expected DatabaseConnectTimeoutSeconds 10, got %d", cfg.DatabaseConnectTimeoutSeconds)
 	}
 	if cfg.DatabaseURL != "postgres://postgres:postgres@localhost:5432/agent_tasks?sslmode=disable" {
 		t.Errorf("expected database URL, got %s", cfg.DatabaseURL)
@@ -111,4 +128,34 @@ func TestConfigLoadInvalidValues(t *testing.T) {
 		t.Errorf("expected error for invalid TASK_TIMEOUT_MINUTES, got nil")
 	}
 	os.Unsetenv("TASK_TIMEOUT_MINUTES")
+
+	// Invalid DATABASE_STATEMENT_TIMEOUT_SECONDS
+	os.Setenv("DATABASE_STATEMENT_TIMEOUT_SECONDS", "invalid")
+	if _, err := config.Load(); err == nil {
+		t.Errorf("expected error for invalid DATABASE_STATEMENT_TIMEOUT_SECONDS, got nil")
+	}
+	os.Unsetenv("DATABASE_STATEMENT_TIMEOUT_SECONDS")
+
+	// Invalid DATABASE_CONNECT_TIMEOUT_SECONDS
+	os.Setenv("DATABASE_CONNECT_TIMEOUT_SECONDS", "invalid")
+	if _, err := config.Load(); err == nil {
+		t.Errorf("expected error for invalid DATABASE_CONNECT_TIMEOUT_SECONDS, got nil")
+	}
+	os.Unsetenv("DATABASE_CONNECT_TIMEOUT_SECONDS")
+
+	// Alternate env var DB_STATEMENT_TIMEOUT_SECONDS and DB_CONNECT_TIMEOUT_SECONDS
+	os.Setenv("DB_STATEMENT_TIMEOUT_SECONDS", "25")
+	os.Setenv("DB_CONNECT_TIMEOUT_SECONDS", "8")
+	cfgAlt, err := config.Load()
+	if err != nil {
+		t.Fatalf("expected nil error with DB_* timeout env vars, got: %v", err)
+	}
+	if cfgAlt.DatabaseStatementTimeoutSeconds != 25 {
+		t.Errorf("expected DatabaseStatementTimeoutSeconds 25, got %d", cfgAlt.DatabaseStatementTimeoutSeconds)
+	}
+	if cfgAlt.DatabaseConnectTimeoutSeconds != 8 {
+		t.Errorf("expected DatabaseConnectTimeoutSeconds 8, got %d", cfgAlt.DatabaseConnectTimeoutSeconds)
+	}
+	os.Unsetenv("DB_STATEMENT_TIMEOUT_SECONDS")
+	os.Unsetenv("DB_CONNECT_TIMEOUT_SECONDS")
 }
