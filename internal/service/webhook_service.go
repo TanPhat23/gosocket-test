@@ -2,11 +2,11 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
+	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/crypto"
 	"agent-task-manager/internal/dto"
 	"agent-task-manager/internal/integrations"
@@ -72,9 +72,35 @@ type ghWebhookPayload struct {
 	} `json:"issue"`
 }
 
+type jiraWebhookPayload struct {
+	WebhookEvent string `json:"webhookEvent"`
+	Issue        struct {
+		ID     string `json:"id"`
+		Key    string `json:"key"`
+		Fields struct {
+			Summary     string `json:"summary"`
+			Description any    `json:"description"`
+			Project     struct {
+				Key string `json:"key"`
+			} `json:"project"`
+		} `json:"fields"`
+	} `json:"issue"`
+}
+
+type trelloWebhookPayload struct {
+	Model struct {
+		ID      string `json:"id"`
+		IDBoard string `json:"idBoard"`
+	} `json:"model"`
+	Action struct {
+		ID   string `json:"id"`
+		Type string `json:"type"`
+	} `json:"action"`
+}
+
 func (s *webhookService) HandleGitHubWebhook(ctx context.Context, payload []byte, deliveryID, signature string) (*dto.WebhookResultDTO, error) {
-	var ghPayload ghWebhookPayload
-	if err := json.Unmarshal(payload, &ghPayload); err != nil {
+	ghPayload, err := common.Unmarshal[ghWebhookPayload](payload)
+	if err != nil {
 		return nil, ErrInvalidWebhookPayload
 	}
 
@@ -186,22 +212,8 @@ func (s *webhookService) HandleJiraWebhook(ctx context.Context, payload []byte, 
 		eventID = uuid.NewString()
 	}
 
-	var jiraPayload struct {
-		WebhookEvent string `json:"webhookEvent"`
-		Issue        struct {
-			ID     string `json:"id"`
-			Key    string `json:"key"`
-			Fields struct {
-				Summary     string `json:"summary"`
-				Description any    `json:"description"`
-				Project     struct {
-					Key string `json:"key"`
-				} `json:"project"`
-			} `json:"fields"`
-		} `json:"issue"`
-	}
-
-	if err := json.Unmarshal(payload, &jiraPayload); err != nil {
+	jiraPayload, err := common.Unmarshal[jiraWebhookPayload](payload)
+	if err != nil {
 		return nil, ErrInvalidWebhookPayload
 	}
 
@@ -250,18 +262,8 @@ func (s *webhookService) HandleTrelloWebhook(ctx context.Context, payload []byte
 		}, nil
 	}
 
-	var trelloPayload struct {
-		Model struct {
-			ID      string `json:"id"`
-			IDBoard string `json:"idBoard"`
-		} `json:"model"`
-		Action struct {
-			ID   string `json:"id"`
-			Type string `json:"type"`
-		} `json:"action"`
-	}
-
-	if err := json.Unmarshal(payload, &trelloPayload); err != nil {
+	trelloPayload, err := common.Unmarshal[trelloWebhookPayload](payload)
+	if err != nil {
 		return nil, ErrInvalidWebhookPayload
 	}
 

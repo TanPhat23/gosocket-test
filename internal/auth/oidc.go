@@ -6,11 +6,12 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"agent-task-manager/internal/common"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -157,7 +158,7 @@ func (c *OIDCClient) GenerateOIDCState() (*OIDCState, string, error) {
 
 // SignOIDCState encodes and signs OIDCState.
 func (c *OIDCClient) SignOIDCState(state *OIDCState) (string, error) {
-	data, err := json.Marshal(state)
+	data, err := common.Marshal(state)
 	if err != nil {
 		return "", err
 	}
@@ -198,8 +199,8 @@ func (c *OIDCClient) VerifyOIDCState(signedState string) (*OIDCState, error) {
 		return nil, ErrInvalidState
 	}
 
-	var state OIDCState
-	if err := json.Unmarshal(payloadBytes, &state); err != nil {
+	state, err := common.Unmarshal[OIDCState](payloadBytes)
+	if err != nil {
 		return nil, ErrInvalidState
 	}
 

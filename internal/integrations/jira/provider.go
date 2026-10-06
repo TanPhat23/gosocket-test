@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/integrations"
 	"agent-task-manager/internal/models"
 )
@@ -143,7 +144,7 @@ func (p *Provider) buildAuthHeader(integration *models.ProjectIntegration, plain
 func (p *Provider) doRequest(ctx context.Context, method, fullURL, authHeader string, body any) (*http.Response, error) {
 	var bodyReader io.Reader
 	if body != nil {
-		b, err := json.Marshal(body)
+		b, err := common.Marshal(body)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal request body: %w", err)
 		}

@@ -2,11 +2,11 @@ package queue
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
+	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/config"
 	"agent-task-manager/internal/models"
 
@@ -81,7 +81,7 @@ func (c *asynqClient) EnqueueTask(ctx context.Context, task *models.Task) (strin
 		ProjectID: task.ProjectID,
 	}
 
-	payloadBytes, err := json.Marshal(payload)
+	payloadBytes, err := common.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal task execution payload: %w", err)
 	}

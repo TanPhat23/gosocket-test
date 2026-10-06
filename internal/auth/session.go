@@ -4,12 +4,13 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
+
+	"agent-task-manager/internal/common"
 
 	"github.com/gofiber/fiber/v3"
 )
@@ -50,7 +51,7 @@ func NewSessionManager(secret []byte, ttl time.Duration, secure bool) *SessionMa
 
 // SignPayload encodes and signs the given claims using HMAC-SHA256.
 func (sm *SessionManager) SignPayload(claims SessionClaims) (string, error) {
-	data, err := json.Marshal(claims)
+	data, err := common.Marshal(claims)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal claims: %w", err)
 	}
@@ -92,8 +93,8 @@ func (sm *SessionManager) VerifyPayload(token string) (*SessionClaims, error) {
 		return nil, ErrInvalidSession
 	}
 
-	var claims SessionClaims
-	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
+	claims, err := common.Unmarshal[SessionClaims](payloadBytes)
+	if err != nil {
 		return nil, ErrInvalidSession
 	}
 

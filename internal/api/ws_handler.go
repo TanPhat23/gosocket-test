@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 
 	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/service"
@@ -41,7 +40,7 @@ func WebSocketLogsHandler(hub *ws.Hub, taskSvc service.TaskService, logSvc servi
 				if err == nil {
 					for _, l := range logs {
 						msg := ws.NewLogMessage(taskID, l.LogChunk)
-						data, _ := json.Marshal(msg)
+						data, _ := common.Marshal(msg)
 						if err := client.Send(data); err != nil {
 							return
 						}

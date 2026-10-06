@@ -2,8 +2,9 @@ package models
 
 import (
 	"database/sql/driver"
-	"encoding/json"
 	"errors"
+
+	"agent-task-manager/internal/common"
 )
 
 // StringArray represents a JSONB-serializable array of strings.
@@ -13,7 +14,7 @@ func (a StringArray) Value() (driver.Value, error) {
 	if a == nil {
 		return "[]", nil
 	}
-	return json.Marshal(a)
+	return common.Marshal(a)
 }
 
 func (a *StringArray) Scan(value any) error {
@@ -30,7 +31,12 @@ func (a *StringArray) Scan(value any) error {
 	default:
 		return errors.New("unsupported scan type for StringArray")
 	}
-	return json.Unmarshal(bytes, a)
+	arr, err := common.Unmarshal[StringArray](bytes)
+	if err != nil {
+		return err
+	}
+	*a = arr
+	return nil
 }
 
 // JSONMap represents a JSONB-serializable map of key-value configurations.
@@ -40,7 +46,7 @@ func (m JSONMap) Value() (driver.Value, error) {
 	if m == nil {
 		return "{}", nil
 	}
-	return json.Marshal(m)
+	return common.Marshal(m)
 }
 
 func (m *JSONMap) Scan(value any) error {
@@ -57,5 +63,10 @@ func (m *JSONMap) Scan(value any) error {
 	default:
 		return errors.New("unsupported scan type for JSONMap")
 	}
-	return json.Unmarshal(bytes, m)
+	res, err := common.Unmarshal[JSONMap](bytes)
+	if err != nil {
+		return err
+	}
+	*m = res
+	return nil
 }

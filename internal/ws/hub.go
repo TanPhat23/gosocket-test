@@ -1,7 +1,6 @@
 package ws
 
 import (
-	"encoding/json"
 	"errors"
 	"sync"
 
@@ -108,7 +107,7 @@ func (h *Hub) BroadcastToTask(taskID string, data []byte) {
 // BroadcastTaskLog marshals and broadcasts a log chunk message to subscribers of taskID.
 func (h *Hub) BroadcastTaskLog(taskID string, chunk string) error {
 	msg := NewLogMessage(taskID, chunk)
-	data, err := json.Marshal(msg)
+	data, err := common.Marshal(msg)
 	if err != nil {
 		return err
 	}
@@ -119,7 +118,7 @@ func (h *Hub) BroadcastTaskLog(taskID string, chunk string) error {
 // BroadcastTaskStatus marshals and broadcasts a status update message to subscribers of taskID.
 func (h *Hub) BroadcastTaskStatus(taskID string, status models.TaskStatus) error {
 	msg := NewStatusMessage(taskID, status)
-	data, err := json.Marshal(msg)
+	data, err := common.Marshal(msg)
 	if err != nil {
 		return err
 	}

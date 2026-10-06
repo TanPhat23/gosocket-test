@@ -2,10 +2,10 @@ package queue
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 
+	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/config"
 	"agent-task-manager/internal/models"
 
@@ -112,8 +112,8 @@ func (ws *WorkerServer) Shutdown() {
 }
 
 func (ws *WorkerServer) handleExecuteAgentTask(ctx context.Context, asynqTask *asynq.Task) error {
-	var payload TaskExecutionPayload
-	if err := json.Unmarshal(asynqTask.Payload(), &payload); err != nil {
+	payload, err := common.Unmarshal[TaskExecutionPayload](asynqTask.Payload())
+	if err != nil {
 		return fmt.Errorf("failed to unmarshal task execution payload: %w", err)
 	}
 
