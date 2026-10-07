@@ -23,3 +23,14 @@ type CredentialResponseDTO struct {
 	CreatedAt time.Time                 `json:"created_at"`
 	UpdatedAt time.Time                 `json:"updated_at"`
 }
+
+// GitHubRepositoryDTO represents a GitHub repository returned when listing repos with a PAT.
+type GitHubRepositoryDTO struct {
+	ID            int64  `json:"id"`
+	Name          string `json:"name"`
+	FullName      string `json:"full_name"`
+	Private       bool   `json:"private"`
+	Description   string `json:"description"`
+	HTMLURL       string `json:"html_url"`
+	DefaultBranch string `json:"default_branch"`
+}

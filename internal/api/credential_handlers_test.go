@@ -11,6 +11,7 @@ import (
 	"agent-task-manager/internal/api"
 	"agent-task-manager/internal/auth"
 	"agent-task-manager/internal/crypto"
+	"agent-task-manager/internal/integrations/github"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/repository"
 	"agent-task-manager/internal/service"
@@ -98,14 +99,19 @@ func TestCredentialHandlers(t *testing.T) {
 	// Seed user and team
 	owner := models.User{ID: "usr_owner", Issuer: "https://idp.example.com", Subject: "owner"}
 	member := models.User{ID: "usr_member", Issuer: "https://idp.example.com", Subject: "member"}
+	viewer := models.User{ID: "usr_viewer", Issuer: "https://idp.example.com", Subject: "viewer"}
+	outsider := models.User{ID: "usr_outsider", Issuer: "https://idp.example.com", Subject: "outsider"}
 	db.Create(&owner)
 	db.Create(&member)
+	db.Create(&viewer)
+	db.Create(&outsider)
 
 	team := models.Team{ID: "team_1", Name: "Team One", Slug: "team-one"}
 	db.Create(&team)
 
 	db.Create(&models.TeamMembership{TeamID: team.ID, UserID: owner.ID, Role: models.RoleOwner})
 	db.Create(&models.TeamMembership{TeamID: team.ID, UserID: member.ID, Role: models.RoleMember})
+	db.Create(&models.TeamMembership{TeamID: team.ID, UserID: viewer.ID, Role: models.RoleViewer})
 
 	app := fiber.New(fiber.Config{
 		StructValidator: api.NewStructValidator(),
@@ -125,6 +131,7 @@ func TestCredentialHandlers(t *testing.T) {
 	credentialsGroup.Get("", credHandlers.List)
 	credentialsGroup.Post("", credHandlers.Create)
 	credentialsGroup.Delete("/:credential_id", credHandlers.Delete)
+	teamsGroup.Get("/credentials/:credential_id/github/repos", api.RequireTeamRole(authService, models.RoleViewer), credHandlers.ListGitHubRepositories)
 
 	makeAuthCookie := func(userID string) *http.Cookie {
 		claims := auth.SessionClaims{UserID: userID, ExpiresAt: time.Now().Add(1 * time.Hour)}
@@ -284,6 +291,105 @@ func TestCredentialHandlers(t *testing.T) {
 		}
 		if resp.StatusCode != http.StatusNotFound {
 			t.Fatalf("expected 404 Not Found on delete nonexistent, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("ListGitHubRepositories endpoint", func(t *testing.T) {
+		// Create a GitHub credential
+		ghEncrypted, _ := cipher.Encrypt("ghp_valid_test_token")
+		ghCred := models.Credential{
+			ID:             "cred_gh_test",
+			TeamID:         team.ID,
+			Provider:       models.ProviderGitHub,
+			Label:          "GitHub PAT for tests",
+			EncryptedData:  ghEncrypted,
+			KeyFingerprint: cipher.KeyFingerprint(),
+		}
+		db.Create(&ghCred)
+
+		// Create mock HTTP server simulating GitHub API
+		ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/user/repos" {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			if r.Header.Get("Authorization") != "Bearer ghp_valid_test_token" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			repos := []map[string]any{
+				{
+					"id":             999,
+					"name":           "my-repo",
+					"full_name":      "team/my-repo",
+					"private":        false,
+					"description":    "Test repo",
+					"html_url":       "https://github.com/team/my-repo",
+					"default_branch": "main",
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(repos)
+		}))
+		defer ghServer.Close()
+
+		// Rebuild credService with github provider pointing to test server
+		ghProvider := github.NewProvider(github.WithBaseURL(ghServer.URL), github.WithHTTPClient(ghServer.Client()))
+		appWithGH := fiber.New(fiber.Config{
+			StructValidator: api.NewStructValidator(),
+		})
+		customCredSvc := service.NewCredentialService(credRepo, cipher, service.WithGitHubProvider(ghProvider))
+		customHandlers := api.NewCredentialHandlers(customCredSvc)
+
+		tg := appWithGH.Group("/api/v1/teams/:team_id", api.RequireAuth(authService, sm))
+		tg.Get("/credentials/:credential_id/github/repos", api.RequireTeamRole(authService, models.RoleViewer), customHandlers.ListGitHubRepositories)
+
+		// 1. Team Viewer gets 200 OK and repositories
+		req := httptest.NewRequest("GET", "/api/v1/teams/team_1/credentials/cred_gh_test/github/repos", nil)
+		req.AddCookie(makeAuthCookie(viewer.ID))
+		resp, err := appWithGH.Test(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 OK for viewer, got %d", resp.StatusCode)
+		}
+		var respData map[string][]map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&respData)
+		if len(respData["repositories"]) != 1 || respData["repositories"][0]["name"] != "my-repo" {
+			t.Fatalf("unexpected repositories in response: %+v", respData)
+		}
+
+		// 2. Outsider gets 403 Forbidden
+		reqOutsider := httptest.NewRequest("GET", "/api/v1/teams/team_1/credentials/cred_gh_test/github/repos", nil)
+		reqOutsider.AddCookie(makeAuthCookie(outsider.ID))
+		respOutsider, err := appWithGH.Test(reqOutsider)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if respOutsider.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected 403 Forbidden for outsider, got %d", respOutsider.StatusCode)
+		}
+
+		// 3. Unauthenticated gets 401 Unauthorized
+		reqUnauth := httptest.NewRequest("GET", "/api/v1/teams/team_1/credentials/cred_gh_test/github/repos", nil)
+		respUnauth, err := appWithGH.Test(reqUnauth)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if respUnauth.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expected 401 Unauthorized for unauthenticated, got %d", respUnauth.StatusCode)
+		}
+
+		// 4. Non-existent credential returns 404 Not Found
+		req404 := httptest.NewRequest("GET", "/api/v1/teams/team_1/credentials/non_existent/github/repos", nil)
+		req404.AddCookie(makeAuthCookie(viewer.ID))
+		resp404, err := appWithGH.Test(req404)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if resp404.StatusCode != http.StatusNotFound {
+			t.Fatalf("expected 404 Not Found for non-existent credential, got %d", resp404.StatusCode)
 		}
 	})
 }

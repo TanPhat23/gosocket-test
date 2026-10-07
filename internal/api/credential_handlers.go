@@ -66,3 +66,28 @@ func (h *CredentialHandlers) Delete(c fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{"status": "deleted"})
 }
+
+// ListGitHubRepositories handles GET /api/v1/teams/:team_id/credentials/:credential_id/github/repos.
+func (h *CredentialHandlers) ListGitHubRepositories(c fiber.Ctx) error {
+	teamID := c.Params("team_id")
+	credID := c.Params("credential_id")
+
+	repos, err := h.credService.ListGitHubRepositories(c.Context(), teamID, credID)
+	if err != nil {
+		if errors.Is(err, service.ErrCredentialNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Credential not found"})
+		}
+		if errors.Is(err, service.ErrInvalidProvider) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
+		if err.Error() == "invalid or expired github token" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": err.Error()})
+		}
+		if err.Error() == "github api rate limit exceeded" {
+			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to list GitHub repositories"})
+	}
+
+	return c.JSON(fiber.Map{"repositories": repos})
+}

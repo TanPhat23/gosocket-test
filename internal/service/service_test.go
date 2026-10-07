@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"testing"
 	"time"
 
@@ -226,6 +227,82 @@ func TestCredentialService_EncryptionAndSecurityInvariants(t *testing.T) {
 	if len(listAfter) != 0 {
 		t.Fatalf("expected 0 credentials after delete")
 	}
+
+	t.Run("ListGitHubRepositories validates provider and decrypts token", func(t *testing.T) {
+		// Non-existent credential
+		_, err := credSvc.ListGitHubRepositories(ctx, "team-1", "non-existent")
+		if !errors.Is(err, service.ErrCredentialNotFound) {
+			t.Errorf("expected ErrCredentialNotFound, got %v", err)
+		}
+
+		// Create Jira credential
+		jiraCred, err := credSvc.Create(ctx, "team-1", dto.CreateCredentialRequest{
+			Provider: models.ProviderJira,
+			Label:    "Jira Token",
+			Secret:   "jira_secret_token",
+		})
+		if err != nil {
+			t.Fatalf("failed to create jira cred: %v", err)
+		}
+
+		// List repos on Jira cred should fail
+		_, err = credSvc.ListGitHubRepositories(ctx, "team-1", jiraCred.ID)
+		if !errors.Is(err, service.ErrInvalidProvider) {
+			t.Errorf("expected ErrInvalidProvider, got %v", err)
+		}
+
+		// Create GitHub credential
+		ghCred, err := credSvc.Create(ctx, "team-1", dto.CreateCredentialRequest{
+			Provider: models.ProviderGitHub,
+			Label:    "GitHub PAT",
+			Secret:   "ghp_test_pat_secret",
+		})
+		if err != nil {
+			t.Fatalf("failed to create gh cred: %v", err)
+		}
+
+		// Mock GitHub provider
+		mockGH := &mockGitHubRepoLister{
+			fn: func(ctx context.Context, token string) ([]dto.GitHubRepositoryDTO, error) {
+				if token != "ghp_test_pat_secret" {
+					return nil, errors.New("decrypted token mismatch")
+				}
+				return []dto.GitHubRepositoryDTO{
+					{
+						ID:       101,
+						Name:     "atm",
+						FullName: "test/atm",
+					},
+				}, nil
+			},
+		}
+
+		ghCredSvc := service.NewCredentialService(credRepo, cipher, service.WithGitHubProvider(mockGH))
+		repos, err := ghCredSvc.ListGitHubRepositories(ctx, "team-1", ghCred.ID)
+		if err != nil {
+			t.Fatalf("unexpected error listing repos: %v", err)
+		}
+		if len(repos) != 1 || repos[0].Name != "atm" {
+			t.Errorf("expected 1 repo atm, got %+v", repos)
+		}
+
+		// Tenant isolation: team-2 cannot access team-1's credential
+		_, err = ghCredSvc.ListGitHubRepositories(ctx, "team-2", ghCred.ID)
+		if !errors.Is(err, service.ErrCredentialNotFound) {
+			t.Errorf("expected ErrCredentialNotFound for different team, got %v", err)
+		}
+	})
+}
+
+type mockGitHubRepoLister struct {
+	fn func(ctx context.Context, token string) ([]dto.GitHubRepositoryDTO, error)
+}
+
+func (m *mockGitHubRepoLister) ListRepositories(ctx context.Context, token string) ([]dto.GitHubRepositoryDTO, error) {
+	if m.fn != nil {
+		return m.fn(ctx, token)
+	}
+	return nil, nil
 }
 
 func TestWebhookService_GitHubHMACAndIdempotency(t *testing.T) {

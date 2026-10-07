@@ -189,3 +189,111 @@ func TestGitHubProvider_CreatePullRequest(t *testing.T) {
 		t.Errorf("expected pr url https://github.com/owner/repo/pull/55, got %s", prURL)
 	}
 }
+
+func TestGitHubProvider_ListRepositories(t *testing.T) {
+	t.Run("Success returns mapped repositories", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/user/repos" {
+				t.Errorf("unexpected path: %s", r.URL.Path)
+			}
+			if r.URL.Query().Get("sort") != "updated" || r.URL.Query().Get("per_page") != "100" || r.URL.Query().Get("affiliation") != "owner,collaborator,organization_member" {
+				t.Errorf("unexpected query params: %s", r.URL.RawQuery)
+			}
+			if r.Header.Get("Authorization") != "Bearer ghp_valid_token" {
+				t.Errorf("missing or invalid authorization header: %s", r.Header.Get("Authorization"))
+			}
+			if r.Header.Get("Accept") != "application/vnd.github+json" {
+				t.Errorf("missing or invalid accept header: %s", r.Header.Get("Accept"))
+			}
+
+			repos := []map[string]any{
+				{
+					"id":             123456,
+					"name":           "agent-task-manager",
+					"full_name":      "owner/agent-task-manager",
+					"private":        true,
+					"description":    "Autonomous agent task manager",
+					"html_url":       "https://github.com/owner/agent-task-manager",
+					"default_branch": "main",
+				},
+				{
+					"id":             789012,
+					"name":           "frontend-ui",
+					"full_name":      "org/frontend-ui",
+					"private":        false,
+					"description":    "Web client UI",
+					"html_url":       "https://github.com/org/frontend-ui",
+					"default_branch": "master",
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(repos)
+		}))
+		defer server.Close()
+
+		provider := github.NewProvider(github.WithBaseURL(server.URL), github.WithHTTPClient(server.Client()))
+		repos, err := provider.ListRepositories(context.Background(), "ghp_valid_token")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(repos) != 2 {
+			t.Fatalf("expected 2 repos, got %d", len(repos))
+		}
+		if repos[0].ID != 123456 || repos[0].FullName != "owner/agent-task-manager" || !repos[0].Private || repos[0].DefaultBranch != "main" {
+			t.Errorf("repo 0 mismatch: %+v", repos[0])
+		}
+		if repos[1].ID != 789012 || repos[1].FullName != "org/frontend-ui" || repos[1].Private || repos[1].DefaultBranch != "master" {
+			t.Errorf("repo 1 mismatch: %+v", repos[1])
+		}
+	})
+
+	t.Run("401 Unauthorized returns clean error", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"message": "Bad credentials"}`))
+		}))
+		defer server.Close()
+
+		provider := github.NewProvider(github.WithBaseURL(server.URL), github.WithHTTPClient(server.Client()))
+		_, err := provider.ListRepositories(context.Background(), "ghp_expired_token")
+		if err == nil || err.Error() != "invalid or expired github token" {
+			t.Fatalf("expected 'invalid or expired github token', got %v", err)
+		}
+	})
+
+	t.Run("403 Forbidden with rate limit message returns rate limit error", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"message": "API rate limit exceeded for user ID 123"}`))
+		}))
+		defer server.Close()
+
+		provider := github.NewProvider(github.WithBaseURL(server.URL), github.WithHTTPClient(server.Client()))
+		_, err := provider.ListRepositories(context.Background(), "ghp_token")
+		if err == nil || err.Error() != "github api rate limit exceeded" {
+			t.Fatalf("expected 'github api rate limit exceeded', got %v", err)
+		}
+	})
+
+	t.Run("429 Too Many Requests returns rate limit error", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"message": "too many requests"}`))
+		}))
+		defer server.Close()
+
+		provider := github.NewProvider(github.WithBaseURL(server.URL), github.WithHTTPClient(server.Client()))
+		_, err := provider.ListRepositories(context.Background(), "ghp_token")
+		if err == nil || err.Error() != "github api rate limit exceeded" {
+			t.Fatalf("expected 'github api rate limit exceeded', got %v", err)
+		}
+	})
+
+	t.Run("Empty token returns error without HTTP request", func(t *testing.T) {
+		provider := github.NewProvider()
+		_, err := provider.ListRepositories(context.Background(), "")
+		if err == nil || err.Error() != "github token cannot be empty" {
+			t.Fatalf("expected empty token error, got %v", err)
+		}
+	})
+}

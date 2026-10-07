@@ -187,4 +187,7 @@ func (s *Server) setupRoutes() {
 	credentialsGroup.Get("", credHandlers.List)
 	credentialsGroup.Post("", credHandlers.Create)
 	credentialsGroup.Delete("/:credential_id", credHandlers.Delete)
+
+	// GitHub repository list endpoint allows team viewers and above
+	teamsGroup.Get("/credentials/:credential_id/github/repos", RequireTeamRole(s.AuthService, models.RoleViewer), credHandlers.ListGitHubRepositories)
 }

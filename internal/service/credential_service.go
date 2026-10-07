@@ -9,6 +9,7 @@ import (
 	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/crypto"
 	"agent-task-manager/internal/dto"
+	"agent-task-manager/internal/integrations/github"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/repository"
 	"gorm.io/gorm"
@@ -16,6 +17,14 @@ import (
 
 // ErrCredentialNotFound indicates that the requested credential was not found.
 var ErrCredentialNotFound = errors.New("credential not found")
+
+// ErrInvalidProvider indicates that the credential is not for the expected provider.
+var ErrInvalidProvider = errors.New("credential provider must be github")
+
+// GitHubRepoLister provides an interface to list repositories from GitHub.
+type GitHubRepoLister interface {
+	ListRepositories(ctx context.Context, token string) ([]dto.GitHubRepositoryDTO, error)
+}
 
 func toCredentialDTO(c *models.Credential) dto.CredentialResponseDTO {
 	return dto.CredentialResponseDTO{
@@ -33,19 +42,36 @@ type CredentialService interface {
 	List(ctx context.Context, teamID string) ([]dto.CredentialResponseDTO, error)
 	Create(ctx context.Context, teamID string, req dto.CreateCredentialRequest) (*dto.CredentialResponseDTO, error)
 	Delete(ctx context.Context, teamID, credID string) error
+	ListGitHubRepositories(ctx context.Context, teamID, credentialID string) ([]dto.GitHubRepositoryDTO, error)
 }
 
 type credentialService struct {
-	credRepo repository.CredentialRepository
-	cipher   *crypto.SecretCipher
+	credRepo       repository.CredentialRepository
+	cipher         *crypto.SecretCipher
+	githubProvider GitHubRepoLister
+}
+
+// CredentialServiceOption configures optional dependencies for CredentialService.
+type CredentialServiceOption func(*credentialService)
+
+// WithGitHubProvider overrides the default GitHub provider.
+func WithGitHubProvider(provider GitHubRepoLister) CredentialServiceOption {
+	return func(s *credentialService) {
+		s.githubProvider = provider
+	}
 }
 
 // NewCredentialService creates a new CredentialService.
-func NewCredentialService(credRepo repository.CredentialRepository, cipher *crypto.SecretCipher) CredentialService {
-	return &credentialService{
-		credRepo: credRepo,
-		cipher:   cipher,
+func NewCredentialService(credRepo repository.CredentialRepository, cipher *crypto.SecretCipher, opts ...CredentialServiceOption) CredentialService {
+	s := &credentialService{
+		credRepo:       credRepo,
+		cipher:         cipher,
+		githubProvider: github.NewProvider(),
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 func (s *credentialService) List(ctx context.Context, teamID string) ([]dto.CredentialResponseDTO, error) {
@@ -98,4 +124,43 @@ func (s *credentialService) Delete(ctx context.Context, teamID, credID string) e
 		return ErrCredentialNotFound
 	}
 	return err
+}
+
+func (s *credentialService) ListGitHubRepositories(ctx context.Context, teamID, credentialID string) ([]dto.GitHubRepositoryDTO, error) {
+	if s.cipher == nil {
+		return nil, errors.New("secret encryption service is not configured")
+	}
+
+	cred, err := s.credRepo.GetByIDAndTeam(ctx, credentialID, teamID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrCredentialNotFound
+		}
+		return nil, err
+	}
+
+	if cred.Provider != models.ProviderGitHub {
+		return nil, ErrInvalidProvider
+	}
+
+	decryptedToken, err := s.cipher.Decrypt(cred.EncryptedData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt credential secret: %w", err)
+	}
+
+	ghProvider := s.githubProvider
+	if ghProvider == nil {
+		ghProvider = github.NewProvider()
+	}
+
+	repos, err := ghProvider.ListRepositories(ctx, decryptedToken)
+	// Clear the decrypted token in memory
+	decryptedToken = ""
+	_ = decryptedToken
+
+	if err != nil {
+		return nil, err
+	}
+
+	return repos, nil
 }

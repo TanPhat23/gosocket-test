@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"agent-task-manager/internal/common"
+	"agent-task-manager/internal/dto"
 	"agent-task-manager/internal/integrations"
 	"agent-task-manager/internal/models"
 )
@@ -312,4 +313,66 @@ func (p *Provider) CreatePullRequest(ctx context.Context, integration *models.Pr
 	}
 
 	return prResp.HTMLURL, nil
+}
+
+type ghRepoResponse struct {
+	ID            int64  `json:"id"`
+	Name          string `json:"name"`
+	FullName      string `json:"full_name"`
+	Private       bool   `json:"private"`
+	Description   string `json:"description"`
+	HTMLURL       string `json:"html_url"`
+	DefaultBranch string `json:"default_branch"`
+}
+
+// ListRepositories lists repositories accessible by the given GitHub PAT.
+func (p *Provider) ListRepositories(ctx context.Context, token string) ([]dto.GitHubRepositoryDTO, error) {
+	if token == "" {
+		return nil, errors.New("github token cannot be empty")
+	}
+
+	endpoint := "/user/repos?sort=updated&per_page=100&affiliation=owner,collaborator,organization_member"
+	resp, err := p.doRequest(ctx, http.MethodGet, endpoint, token, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, errors.New("invalid or expired github token")
+	}
+	if resp.StatusCode == http.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		if strings.Contains(strings.ToLower(string(body)), "rate limit") {
+			return nil, errors.New("github api rate limit exceeded")
+		}
+		return nil, fmt.Errorf("github api access forbidden: %s", string(body))
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil, errors.New("github api rate limit exceeded")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("github list repositories returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var ghRepos []ghRepoResponse
+	if err := json.NewDecoder(resp.Body).Decode(&ghRepos); err != nil {
+		return nil, fmt.Errorf("failed to decode github repositories: %w", err)
+	}
+
+	repos := make([]dto.GitHubRepositoryDTO, 0, len(ghRepos))
+	for _, r := range ghRepos {
+		repos = append(repos, dto.GitHubRepositoryDTO{
+			ID:            r.ID,
+			Name:          r.Name,
+			FullName:      r.FullName,
+			Private:       r.Private,
+			Description:   r.Description,
+			HTMLURL:       r.HTMLURL,
+			DefaultBranch: r.DefaultBranch,
+		})
+	}
+
+	return repos, nil
 }
