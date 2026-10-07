@@ -221,7 +221,7 @@ func (s *webhookService) HandleGitHubWebhook(ctx context.Context, payload []byte
 				_ = s.taskRepo.Update(ctx, existingTask)
 				taskIDCreated = existingTask.ID
 			} else {
-				taskID := "task-" + uuid.NewString()
+				taskID := common.NewID()
 				integID := integration.ID
 				task := models.Task{
 					ID:            taskID,

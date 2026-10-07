@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"time"
 
+	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/crypto"
 	"agent-task-manager/internal/dto"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/repository"
-	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -74,7 +74,7 @@ func (s *credentialService) Create(ctx context.Context, teamID string, req dto.C
 
 	now := time.Now()
 	cred := &models.Credential{
-		ID:             "cred_" + uuid.New().String(),
+		ID:             common.NewID(),
 		TeamID:         teamID,
 		Provider:       req.Provider,
 		Label:          req.Label,
