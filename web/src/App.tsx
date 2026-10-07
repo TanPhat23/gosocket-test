@@ -62,6 +62,7 @@ export const WorkspaceView: React.FC = () => {
 export const App: React.FC = () => {
   const user = useAuthStore((state) => state.user);
   const isLoading = useAuthStore((state) => state.isLoading);
+  const isInitialized = useAuthStore((state) => state.isInitialized);
   const fetchUser = useAuthStore((state) => state.fetchUser);
 
   useEffect(() => {
@@ -69,7 +70,7 @@ export const App: React.FC = () => {
   }, [fetchUser]);
 
   // Loading state when initial session check is ongoing and no user cached
-  if (isLoading && !user) {
+  if (!isInitialized || (isLoading && !user)) {
     return (
       <div className="min-h-screen bg-background text-foreground flex flex-col items-center justify-center gap-4">
         <div className="relative flex items-center justify-center">

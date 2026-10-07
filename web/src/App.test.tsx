@@ -45,6 +45,7 @@ describe('App Auth Gateway', () => {
     useAuthStore.setState({
       user: null,
       isLoading: true,
+      isInitialized: false,
       error: null,
       fetchUser: fetchUserMock,
     });
@@ -63,6 +64,7 @@ describe('App Auth Gateway', () => {
     useAuthStore.setState({
       user: null,
       isLoading: false,
+      isInitialized: true,
       error: null,
       fetchUser: fetchUserMock,
     });
@@ -87,6 +89,7 @@ describe('App Auth Gateway', () => {
         display_name: 'Lead Developer',
       },
       isLoading: false,
+      isInitialized: true,
       error: null,
       fetchUser: fetchUserMock,
     });

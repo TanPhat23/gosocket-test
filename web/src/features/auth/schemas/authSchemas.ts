@@ -1,14 +1,19 @@
 import { z } from 'zod';
 
 export const UserSchema = z.object({
-  id: z.string().uuid().or(z.string().min(1)),
-  issuer: z.string().min(1).optional(),
-  subject: z.string().min(1).optional(),
-  email: z.string().email().optional(),
-  display_name: z.string().optional(),
+  id: z.string().min(1),
+  issuer: z.string().min(1).optional().nullable(),
+  subject: z.string().min(1).optional().nullable(),
+  email: z.string().optional().nullable(),
+  display_name: z.string().optional().nullable(),
 });
 
 export type UserDTO = z.infer<typeof UserSchema>;
+
+export const AuthMeResponseSchema = z.union([
+  z.object({ user: UserSchema }).transform((data) => data.user),
+  UserSchema,
+]);
 
 export const LoginResponseSchema = z.object({
   status: z.string(),
