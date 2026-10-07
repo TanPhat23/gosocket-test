@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"agent-task-manager/internal/common"
@@ -74,6 +75,28 @@ type ghWebhookPayload struct {
 			Name string `json:"name"`
 		} `json:"labels"`
 	} `json:"issue"`
+	CheckRun *struct {
+		Name       string `json:"name"`
+		Status     string `json:"status"`
+		Conclusion string `json:"conclusion"`
+		HeadSHA    string `json:"head_sha"`
+		CheckSuite struct {
+			HeadBranch string `json:"head_branch"`
+		} `json:"check_suite"`
+		Output struct {
+			Title   string `json:"title"`
+			Summary string `json:"summary"`
+			Text    string `json:"text"`
+		} `json:"output"`
+	} `json:"check_run"`
+	WorkflowRun *struct {
+		Name       string `json:"name"`
+		Status     string `json:"status"`
+		Conclusion string `json:"conclusion"`
+		HeadBranch string `json:"head_branch"`
+		HeadSHA    string `json:"head_sha"`
+		HTMLURL    string `json:"html_url"`
+	} `json:"workflow_run"`
 }
 
 type jiraWebhookPayload struct {
@@ -233,6 +256,92 @@ func (s *webhookService) HandleGitHubWebhook(ctx context.Context, payload []byte
 		}
 	}
 
+	// 2. Handle GitHub Actions check_run failure feedback loop (ADR-004 Phase 3)
+	if ghPayload.CheckRun != nil {
+		checkRun := ghPayload.CheckRun
+		if checkRun.Conclusion != "failure" {
+			if s.idempotencyStore != nil {
+				_ = s.idempotencyStore.MarkProcessed(ctx, string(models.IntegrationGitHub), integration.ProjectID, deliveryID)
+			}
+			return &dto.WebhookResultDTO{
+				Status:     "ignored",
+				DeliveryID: deliveryID,
+			}, nil
+		}
+
+		headBranch := checkRun.CheckSuite.HeadBranch
+		task := s.findTaskByBranch(ctx, integration.ProjectID, headBranch)
+		if task != nil {
+			diagOutput := checkRun.Output.Text
+			if diagOutput == "" {
+				diagOutput = checkRun.Output.Summary
+			}
+			if len(diagOutput) > 16*1024 {
+				diagOutput = diagOutput[:16*1024]
+			}
+
+			feedbackPrompt := fmt.Sprintf(
+				"Remote CI check '%s' failed on commit %s.\n\n"+
+					"Title: %s\nSummary: %s\nDetails:\n```\n%s\n```\n\n"+
+					"Please review the failure details in the worktree, correct the issues, and ensure all checks succeed.",
+				checkRun.Name,
+				checkRun.HeadSHA,
+				checkRun.Output.Title,
+				checkRun.Output.Summary,
+				diagOutput,
+			)
+
+			task.Prompt = feedbackPrompt
+			task.Status = models.TaskStatusQueued
+			task.UpdatedAt = time.Now().UTC()
+			_ = s.taskRepo.Update(ctx, task)
+
+			if s.queueClient != nil {
+				_, _ = s.queueClient.EnqueueTask(ctx, task)
+			}
+
+			taskIDCreated = task.ID
+		}
+	}
+
+	// 3. Handle GitHub Actions workflow_run failure feedback loop (ADR-004 Phase 3)
+	if ghPayload.WorkflowRun != nil {
+		wfRun := ghPayload.WorkflowRun
+		if wfRun.Conclusion != "failure" {
+			if s.idempotencyStore != nil {
+				_ = s.idempotencyStore.MarkProcessed(ctx, string(models.IntegrationGitHub), integration.ProjectID, deliveryID)
+			}
+			return &dto.WebhookResultDTO{
+				Status:     "ignored",
+				DeliveryID: deliveryID,
+			}, nil
+		}
+
+		headBranch := wfRun.HeadBranch
+		task := s.findTaskByBranch(ctx, integration.ProjectID, headBranch)
+		if task != nil {
+			feedbackPrompt := fmt.Sprintf(
+				"Remote CI workflow '%s' failed on commit %s.\n\n"+
+					"Workflow URL: %s\n\n"+
+					"Please review the workflow logs, correct the issues in the worktree, and ensure all checks succeed.",
+				wfRun.Name,
+				wfRun.HeadSHA,
+				wfRun.HTMLURL,
+			)
+
+			task.Prompt = feedbackPrompt
+			task.Status = models.TaskStatusQueued
+			task.UpdatedAt = time.Now().UTC()
+			_ = s.taskRepo.Update(ctx, task)
+
+			if s.queueClient != nil {
+				_, _ = s.queueClient.EnqueueTask(ctx, task)
+			}
+
+			taskIDCreated = task.ID
+		}
+	}
+
 	if s.idempotencyStore != nil {
 		_ = s.idempotencyStore.MarkProcessed(ctx, string(models.IntegrationGitHub), integration.ProjectID, deliveryID)
 	}
@@ -242,6 +351,34 @@ func (s *webhookService) HandleGitHubWebhook(ctx context.Context, payload []byte
 		DeliveryID: deliveryID,
 		TaskID:     taskIDCreated,
 	}, nil
+}
+
+func (s *webhookService) findTaskByBranch(ctx context.Context, projectID, branchName string) *models.Task {
+	if branchName == "" {
+		return nil
+	}
+
+	// 1. If branch matches convention task/<task_id>
+	if strings.HasPrefix(branchName, "task/") {
+		taskID := strings.TrimPrefix(branchName, "task/")
+		if t, err := s.taskRepo.GetByID(ctx, taskID); err == nil && t != nil {
+			if t.ProjectID == projectID {
+				return t
+			}
+		}
+	}
+
+	// 2. Scan tasks in project by BranchName
+	tasks, err := s.taskRepo.List(ctx, projectID)
+	if err == nil {
+		for i := range tasks {
+			if tasks[i].BranchName != nil && *tasks[i].BranchName == branchName {
+				return &tasks[i]
+			}
+		}
+	}
+
+	return nil
 }
 
 func (s *webhookService) HandleJiraWebhook(ctx context.Context, payload []byte, eventID string) (*dto.WebhookResultDTO, error) {
