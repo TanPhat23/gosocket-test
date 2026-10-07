@@ -31,6 +31,10 @@ type Config struct {
 	MaxConcurrentTasks int
 	TaskTimeoutMinutes int
 
+	// Pre-flight Verification & Self-Repair settings
+	MaxVerificationRetries     int
+	VerificationTimeoutSeconds int
+
 	// Host path mappings for Docker-out-of-Docker
 	HostWorktreeRoot string
 	HostRepoRoot     string
@@ -54,30 +58,32 @@ type Config struct {
 // Load loads the configuration from environment variables with sensible defaults.
 func Load() (*Config, error) {
 	cfg := &Config{
-		Port:                8080,
-		AppEnv:              getEnv("APP_ENV", "development"),
+		Port:                            8080,
+		AppEnv:                          getEnv("APP_ENV", "development"),
 		DatabaseURL:                     os.Getenv("DATABASE_URL"),
 		DatabaseStatementTimeoutSeconds: 15,
 		DatabaseConnectTimeoutSeconds:   5,
 		RedisAddr:                       getEnv("REDIS_ADDR", "localhost:6379"),
-		RedisPassword:       os.Getenv("REDIS_PASSWORD"),
-		SecretEncryptionKey: os.Getenv("SECRET_ENCRYPTION_KEY"),
-		SessionSecret:       os.Getenv("SESSION_SECRET"),
-		MaxConcurrentTasks:  4,
-		TaskTimeoutMinutes:  60,
-		HostWorktreeRoot:    getEnv("HOST_WORKTREE_ROOT", "/srv/agent-tasks/worktrees"),
-		HostRepoRoot:        getEnv("HOST_REPO_ROOT", "/srv/agent-tasks/repos"),
-		OIDCIssuerURL:         os.Getenv("OIDC_ISSUER_URL"),
-		OIDCInternalIssuerURL: os.Getenv("OIDC_INTERNAL_ISSUER_URL"),
-		OIDCClientID:          os.Getenv("OIDC_CLIENT_ID"),
-		OIDCClientSecret:      os.Getenv("OIDC_CLIENT_SECRET"),
-		OIDCRedirectURL:       os.Getenv("OIDC_REDIRECT_URL"),
-		OpenCodeServerURL:     getEnv("OPENCODE_SERVER_URL", "http://127.0.0.1:49374"),
-		OpenCodePassword:      os.Getenv("OPENCODE_PASSWORD"),
-		OpenCodeBinPath:       getEnv("OPENCODE_BIN_PATH", "/home/ghug/.opencode/bin/opencode"),
-		OpenCodeHomePath:      getEnv("OPENCODE_HOME_PATH", "/home/ghug/.opencode"),
-		OpenCodeConfigDir:     getEnv("OPENCODE_CONFIG_DIR", "/home/ghug/.config/opencode"),
-		OpenCodeDataDir:       getEnv("OPENCODE_DATA_DIR", "/home/ghug/.local/share/opencode"),
+		RedisPassword:                   os.Getenv("REDIS_PASSWORD"),
+		SecretEncryptionKey:             os.Getenv("SECRET_ENCRYPTION_KEY"),
+		SessionSecret:                   os.Getenv("SESSION_SECRET"),
+		MaxConcurrentTasks:              4,
+		TaskTimeoutMinutes:              60,
+		MaxVerificationRetries:          3,
+		VerificationTimeoutSeconds:      120,
+		HostWorktreeRoot:                getEnv("HOST_WORKTREE_ROOT", "/srv/agent-tasks/worktrees"),
+		HostRepoRoot:                    getEnv("HOST_REPO_ROOT", "/srv/agent-tasks/repos"),
+		OIDCIssuerURL:                   os.Getenv("OIDC_ISSUER_URL"),
+		OIDCInternalIssuerURL:           os.Getenv("OIDC_INTERNAL_ISSUER_URL"),
+		OIDCClientID:                    os.Getenv("OIDC_CLIENT_ID"),
+		OIDCClientSecret:                os.Getenv("OIDC_CLIENT_SECRET"),
+		OIDCRedirectURL:                 os.Getenv("OIDC_REDIRECT_URL"),
+		OpenCodeServerURL:               getEnv("OPENCODE_SERVER_URL", "http://127.0.0.1:49374"),
+		OpenCodePassword:                os.Getenv("OPENCODE_PASSWORD"),
+		OpenCodeBinPath:                 getEnv("OPENCODE_BIN_PATH", "/home/ghug/.opencode/bin/opencode"),
+		OpenCodeHomePath:                getEnv("OPENCODE_HOME_PATH", "/home/ghug/.opencode"),
+		OpenCodeConfigDir:               getEnv("OPENCODE_CONFIG_DIR", "/home/ghug/.config/opencode"),
+		OpenCodeDataDir:                 getEnv("OPENCODE_DATA_DIR", "/home/ghug/.local/share/opencode"),
 	}
 
 	if cfg.OpenCodePassword == "" {
@@ -130,6 +136,22 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("invalid TASK_TIMEOUT_MINUTES value %q: %w", timeoutStr, err)
 		}
 		cfg.TaskTimeoutMinutes = timeout
+	}
+
+	if retriesStr := os.Getenv("MAX_VERIFICATION_RETRIES"); retriesStr != "" {
+		retries, err := strconv.Atoi(retriesStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid MAX_VERIFICATION_RETRIES value %q: %w", retriesStr, err)
+		}
+		cfg.MaxVerificationRetries = retries
+	}
+
+	if verifyTimeoutStr := os.Getenv("VERIFICATION_TIMEOUT_SECONDS"); verifyTimeoutStr != "" {
+		vTimeout, err := strconv.Atoi(verifyTimeoutStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid VERIFICATION_TIMEOUT_SECONDS value %q: %w", verifyTimeoutStr, err)
+		}
+		cfg.VerificationTimeoutSeconds = vTimeout
 	}
 
 	return cfg, nil

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-task-manager/internal/config"
@@ -58,6 +59,11 @@ type AgentTaskRunner struct {
 	credRepo     repository.CredentialRepository
 	cipher       *crypto.SecretCipher
 	ghProvider   integrations.PullRequestProvider
+
+	mu        sync.RWMutex
+	doneChans map[string][]chan error
+	running   map[string]bool
+	completed map[string]error
 }
 
 // NewAgentTaskRunner creates a new AgentTaskRunner.
@@ -81,11 +87,105 @@ func NewAgentTaskRunner(
 		dockerRunner: dockerRunner,
 		dockerCli:    dockerCli,
 		hub:          hub,
+		doneChans:    make(map[string][]chan error),
+		running:      make(map[string]bool),
+		completed:    make(map[string]error),
 	}
 	for _, opt := range opts {
 		opt(runner)
 	}
 	return runner
+}
+
+// VerificationResult encapsulates the result of pre-flight verification tests.
+type VerificationResult struct {
+	Passed bool
+	Output string
+}
+
+// DetectVerificationCommand inspects the worktree root to determine the appropriate test command.
+// If ATM_VERIFY_CMD is set, its value takes precedence.
+func DetectVerificationCommand(worktreePath string) string {
+	if override := os.Getenv("ATM_VERIFY_CMD"); strings.TrimSpace(override) != "" {
+		return strings.TrimSpace(override)
+	}
+
+	if worktreePath == "" {
+		return ""
+	}
+
+	// 1. Go project
+	if _, err := os.Stat(filepath.Join(worktreePath, "go.mod")); err == nil {
+		return "go test ./..."
+	}
+
+	// 2. Node / JS / TS project
+	if _, err := os.Stat(filepath.Join(worktreePath, "package.json")); err == nil {
+		return "npm test"
+	}
+
+	// 3. Rust project
+	if _, err := os.Stat(filepath.Join(worktreePath, "Cargo.toml")); err == nil {
+		return "cargo test"
+	}
+
+	// 4. Makefile
+	if _, err := os.Stat(filepath.Join(worktreePath, "Makefile")); err == nil {
+		return "make test"
+	}
+
+	return ""
+}
+
+// RunPreFlightVerification executes the verification command inside the worktree directory.
+func RunPreFlightVerification(ctx context.Context, worktreeDir, verifyCmd string) (*VerificationResult, error) {
+	if strings.TrimSpace(verifyCmd) == "" {
+		return &VerificationResult{Passed: true, Output: ""}, nil
+	}
+
+	cmd := exec.CommandContext(ctx, "sh", "-c", verifyCmd)
+	cmd.Dir = worktreeDir
+	var outBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &outBuf
+
+	err := cmd.Run()
+	output := truncateLog(outBuf.String(), 200, 16*1024)
+
+	if err != nil {
+		return &VerificationResult{
+			Passed: false,
+			Output: output,
+		}, nil
+	}
+
+	return &VerificationResult{
+		Passed: true,
+		Output: output,
+	}, nil
+}
+
+// FormatVerificationFeedbackPrompt formats the diagnostic feedback prompt for the ongoing OpenCode session.
+func FormatVerificationFeedbackPrompt(iteration, maxIterations int, failureOutput string) string {
+	return fmt.Sprintf(
+		"Pre-flight verification failed (Iteration %d/%d) with the following error output:\n\n"+
+			"```\n%s\n```\n\n"+
+			"Please review the error output, inspect the relevant files, fix the root cause, "+
+			"and ensure all tests pass.",
+		iteration, maxIterations, failureOutput,
+	)
+}
+
+func truncateLog(s string, maxLines, maxBytes int) string {
+	if len(s) > maxBytes {
+		s = s[len(s)-maxBytes:]
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+		s = strings.Join(lines, "\n")
+	}
+	return strings.TrimSpace(s)
 }
 
 // EnsureGitRepo verifies that a valid Git repository exists at repoPath with an initial commit, creating one if missing.
@@ -182,11 +282,94 @@ func SyncRepoWithRemote(ctx context.Context, repoPath string, logFn func(string)
 	return nil
 }
 
+// Watch registers and returns a receive-only channel that receives the task completion error
+// (or nil on success) and is closed when the task finishes.
+// If the task has already completed, the cached completion error is delivered immediately and the channel is closed.
+func (r *AgentTaskRunner) Watch(taskID string) <-chan error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.doneChans == nil {
+		r.doneChans = make(map[string][]chan error)
+	}
+	if r.running == nil {
+		r.running = make(map[string]bool)
+	}
+	if r.completed == nil {
+		r.completed = make(map[string]error)
+	}
+
+	ch := make(chan error, 1)
+
+	// 1. If already completed, deliver cached completion error and close immediately
+	if err, ok := r.completed[taskID]; ok {
+		ch <- err
+		close(ch)
+		return ch
+	}
+
+	// 2. Otherwise register watcher for ongoing or upcoming run
+	r.doneChans[taskID] = append(r.doneChans[taskID], ch)
+	return ch
+}
+
+// IsRunning returns true if the specified task is actively executing in the runner.
+func (r *AgentTaskRunner) IsRunning(taskID string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.running == nil {
+		return false
+	}
+	return r.running[taskID]
+}
+
+// RunTaskAsync executes RunTask in a background goroutine and returns a receive-only done channel.
+func (r *AgentTaskRunner) RunTaskAsync(ctx context.Context, task *models.Task, attempt *models.TaskAttempt) <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		err := r.RunTask(ctx, task, attempt)
+		done <- err
+		close(done)
+	}()
+	return done
+}
+
 // RunTask executes an individual task attempt in an isolated worktree and runs OpenCode.
-func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attempt *models.TaskAttempt) error {
+func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attempt *models.TaskAttempt) (retErr error) {
 	if task == nil {
 		return errors.New("task cannot be nil")
 	}
+
+	r.mu.Lock()
+	if r.doneChans == nil {
+		r.doneChans = make(map[string][]chan error)
+	}
+	if r.running == nil {
+		r.running = make(map[string]bool)
+	}
+	if r.completed == nil {
+		r.completed = make(map[string]error)
+	}
+	r.running[task.ID] = true
+	delete(r.completed, task.ID)
+	r.mu.Unlock()
+
+	defer func() {
+		r.mu.Lock()
+		r.running[task.ID] = false
+		r.completed[task.ID] = retErr
+		chans := r.doneChans[task.ID]
+		delete(r.doneChans, task.ID)
+		r.mu.Unlock()
+
+		for _, ch := range chans {
+			select {
+			case ch <- retErr:
+			default:
+			}
+			close(ch)
+		}
+	}()
 
 	project, err := r.projectRepo.GetByID(ctx, task.ProjectID)
 	if err != nil {
@@ -236,16 +419,71 @@ func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attemp
 	r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[36m[Agent Control Plane]\x1b[0m Model: %s\r\n", selectedModel))
 	r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[36m[Agent Control Plane]\x1b[0m Worktree: %s\r\n\r\n", hostWorktreePath))
 
-	var execErr error
-	if r.dockerRunner != nil && r.dockerCli != nil {
-		execErr = r.runInDocker(ctx, task, attempt, hostWorktreePath, selectedModel)
-	} else {
-		execErr = r.runOnHost(ctx, task, attempt, localWorktreePath, selectedModel)
+	maxIterations := 3
+	if r.cfg != nil && r.cfg.MaxVerificationRetries > 0 {
+		maxIterations = r.cfg.MaxVerificationRetries
 	}
 
-	if execErr != nil {
-		r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\r\n\x1b[31m[Agent Control Plane] Execution failed: %v\x1b[0m\r\n", execErr))
-		return execErr
+	timeoutSec := 120
+	if r.cfg != nil && r.cfg.VerificationTimeoutSeconds > 0 {
+		timeoutSec = r.cfg.VerificationTimeoutSeconds
+	}
+
+	verifyCmd := DetectVerificationCommand(localWorktreePath)
+	currentPrompt := task.Prompt
+
+	for iteration := 1; iteration <= maxIterations; iteration++ {
+		if iteration > 1 {
+			r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\r\n\x1b[33m[Agent Control Plane] Starting autonomous self-repair turn (Iteration %d/%d)...\x1b[0m\r\n", iteration, maxIterations))
+		}
+
+		var execErr error
+		if r.dockerRunner != nil && r.dockerCli != nil {
+			execErr = r.runInDocker(ctx, task, attempt, hostWorktreePath, selectedModel, currentPrompt)
+		} else {
+			execErr = r.runOnHost(ctx, task, attempt, localWorktreePath, selectedModel, currentPrompt)
+		}
+
+		if execErr != nil {
+			r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\r\n\x1b[31m[Agent Control Plane] Execution failed in iteration %d: %v\x1b[0m\r\n", iteration, execErr))
+			return execErr
+		}
+
+		// Run pre-flight verification if a test suite is present
+		if verifyCmd == "" {
+			r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[36m[Agent Control Plane]\x1b[0m No test suite detected. Skipping pre-flight verification.\r\n"))
+			break
+		}
+
+		r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[36m[Agent Control Plane]\x1b[0m Running pre-flight verification: %s\r\n", verifyCmd))
+
+		vCtx, vCancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+		vRes, vErr := RunPreFlightVerification(vCtx, localWorktreePath, verifyCmd)
+		vCancel()
+
+		if vErr != nil {
+			r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[31m[Agent Control Plane] Verification execution error: %v\x1b[0m\r\n", vErr))
+			return fmt.Errorf("verification execution error: %w", vErr)
+		}
+
+		if vRes.Passed {
+			r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[32m✔ Pre-flight verification passed on iteration %d.\x1b[0m\r\n", iteration))
+			break
+		}
+
+		r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[31m✖ Pre-flight verification failed on iteration %d/%d:\x1b[0m\r\n%s\r\n", iteration, maxIterations, vRes.Output))
+
+		if iteration == maxIterations {
+			failReason := fmt.Sprintf("pre-flight verification failed after %d iterations:\n%s", maxIterations, vRes.Output)
+			if attempt != nil {
+				attempt.FailureReason = &failReason
+			}
+			r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\r\n\x1b[31m[Agent Control Plane] %s\x1b[0m\r\n", failReason))
+			return errors.New(failReason)
+		}
+
+		// Prepare diagnostic prompt targeting the existing OpenCode session
+		currentPrompt = FormatVerificationFeedbackPrompt(iteration, maxIterations, vRes.Output)
 	}
 
 	diffRes, diffErr := git.CaptureSnapshot(ctx, localWorktreePath, "main")
@@ -417,7 +655,7 @@ func (r *AgentTaskRunner) BuildProcessEnv(task *models.Task, model string, homeD
 	}
 }
 
-func (r *AgentTaskRunner) runInDocker(ctx context.Context, task *models.Task, attempt *models.TaskAttempt, hostPath, model string) error {
+func (r *AgentTaskRunner) runInDocker(ctx context.Context, task *models.Task, attempt *models.TaskAttempt, hostPath, model, prompt string) error {
 	imageName := "debian:bookworm-slim"
 
 	sessionID := fmt.Sprintf("ses_atm_%s", task.ID)
@@ -433,7 +671,7 @@ func (r *AgentTaskRunner) runInDocker(ctx context.Context, task *models.Task, at
 		"--title", task.Title,
 		"--model", model,
 		"--auto",
-		task.Prompt,
+		prompt,
 	}
 
 	env := r.BuildProcessEnv(task, model, "/root")
@@ -463,7 +701,7 @@ func (r *AgentTaskRunner) runInDocker(ctx context.Context, task *models.Task, at
 	resp, err := r.dockerCli.ContainerCreate(ctx, containerCfg, hostCfg, nil, nil, "")
 	if err != nil {
 		log.Printf("container create failed with debian:bookworm-slim (%v), falling back to host execution", err)
-		return r.runOnHost(ctx, task, attempt, hostPath, model)
+		return r.runOnHost(ctx, task, attempt, hostPath, model, prompt)
 	}
 
 	containerID := resp.ID
@@ -498,7 +736,7 @@ func (r *AgentTaskRunner) runInDocker(ctx context.Context, task *models.Task, at
 	return nil
 }
 
-func (r *AgentTaskRunner) runOnHost(ctx context.Context, task *models.Task, attempt *models.TaskAttempt, worktreeDir, model string) error {
+func (r *AgentTaskRunner) runOnHost(ctx context.Context, task *models.Task, attempt *models.TaskAttempt, worktreeDir, model, prompt string) error {
 	binPath := r.cfg.OpenCodeBinPath
 	if _, err := os.Stat(binPath); err != nil {
 		binPath = "opencode"
@@ -516,7 +754,7 @@ func (r *AgentTaskRunner) runOnHost(ctx context.Context, task *models.Task, atte
 		"--title", task.Title,
 		"--model", model,
 		"--auto",
-		task.Prompt,
+		prompt,
 	}
 
 	cmd := exec.CommandContext(ctx, binPath, args...)
