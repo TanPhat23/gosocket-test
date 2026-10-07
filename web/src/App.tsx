@@ -3,7 +3,6 @@ import { useAuthStore } from '@/features/auth/store/useAuthStore';
 import { useTaskStore } from '@/features/tasks/store/useTaskStore';
 import { useTeamStore } from '@/features/teams/store/useTeamStore';
 import { useTaskSubscription } from '@/features/tasks/hooks/useTaskSubscription';
-import { LoginScreen } from '@/features/auth/components/LoginScreen';
 import { Header } from '@/components/layout/Header';
 import { Footer } from '@/components/layout/Footer';
 import { TaskMetricsGrid } from '@/features/tasks/components/TaskMetricsGrid';
@@ -69,34 +68,39 @@ export const App: React.FC = () => {
     fetchUser();
   }, [fetchUser]);
 
-  // Loading state when initial session check is ongoing and no user cached
+  // Unauthenticated: auto-redirect to SSO gateway
+  useEffect(() => {
+    if (isInitialized && !user) {
+      window.location.href = '/api/v1/auth/login';
+    }
+  }, [isInitialized, user]);
+
+  // Initial session check in progress
   if (!isInitialized || (isLoading && !user)) {
     return (
-      <div className="min-h-screen bg-background text-foreground flex flex-col items-center justify-center gap-4">
-        <div className="relative flex items-center justify-center">
-          <div
-            className="absolute -inset-2 rounded-full bg-primary/20 blur-lg animate-pulse"
-            aria-hidden="true"
-          />
-          <div className="relative size-12 rounded-xl bg-card border border-border shadow-md flex items-center justify-center text-primary">
-            <Loader2 className="size-6 animate-spin text-primary" />
-          </div>
-        </div>
-        <div className="text-center space-y-1">
-          <p className="text-sm font-medium tracking-tight text-foreground">
+      <div className="min-h-screen bg-background text-foreground flex flex-col items-center justify-center p-4">
+        <div className="flex flex-col items-center gap-3 text-center" role="status" aria-live="polite">
+          <Loader2 className="size-5 animate-spin text-muted-foreground" aria-hidden="true" />
+          <p className="text-sm font-medium text-foreground tracking-tight">
             Verifying session...
-          </p>
-          <p className="text-xs text-muted-foreground font-mono">
-            Connecting to security gateway
           </p>
         </div>
       </div>
     );
   }
 
-  // Unauthenticated: gate workspace with LoginScreen
+  // Session check resolved without user; redirecting to SSO
   if (!user) {
-    return <LoginScreen />;
+    return (
+      <div className="min-h-screen bg-background text-foreground flex flex-col items-center justify-center p-4">
+        <div className="flex flex-col items-center gap-3 text-center" role="status" aria-live="polite">
+          <Loader2 className="size-5 animate-spin text-muted-foreground" aria-hidden="true" />
+          <p className="text-sm font-medium text-foreground tracking-tight">
+            Redirecting to sign-in...
+          </p>
+        </div>
+      </div>
+    );
   }
 
   // Authenticated workspace

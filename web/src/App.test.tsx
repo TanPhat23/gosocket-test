@@ -53,32 +53,54 @@ describe('App Auth Gateway', () => {
     renderWithProviders(<App />);
 
     expect(fetchUserMock).toHaveBeenCalledTimes(1);
-    expect(screen.getByText(/Verifying session\.\.\./i)).toBeInTheDocument();
+    expect(screen.getByText('Verifying session...')).toBeInTheDocument();
     expect(screen.queryByText(/Agent Control Plane/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Autonomous Coding Control Plane/i)).not.toBeInTheDocument();
     expect(fetchTasksMock).not.toHaveBeenCalled();
     expect(fetchTeamsMock).not.toHaveBeenCalled();
   });
 
-  it('renders LoginScreen when session check finishes and user is not authenticated', () => {
-    useAuthStore.setState({
-      user: null,
-      isLoading: false,
-      isInitialized: true,
-      error: null,
-      fetchUser: fetchUserMock,
+  it('triggers auto-redirect to /api/v1/auth/login and renders "Redirecting to sign-in..." when unauthenticated', () => {
+    // Set up location mock
+    const locationHrefSpy = vi.fn();
+    const originalLocation = window.location;
+
+    // In jsdom, window.location can be redefined or spied on
+    Object.defineProperty(window, 'location', {
+      writable: true,
+      value: {
+        ...originalLocation,
+        get href() {
+          return 'http://localhost/';
+        },
+        set href(val: string) {
+          locationHrefSpy(val);
+        },
+      },
     });
 
-    renderWithProviders(<App />);
+    try {
+      useAuthStore.setState({
+        user: null,
+        isLoading: false,
+        isInitialized: true,
+        error: null,
+        fetchUser: fetchUserMock,
+      });
 
-    expect(fetchUserMock).toHaveBeenCalledTimes(1);
-    expect(
-      screen.getByRole('heading', { level: 1, name: /Autonomous Coding Control Plane/i })
-    ).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /Sign in with SSO/i })).toBeInTheDocument();
-    expect(screen.queryByText(/Agent Control Plane/i)).not.toBeInTheDocument();
-    expect(fetchTasksMock).not.toHaveBeenCalled();
-    expect(fetchTeamsMock).not.toHaveBeenCalled();
+      renderWithProviders(<App />);
+
+      expect(fetchUserMock).toHaveBeenCalledTimes(1);
+      expect(locationHrefSpy).toHaveBeenCalledWith('/api/v1/auth/login');
+      expect(screen.getByText('Redirecting to sign-in...')).toBeInTheDocument();
+      expect(screen.queryByText(/Agent Control Plane/i)).not.toBeInTheDocument();
+      expect(fetchTasksMock).not.toHaveBeenCalled();
+      expect(fetchTeamsMock).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(window, 'location', {
+        writable: true,
+        value: originalLocation,
+      });
+    }
   });
 
   it('renders authenticated workspace when user is logged in and triggers task/team fetches', () => {
@@ -98,7 +120,6 @@ describe('App Auth Gateway', () => {
 
     expect(fetchUserMock).toHaveBeenCalledTimes(1);
     expect(screen.getByText('Agent Control Plane')).toBeInTheDocument();
-    expect(screen.queryByText(/Autonomous Coding Control Plane/i)).not.toBeInTheDocument();
     expect(fetchTasksMock).toHaveBeenCalledTimes(1);
     expect(fetchTeamsMock).toHaveBeenCalled();
   });
