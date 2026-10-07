@@ -17,7 +17,7 @@ describe('LoginForm', () => {
     });
   });
 
-  it('renders title, subtitle, pre-filled inputs, submit button, and SSO link', () => {
+  it('renders title, subtitle, empty inputs with placeholders, submit button, and SSO link', () => {
     render(<LoginForm />);
 
     expect(screen.getByText('Agent Task Manager')).toBeInTheDocument();
@@ -27,10 +27,12 @@ describe('LoginForm', () => {
     const passwordInput = screen.getByLabelText('Password') as HTMLInputElement;
 
     expect(emailInput).toBeInTheDocument();
-    expect(emailInput.value).toBe('admin@example.com');
+    expect(emailInput.value).toBe('');
+    expect(emailInput).toHaveAttribute('placeholder', 'name@example.com');
 
     expect(passwordInput).toBeInTheDocument();
-    expect(passwordInput.value).toBe('password123');
+    expect(passwordInput.value).toBe('');
+    expect(passwordInput).toHaveAttribute('placeholder', '••••••••');
 
     const submitBtn = screen.getByRole('button', { name: 'Sign In' });
     expect(submitBtn).toBeInTheDocument();
@@ -41,9 +43,8 @@ describe('LoginForm', () => {
     expect(ssoLink).toBeInTheDocument();
     expect(ssoLink).toHaveAttribute('href', '/api/v1/auth/login');
 
-    expect(screen.getByText(/Local demo:/i)).toBeInTheDocument();
-    expect(screen.getByText('admin@example.com')).toBeInTheDocument();
-    expect(screen.getByText('password123')).toBeInTheDocument();
+    expect(screen.queryByText(/Local demo:/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('password123')).not.toBeInTheDocument();
   });
 
   it('submits form with entered credentials when submitted', async () => {

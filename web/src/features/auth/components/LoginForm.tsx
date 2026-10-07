@@ -5,8 +5,8 @@ import { Input } from '@/components/ui/input';
 import { ArrowRight, AlertCircle } from 'lucide-react';
 
 export const LoginForm: React.FC = () => {
-  const [email, setEmail] = useState('admin@example.com');
-  const [password, setPassword] = useState('password123');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const login = useAuthStore((state) => state.login);
   const isLoading = useAuthStore((state) => state.isLoading);
   const error = useAuthStore((state) => state.error);
@@ -50,6 +50,7 @@ export const LoginForm: React.FC = () => {
             <Input
               id="email"
               type="email"
+              placeholder="name@example.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
@@ -68,6 +69,7 @@ export const LoginForm: React.FC = () => {
             <Input
               id="password"
               type="password"
+              placeholder="••••••••"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
@@ -103,11 +105,6 @@ export const LoginForm: React.FC = () => {
           <span>Sign in with SSO</span>
           <ArrowRight className="size-3.5" aria-hidden="true" />
         </Button>
-
-        <p className="mt-6 text-center text-[11px] text-muted-foreground">
-          Local demo: <span className="font-mono text-foreground/80">admin@example.com</span> ·{' '}
-          <span className="font-mono text-foreground/80">password123</span>
-        </p>
       </div>
     </div>
   );
