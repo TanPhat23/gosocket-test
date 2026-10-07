@@ -236,3 +236,51 @@ asynqCfg := asynq.Config{
 ```
 
 Under heavy queue load, the Asynq worker server processes jobs from the `critical` queue twice as frequently as `default`, and six times as frequently as `low`, preventing lower-priority autonomous exploratory subtasks from starving critical bugfixes.
+
+---
+
+## 5. OpenCode Session Lifecycle & Pipeline Failure Handling
+
+### Persistent Session Architecture
+ATM binds each execution task deterministically to an OpenCode session identifier:
+```
+ses_atm_<task.id>
+```
+Rather than running ephemeral, one-shot sessions where agent memory and tool traces are destroyed upon process termination, persistent sessions preserve conversation context across attempts and verification cycles.
+
+For comprehensive architectural design decisions and implementation details, see:
+- **Architectural Decision Record**: [ADR-004: OpenCode Session Persistence and Failure Feedback](decisions/ADR-004-opencode-session-persistence-and-failure-feedback.md)
+- **Technical Specification & Runbook**: [OpenCode Sessions and Pipeline Feedback Guide](OPENCODE_SESSIONS_AND_PIPELINE_FEEDBACK.md)
+
+### Execution Model & Dual Failure Feedback Loops
+
+ATM implements a dual-interface execution topology combining isolated sandbox runs with autonomous feedback loops:
+
+```
+                      ┌────────────────────────────────────────┐
+                      │          Agent Task Manager            │
+                      └───────────────────┬────────────────────┘
+                                          │
+                  ┌───────────────────────┴───────────────────────┐
+                  ▼                                               ▼
+     ┌─────────────────────────┐                     ┌─────────────────────────┐
+     │ Loop 1: In-Worktree     │                     │ Loop 2: Remote CI/CD    │
+     │ Pre-Flight Verification │                     │ Webhook Feedback        │
+     └────────────┬────────────┘                     └────────────┬────────────┘
+                  │                                               │
+                  │ Local tests/linter fail                       │ GitHub check_run fails
+                  ▼                                               ▼
+     ┌─────────────────────────┐                     ┌─────────────────────────┐
+     │ Feed error logs back to │                     │ Ingest failure logs and │
+     │  `ses_atm_<task.id>`    │                     │ prompt existing session │
+     └────────────┬────────────┘                     └────────────┬────────────┘
+                  │                                               │
+                  ▼                                               ▼
+       [Agent repairs code]                            [Agent commits fix & pushes]
+```
+
+1. **Docker Sandbox & Host CLI**: Invocations in `internal/runner/task_runner.go` supply `--session ses_atm_<task.id>` and `--title "ATM: <task.title>"` along with `--server http://127.0.0.1:49374`, allowing the agent to resume its ongoing reasoning chain across retries.
+2. **Local Pre-Flight Verification Loop**: Immediately following an agent turn, the runner executes configured verification commands (e.g. `go test ./...`) within the worktree. Upon failure, stdout/stderr is captured and injected back into the active session up to a bounded iteration budget (default: 3 iterations).
+3. **Remote CI/CD Webhook Loop**: If a remote GitHub Actions check fails on the task branch, ATM ingests the `check_run` completion webhook, parses failure annotations, and dispatches a repair turn to the existing session without human intervention.
+4. **REST API Control Plane**: OpenCode background server endpoints (`/api/session/{sessionID}/prompt`, `/api/session/{sessionID}/message`) provide programmatic inspection and asynchronous prompting authenticated via HTTP Basic Auth.
+
