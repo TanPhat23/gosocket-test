@@ -11,6 +11,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { TerminalView } from './TerminalView';
 import { DiffViewer } from './DiffViewer';
+import { AgentSessionView } from './AgentSessionView';
 import {
   Info,
   Terminal as TerminalIcon,
@@ -31,6 +32,7 @@ import {
   Loader2,
   Copy,
   Check,
+  Bot,
 } from 'lucide-react';
 import { taskApi } from '../api/taskApi';
 import type { TaskStatus } from '../schemas/taskSchemas';
@@ -301,10 +303,14 @@ export const TaskInspectorModal: React.FC = () => {
           onValueChange={(val) => setActiveTab(val as string)}
           className="flex-1 flex flex-col mt-3 overflow-hidden"
         >
-          <TabsList className="grid grid-cols-3 w-full max-w-md">
+          <TabsList className="grid grid-cols-4 w-full max-w-xl">
             <TabsTrigger value="overview" className="text-xs flex items-center gap-1.5">
               <Info className="size-3.5" />
               Overview
+            </TabsTrigger>
+            <TabsTrigger value="session" className="text-xs flex items-center gap-1.5" data-testid="tab-agent-session">
+              <Bot className="size-3.5" />
+              Agent Session
             </TabsTrigger>
             <TabsTrigger value="terminal" className="text-xs flex items-center gap-1.5">
               <TerminalIcon className="size-3.5" />
@@ -504,6 +510,13 @@ export const TaskInspectorModal: React.FC = () => {
                   ))}
                 </div>
               )}
+            </div>
+          </TabsContent>
+
+          {/* Agent Session Tab */}
+          <TabsContent value="session" className="flex-1 mt-4 overflow-hidden h-full">
+            <div className="h-full w-full min-h-[380px]">
+              <AgentSessionView taskId={task.id} defaultSessionId={task.session_id} />
             </div>
           </TabsContent>
 

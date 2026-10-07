@@ -56,3 +56,48 @@ export const TaskSchema = z.object({
 export const TaskDTOSchema = TaskSchema;
 export type TaskDTO = z.infer<typeof TaskSchema>;
 export type Task = TaskDTO;
+
+// --- Task Session Types (ADR-004) ---
+
+export interface SessionTokens {
+  input: number;
+  output: number;
+  reasoning?: number;
+  cache_read?: number;
+  cache_write?: number;
+}
+
+export interface SessionToolCall {
+  name: string;
+  input?: string | Record<string, unknown>;
+  output?: string | Record<string, unknown>;
+  status?: string;
+  exit_code?: number;
+}
+
+export interface SessionMessage {
+  id: string;
+  type?: string;
+  role?: 'user' | 'assistant' | 'system' | string;
+  agent?: string;
+  model?: string;
+  text?: string;
+  content?: unknown;
+  tool_calls?: SessionToolCall[];
+  created_at?: number | string | null;
+}
+
+export interface TaskSessionResponse {
+  task_id: string;
+  session_id: string;
+  status?: string;
+  model?: string;
+  title?: string;
+  directory?: string;
+  tokens?: SessionTokens;
+  cost?: number;
+  messages: SessionMessage[];
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+

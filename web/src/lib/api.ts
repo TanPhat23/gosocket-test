@@ -19,6 +19,10 @@ import type {
   IntegrationDTO as Integration,
   CreateIntegrationInput as CreateIntegrationRequest,
   UpdateIntegrationInput as UpdateIntegrationRequest,
+  TaskSessionResponse,
+  SessionTokens,
+  SessionMessage,
+  SessionToolCall,
 } from './schemas';
 
 export type {
@@ -35,6 +39,10 @@ export type {
   Integration,
   CreateIntegrationRequest,
   UpdateIntegrationRequest,
+  TaskSessionResponse,
+  SessionTokens,
+  SessionMessage,
+  SessionToolCall,
 };
 
 export interface WebhookResult {
@@ -69,6 +77,9 @@ export class ApiClient {
   createTask = taskApi.createTask;
   cancelTask = taskApi.cancelTask;
   createTaskPR = taskApi.createTaskPR;
+  getTaskSession = taskApi.getTaskSession;
+  promptTaskSession = taskApi.promptTaskSession;
+  compactTaskSession = taskApi.compactTaskSession;
 
   // Integrations
   listProjectIntegrations = integrationApi.listProjectIntegrations;

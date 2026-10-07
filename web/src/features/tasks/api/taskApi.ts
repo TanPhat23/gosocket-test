@@ -39,4 +39,19 @@ export const taskApi = {
     const res = await axiosClient.get<{ id: string; name: string; provider: string; active?: boolean }[]>('/models');
     return res.data;
   },
+
+  async getTaskSession(taskId: string): Promise<import('../schemas/taskSchemas').TaskSessionResponse> {
+    const res = await axiosClient.get<import('../schemas/taskSchemas').TaskSessionResponse>(
+      `/tasks/${encodeURIComponent(taskId)}/session`
+    );
+    return res.data;
+  },
+
+  async promptTaskSession(taskId: string, prompt: string): Promise<void> {
+    await axiosClient.post(`/tasks/${encodeURIComponent(taskId)}/session/prompt`, { prompt });
+  },
+
+  async compactTaskSession(taskId: string): Promise<void> {
+    await axiosClient.post(`/tasks/${encodeURIComponent(taskId)}/session/compact`, {});
+  },
 };

@@ -252,4 +252,58 @@ describe('apiClient (axios)', () => {
     await apiClient.deleteProjectIntegration('proj-1', 'integ-1');
     expect(deleteSpy).toHaveBeenCalledWith('/projects/proj-1/integrations/integ-1');
   });
+
+  it('interacts with agent task sessions (get, prompt, compact)', async () => {
+    const mockSession = {
+      task_id: 'task-123',
+      session_id: 'ses_atm_task-123',
+      status: 'succeeded',
+      model: 'gemini-3.8-flash',
+      tokens: {
+        input: 1000,
+        output: 200,
+        reasoning: 0,
+        cache_read: 0,
+        cache_write: 0,
+      },
+      cost: 0,
+      messages: [
+        {
+          id: 'msg-1',
+          type: 'user',
+          role: 'user',
+          text: 'Inspect repository',
+        },
+      ],
+    };
+
+    const getSpy = vi.spyOn(apiClient.client, 'get').mockResolvedValue({
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config: {} as any,
+      data: mockSession,
+    });
+
+    const session = await apiClient.getTaskSession('task-123');
+    expect(session.session_id).toBe('ses_atm_task-123');
+    expect(session.messages).toHaveLength(1);
+    expect(getSpy).toHaveBeenCalledWith('/tasks/task-123/session');
+
+    const postSpy = vi.spyOn(apiClient.client, 'post').mockResolvedValue({
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config: {} as any,
+      data: { status: 'ok' },
+    });
+
+    await apiClient.promptTaskSession('task-123', 'Focus on unit tests');
+    expect(postSpy).toHaveBeenCalledWith('/tasks/task-123/session/prompt', {
+      prompt: 'Focus on unit tests',
+    });
+
+    await apiClient.compactTaskSession('task-123');
+    expect(postSpy).toHaveBeenCalledWith('/tasks/task-123/session/compact', {});
+  });
 });
