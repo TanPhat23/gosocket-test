@@ -163,12 +163,14 @@ func main() {
 	credService := service.NewCredentialService(credRepo, cipher)
 	webhookService := service.NewWebhookService(integrationRepo, credRepo, taskRepo, idempotencyStore, cipher, queueClient)
 	ghProvider := github.NewProvider()
+	openCodeClient := runner.NewOpenCodeClient(cfg.OpenCodeServerURL, cfg.OpenCodePassword, nil)
 	taskService := service.NewTaskService(
 		taskRepo,
 		attemptRepo,
 		queueClient,
 		hub,
 		service.WithTaskGitHubIntegration(integrationRepo, credRepo, cipher, ghProvider),
+		service.WithTaskSessionDependencies(openCodeClient, projectRepo, teamRepo),
 	)
 	logService := service.NewLogService(logRepo, hub)
 	integrationService := service.NewIntegrationService(integrationRepo, projectRepo, credRepo)

@@ -94,3 +94,28 @@ func ToTaskResponse(t *models.Task) TaskResponse {
 		UpdatedAt:    t.UpdatedAt,
 	}
 }
+
+// TaskSessionPromptRequest represents the payload for prompting an ongoing OpenCode session.
+type TaskSessionPromptRequest struct {
+	Prompt string `json:"prompt" validate:"required,min=1,max=32768"`
+}
+
+// OpenCodeMessageDTO represents an individual message returned from OpenCode session history.
+type OpenCodeMessageDTO struct {
+	ID        string      `json:"id"`
+	Type      string      `json:"type,omitempty"`
+	Agent     string      `json:"agent,omitempty"`
+	Content   interface{} `json:"content,omitempty"`
+	CreatedAt *time.Time  `json:"created_at,omitempty"`
+}
+
+// TaskSessionResponseDTO represents the aggregated session information and history.
+type TaskSessionResponseDTO struct {
+	SessionID string               `json:"session_id"`
+	TaskID    string               `json:"task_id"`
+	Title     string               `json:"title,omitempty"`
+	Directory string               `json:"directory,omitempty"`
+	CreatedAt *time.Time           `json:"created_at,omitempty"`
+	UpdatedAt *time.Time           `json:"updated_at,omitempty"`
+	Messages  []OpenCodeMessageDTO `json:"messages"`
+}

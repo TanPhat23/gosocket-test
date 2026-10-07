@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	"agent-task-manager/internal/dto"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/repository"
+	"agent-task-manager/internal/runner"
 	"agent-task-manager/internal/service"
 	"agent-task-manager/internal/ws"
 	"github.com/glebarez/sqlite"
@@ -468,5 +470,195 @@ func TestTaskServiceSessionIDGenerationAndExecution(t *testing.T) {
 	}
 	if legacyCapture.capturedAttempt.SessionID == nil || *legacyCapture.capturedAttempt.SessionID != expectedLegacySessionID {
 		t.Fatalf("expected legacy attempt.SessionID to be %s, got %+v", expectedLegacySessionID, legacyCapture.capturedAttempt.SessionID)
+	}
+}
+
+type mockOpenCodeClient struct {
+	getSessionFunc        func(ctx context.Context, sessionID string) (*runner.OpenCodeSessionDTO, error)
+	getSessionMsgsFunc    func(ctx context.Context, sessionID string) ([]dto.OpenCodeMessageDTO, error)
+	promptSessionFunc     func(ctx context.Context, sessionID, prompt string) error
+	compactSessionFunc    func(ctx context.Context, sessionID string) error
+}
+
+func (m *mockOpenCodeClient) GetSession(ctx context.Context, sessionID string) (*runner.OpenCodeSessionDTO, error) {
+	if m.getSessionFunc != nil {
+		return m.getSessionFunc(ctx, sessionID)
+	}
+	return &runner.OpenCodeSessionDTO{ID: sessionID, Title: "Mock Session"}, nil
+}
+
+func (m *mockOpenCodeClient) GetSessionMessages(ctx context.Context, sessionID string) ([]dto.OpenCodeMessageDTO, error) {
+	if m.getSessionMsgsFunc != nil {
+		return m.getSessionMsgsFunc(ctx, sessionID)
+	}
+	return []dto.OpenCodeMessageDTO{{ID: "msg-1"}}, nil
+}
+
+func (m *mockOpenCodeClient) PromptSession(ctx context.Context, sessionID, prompt string) error {
+	if m.promptSessionFunc != nil {
+		return m.promptSessionFunc(ctx, sessionID, prompt)
+	}
+	return nil
+}
+
+func (m *mockOpenCodeClient) CompactSession(ctx context.Context, sessionID string) error {
+	if m.compactSessionFunc != nil {
+		return m.compactSessionFunc(ctx, sessionID)
+	}
+	return nil
+}
+
+func TestTaskService_SessionOperationsAndRBAC(t *testing.T) {
+	db := setupTestDB(t)
+	taskRepo := repository.NewTaskRepository(db)
+	attemptRepo := repository.NewAttemptRepository(db)
+	projectRepo := repository.NewProjectRepository(db)
+	teamRepo := repository.NewTeamRepository(db)
+	mockQueue := &mockQueueClient{}
+	ctx := context.Background()
+
+	team := &models.Team{
+		ID:        common.NewID(),
+		Name:      "Session Team",
+		Slug:      "session-team",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	db.Create(team)
+
+	viewerUser := &models.User{
+		ID:          common.NewID(),
+		Email:       "viewer@example.com",
+		DisplayName: "Viewer",
+		Subject:     "sub-viewer",
+		Issuer:      "test",
+	}
+	memberUser := &models.User{
+		ID:          common.NewID(),
+		Email:       "member@example.com",
+		DisplayName: "Member",
+		Subject:     "sub-member",
+		Issuer:      "test",
+	}
+	outsiderUser := &models.User{
+		ID:          common.NewID(),
+		Email:       "outsider@example.com",
+		DisplayName: "Outsider",
+		Subject:     "sub-outsider",
+		Issuer:      "test",
+	}
+	db.Create(viewerUser)
+	db.Create(memberUser)
+	db.Create(outsiderUser)
+
+	db.Create(&models.TeamMembership{TeamID: team.ID, UserID: viewerUser.ID, Role: models.RoleViewer})
+	db.Create(&models.TeamMembership{TeamID: team.ID, UserID: memberUser.ID, Role: models.RoleMember})
+
+	project := &models.Project{
+		ID:       common.NewID(),
+		TeamID:   team.ID,
+		Name:     "Session Project",
+		RepoPath: "/tmp/session-repo",
+	}
+	db.Create(project)
+
+	sessionID := "ses_atm_task123"
+	task := &models.Task{
+		ID:           common.NewID(),
+		ProjectID:    project.ID,
+		Title:        "Session Task",
+		Prompt:       "Do something",
+		AssigneeID:   "agent-1",
+		AssigneeType: models.AssigneeAgent,
+		Status:       models.TaskStatusInProgress,
+		Priority:     models.PriorityNormal,
+		SessionID:    &sessionID,
+		Skills:       models.StringArray{},
+		MCPServers:   models.StringArray{},
+	}
+	db.Create(task)
+
+	mockClient := &mockOpenCodeClient{}
+	taskSvc := service.NewTaskService(
+		taskRepo,
+		attemptRepo,
+		mockQueue,
+		nil,
+		service.WithTaskSessionDependencies(mockClient, projectRepo, teamRepo),
+	)
+
+	// 1. GetTaskSession with viewer user -> Success
+	sessResp, err := taskSvc.GetTaskSession(ctx, task.ID, viewerUser.ID)
+	if err != nil {
+		t.Fatalf("expected viewer to be able to GetTaskSession: %v", err)
+	}
+	if sessResp.SessionID != sessionID || sessResp.TaskID != task.ID {
+		t.Errorf("unexpected session response: %+v", sessResp)
+	}
+
+	// 2. GetTaskSession with outsider user -> 403 Forbidden (AC-SEC-02)
+	_, err = taskSvc.GetTaskSession(ctx, task.ID, outsiderUser.ID)
+	if !errors.Is(err, common.ErrForbidden) {
+		t.Fatalf("expected ErrForbidden for outsider on GetTaskSession, got %v", err)
+	}
+
+	// 3. PromptTaskSession with viewer user -> 403 Forbidden (AC-SEC-02: requires RoleMember)
+	promptReq := &dto.TaskSessionPromptRequest{Prompt: "Next instructions"}
+	err = taskSvc.PromptTaskSession(ctx, task.ID, viewerUser.ID, promptReq)
+	if !errors.Is(err, common.ErrForbidden) {
+		t.Fatalf("expected ErrForbidden for viewer on PromptTaskSession, got %v", err)
+	}
+
+	// 4. PromptTaskSession with member user -> Success
+	err = taskSvc.PromptTaskSession(ctx, task.ID, memberUser.ID, promptReq)
+	if err != nil {
+		t.Fatalf("expected member to be able to PromptTaskSession: %v", err)
+	}
+
+	// 5. CompactTaskSession with viewer user -> 403 Forbidden
+	err = taskSvc.CompactTaskSession(ctx, task.ID, viewerUser.ID)
+	if !errors.Is(err, common.ErrForbidden) {
+		t.Fatalf("expected ErrForbidden for viewer on CompactTaskSession, got %v", err)
+	}
+
+	// 6. CompactTaskSession with member user -> Success
+	err = taskSvc.CompactTaskSession(ctx, task.ID, memberUser.ID)
+	if err != nil {
+		t.Fatalf("expected member to be able to CompactTaskSession: %v", err)
+	}
+
+	// 7. Daemon offline returns common.ErrServiceUnavailable (AC-SEC-04)
+	offlineClient := &mockOpenCodeClient{
+		getSessionFunc: func(ctx context.Context, sessionID string) (*runner.OpenCodeSessionDTO, error) {
+			return nil, common.ErrServiceUnavailable
+		},
+		promptSessionFunc: func(ctx context.Context, sessionID, prompt string) error {
+			return common.ErrServiceUnavailable
+		},
+		compactSessionFunc: func(ctx context.Context, sessionID string) error {
+			return common.ErrServiceUnavailable
+		},
+	}
+	offlineSvc := service.NewTaskService(
+		taskRepo,
+		attemptRepo,
+		mockQueue,
+		nil,
+		service.WithTaskSessionDependencies(offlineClient, projectRepo, teamRepo),
+	)
+
+	_, err = offlineSvc.GetTaskSession(ctx, task.ID, memberUser.ID)
+	if !errors.Is(err, common.ErrServiceUnavailable) {
+		t.Fatalf("expected ErrServiceUnavailable on GetTaskSession, got %v", err)
+	}
+
+	err = offlineSvc.PromptTaskSession(ctx, task.ID, memberUser.ID, promptReq)
+	if !errors.Is(err, common.ErrServiceUnavailable) {
+		t.Fatalf("expected ErrServiceUnavailable on PromptTaskSession, got %v", err)
+	}
+
+	err = offlineSvc.CompactTaskSession(ctx, task.ID, memberUser.ID)
+	if !errors.Is(err, common.ErrServiceUnavailable) {
+		t.Fatalf("expected ErrServiceUnavailable on CompactTaskSession, got %v", err)
 	}
 }

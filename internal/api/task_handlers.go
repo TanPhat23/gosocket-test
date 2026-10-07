@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 
+	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/dto"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/service"
@@ -127,4 +128,109 @@ func (h *TaskHandlers) CreatePR(c fiber.Ctx) error {
 		"pull_request_url": prURL,
 		"pr_url":           prURL,
 	})
+}
+
+// GetSession handles GET /api/v1/tasks/:id/session
+// Protected by RequireAuth.
+func (h *TaskHandlers) GetSession(c fiber.Ctx) error {
+	taskID := c.Params("id")
+	if taskID == "" {
+		taskID = c.Params("task_id")
+	}
+	if taskID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "task id is required"})
+	}
+
+	user := CurrentUser(c)
+	userID := ""
+	if user != nil {
+		userID = user.ID
+	}
+
+	sessionDTO, err := h.taskService.GetTaskSession(c.Context(), taskID, userID)
+	if err != nil {
+		if errors.Is(err, common.ErrForbidden) {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Forbidden: insufficient permissions"})
+		}
+		if errors.Is(err, common.ErrNotFound) || errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Task or session not found"})
+		}
+		if errors.Is(err, common.ErrServiceUnavailable) {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": common.ErrServiceUnavailable.Error()})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(sessionDTO)
+}
+
+// PromptSession handles POST /api/v1/tasks/:id/session/prompt
+// Protected by RequireAuth.
+func (h *TaskHandlers) PromptSession(c fiber.Ctx) error {
+	taskID := c.Params("id")
+	if taskID == "" {
+		taskID = c.Params("task_id")
+	}
+	if taskID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "task id is required"})
+	}
+
+	var req dto.TaskSessionPromptRequest
+	if err := c.Bind().Body(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	user := CurrentUser(c)
+	userID := ""
+	if user != nil {
+		userID = user.ID
+	}
+
+	if err := h.taskService.PromptTaskSession(c.Context(), taskID, userID, &req); err != nil {
+		if errors.Is(err, common.ErrForbidden) {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Forbidden: insufficient permissions"})
+		}
+		if errors.Is(err, common.ErrNotFound) || errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Task or session not found"})
+		}
+		if errors.Is(err, common.ErrServiceUnavailable) {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": common.ErrServiceUnavailable.Error()})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{"status": "ok"})
+}
+
+// CompactSession handles POST /api/v1/tasks/:id/session/compact
+// Protected by RequireAuth.
+func (h *TaskHandlers) CompactSession(c fiber.Ctx) error {
+	taskID := c.Params("id")
+	if taskID == "" {
+		taskID = c.Params("task_id")
+	}
+	if taskID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "task id is required"})
+	}
+
+	user := CurrentUser(c)
+	userID := ""
+	if user != nil {
+		userID = user.ID
+	}
+
+	if err := h.taskService.CompactTaskSession(c.Context(), taskID, userID); err != nil {
+		if errors.Is(err, common.ErrForbidden) {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Forbidden: insufficient permissions"})
+		}
+		if errors.Is(err, common.ErrNotFound) || errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Task or session not found"})
+		}
+		if errors.Is(err, common.ErrServiceUnavailable) {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": common.ErrServiceUnavailable.Error()})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{"status": "compacted"})
 }

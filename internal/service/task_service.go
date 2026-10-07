@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-task-manager/internal/auth"
 	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/crypto"
 	"agent-task-manager/internal/dto"
@@ -15,6 +16,7 @@ import (
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/queue"
 	"agent-task-manager/internal/repository"
+	"agent-task-manager/internal/runner"
 	"agent-task-manager/internal/ws"
 )
 
@@ -31,17 +33,23 @@ type TaskService interface {
 	CancelTask(ctx context.Context, taskID string) error
 	ExecuteTask(ctx context.Context, taskID string, runner TaskRunner) error
 	CreatePullRequestForTask(ctx context.Context, taskID string) (*models.Task, error)
+	GetTaskSession(ctx context.Context, taskID, userID string) (*dto.TaskSessionResponseDTO, error)
+	PromptTaskSession(ctx context.Context, taskID, userID string, req *dto.TaskSessionPromptRequest) error
+	CompactTaskSession(ctx context.Context, taskID, userID string) error
 }
 
 type taskService struct {
-	taskRepo    repository.TaskRepository
-	attemptRepo repository.AttemptRepository
-	queueClient queue.Client
-	hub         *ws.Hub
-	integRepo   repository.IntegrationRepository
-	credRepo    repository.CredentialRepository
-	cipher      *crypto.SecretCipher
-	ghProvider  integrations.PullRequestProvider
+	taskRepo        repository.TaskRepository
+	attemptRepo     repository.AttemptRepository
+	queueClient     queue.Client
+	hub             *ws.Hub
+	integRepo       repository.IntegrationRepository
+	credRepo        repository.CredentialRepository
+	cipher          *crypto.SecretCipher
+	ghProvider      integrations.PullRequestProvider
+	projectRepo     repository.ProjectRepository
+	teamRepo        repository.TeamRepository
+	openCodeClient  runner.OpenCodeClient
 }
 
 // TaskServiceOption allows configuring optional dependencies for TaskService.
@@ -59,6 +67,19 @@ func WithTaskGitHubIntegration(
 		s.credRepo = credRepo
 		s.cipher = cipher
 		s.ghProvider = ghProvider
+	}
+}
+
+// WithTaskSessionDependencies configures OpenCode client, project repository, and team repository for session operations.
+func WithTaskSessionDependencies(
+	openCodeClient runner.OpenCodeClient,
+	projectRepo repository.ProjectRepository,
+	teamRepo repository.TeamRepository,
+) TaskServiceOption {
+	return func(s *taskService) {
+		s.openCodeClient = openCodeClient
+		s.projectRepo = projectRepo
+		s.teamRepo = teamRepo
 	}
 }
 
@@ -347,6 +368,122 @@ func (s *taskService) CreatePullRequestForTask(ctx context.Context, taskID strin
 	}
 
 	return task, nil
+}
+
+// authorizeUserForTask verifies that task exists, resolves its project and team,
+// and confirms the requesting user has at least the requiredRole on that team.
+func (s *taskService) authorizeUserForTask(ctx context.Context, taskID, userID string, requiredRole models.TeamRole) (*models.Task, error) {
+	if taskID == "" {
+		return nil, errors.New("task ID is required")
+	}
+	if userID == "" {
+		return nil, common.ErrForbidden
+	}
+
+	task, err := s.taskRepo.GetByID(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+
+	if s.projectRepo != nil && s.teamRepo != nil {
+		project, err := s.projectRepo.GetByID(ctx, task.ProjectID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load project for task: %w", err)
+		}
+
+		membership, err := s.teamRepo.GetMembership(ctx, project.TeamID, userID)
+		if err != nil {
+			return nil, common.ErrForbidden
+		}
+
+		if !auth.HasRolePermission(membership.Role, requiredRole) {
+			return nil, common.ErrForbidden
+		}
+	}
+
+	return task, nil
+}
+
+// GetTaskSession retrieves metadata and message history for an ongoing or completed task session.
+// AC-SEC-02: Requires RoleViewer or higher.
+func (s *taskService) GetTaskSession(ctx context.Context, taskID, userID string) (*dto.TaskSessionResponseDTO, error) {
+	task, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleViewer)
+	if err != nil {
+		return nil, err
+	}
+
+	if s.openCodeClient == nil {
+		return nil, common.ErrServiceUnavailable
+	}
+
+	if task.SessionID == nil || *task.SessionID == "" {
+		return nil, errors.New("task has no associated session")
+	}
+
+	sessionID := *task.SessionID
+	sessDTO, err := s.openCodeClient.GetSession(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	messages, err := s.openCodeClient.GetSessionMessages(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	res := &dto.TaskSessionResponseDTO{
+		SessionID: sessionID,
+		TaskID:    task.ID,
+		Title:     sessDTO.Title,
+		Directory: sessDTO.Directory,
+		CreatedAt: sessDTO.CreatedAt,
+		UpdatedAt: sessDTO.UpdatedAt,
+		Messages:  messages,
+	}
+
+	return res, nil
+}
+
+// PromptTaskSession sends a targeted prompt into the task's existing OpenCode session.
+// AC-SEC-02: Requires RoleMember or higher.
+func (s *taskService) PromptTaskSession(ctx context.Context, taskID, userID string, req *dto.TaskSessionPromptRequest) error {
+	if req == nil || strings.TrimSpace(req.Prompt) == "" {
+		return errors.New("prompt cannot be empty")
+	}
+
+	task, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleMember)
+	if err != nil {
+		return err
+	}
+
+	if s.openCodeClient == nil {
+		return common.ErrServiceUnavailable
+	}
+
+	if task.SessionID == nil || *task.SessionID == "" {
+		return errors.New("task has no associated session")
+	}
+
+	return s.openCodeClient.PromptSession(ctx, *task.SessionID, req.Prompt)
+}
+
+// CompactTaskSession triggers context compaction on the task's OpenCode session.
+// AC-SEC-02: Requires RoleMember or higher.
+func (s *taskService) CompactTaskSession(ctx context.Context, taskID, userID string) error {
+	task, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleMember)
+	if err != nil {
+		return err
+	}
+
+	if s.openCodeClient == nil {
+		return common.ErrServiceUnavailable
+	}
+
+	if task.SessionID == nil || *task.SessionID == "" {
+		return errors.New("task has no associated session")
+	}
+
+	return s.openCodeClient.CompactSession(ctx, *task.SessionID)
 }
 
 // LogService defines the business operations for appending and streaming task logs.

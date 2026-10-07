@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"agent-task-manager/internal/dto"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/repository"
+	"agent-task-manager/internal/runner"
 	"agent-task-manager/internal/service"
 	"agent-task-manager/internal/ws"
 	"github.com/glebarez/sqlite"
@@ -504,4 +506,326 @@ func TestTaskAndTeamHandlers(t *testing.T) {
 			t.Errorf("expected 400 or 200, got %d", resp.StatusCode)
 		}
 	})
+}
+
+func TestTaskSessionEndpoints(t *testing.T) {
+	db := setupAPITestDB(t)
+
+	cfg := &config.Config{
+		AppEnv:        "development",
+		SessionSecret: "test-session-secret-32-bytes-long!",
+	}
+	sessionManager := auth.NewSessionManager([]byte(cfg.SessionSecret), 24*time.Hour, false)
+
+	taskRepo := repository.NewTaskRepository(db)
+	attemptRepo := repository.NewAttemptRepository(db)
+	teamRepo := repository.NewTeamRepository(db)
+	projectRepo := repository.NewProjectRepository(db)
+	tokenRepo := repository.NewTokenRepository(db)
+	userRepo := repository.NewUserRepository(db)
+	authSvc := service.NewAuthService(userRepo, teamRepo, tokenRepo, nil)
+
+	teamID := common.NewID()
+	projectID := common.NewID()
+	team := &models.Team{
+		ID:        teamID,
+		Name:      "Session Team",
+		Slug:      "session-team",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	db.Create(team)
+
+	viewerUser := &models.User{
+		ID:          common.NewID(),
+		Email:       "viewer@example.com",
+		DisplayName: "Viewer",
+		Subject:     "sub-viewer",
+		Issuer:      "test",
+	}
+	memberUser := &models.User{
+		ID:          common.NewID(),
+		Email:       "member@example.com",
+		DisplayName: "Member",
+		Subject:     "sub-member",
+		Issuer:      "test",
+	}
+	outsiderUser := &models.User{
+		ID:          common.NewID(),
+		Email:       "outsider@example.com",
+		DisplayName: "Outsider",
+		Subject:     "sub-outsider",
+		Issuer:      "test",
+	}
+	db.Create(viewerUser)
+	db.Create(memberUser)
+	db.Create(outsiderUser)
+
+	db.Create(&models.TeamMembership{TeamID: team.ID, UserID: viewerUser.ID, Role: models.RoleViewer})
+	db.Create(&models.TeamMembership{TeamID: team.ID, UserID: memberUser.ID, Role: models.RoleMember})
+
+	project := &models.Project{
+		ID:       projectID,
+		TeamID:   teamID,
+		Name:     "Project Session",
+		RepoPath: "/repos/session",
+	}
+	db.Create(project)
+
+	sessionID := "ses_atm_task100"
+	task := &models.Task{
+		ID:           common.NewID(),
+		ProjectID:    project.ID,
+		Title:        "Session Endpoints Task",
+		Prompt:       "Run and inspect session",
+		AssigneeID:   "agent-1",
+		AssigneeType: models.AssigneeAgent,
+		Status:       models.TaskStatusInProgress,
+		Priority:     models.PriorityNormal,
+		SessionID:    &sessionID,
+		Skills:       models.StringArray{},
+		MCPServers:   models.StringArray{},
+	}
+	db.Create(task)
+
+	// Mock OpenCodeClient
+	mockClient := &mockOpenCodeClientRunner{}
+	taskSvc := service.NewTaskService(
+		taskRepo,
+		attemptRepo,
+		nil,
+		nil,
+		service.WithTaskSessionDependencies(mockClient, projectRepo, teamRepo),
+	)
+
+	server := api.NewServer(
+		cfg,
+		sessionManager,
+		authSvc,
+		nil,
+		nil,
+		api.WithTaskService(taskSvc),
+		api.WithTeamRepository(teamRepo),
+		api.WithProjectRepository(projectRepo),
+	)
+
+	// Helper to create session cookie
+	createCookie := func(user *models.User) *http.Cookie {
+		cookieVal, err := sessionManager.SignPayload(auth.SessionClaims{
+			UserID:    user.ID,
+			Issuer:    user.Issuer,
+			Subject:   user.Subject,
+			ExpiresAt: time.Now().Add(1 * time.Hour),
+		})
+		if err != nil {
+			t.Fatalf("failed to create session cookie: %v", err)
+		}
+		return &http.Cookie{
+			Name:  auth.SessionCookieName,
+			Value: cookieVal,
+		}
+	}
+
+	viewerCookie := createCookie(viewerUser)
+	memberCookie := createCookie(memberUser)
+	outsiderCookie := createCookie(outsiderUser)
+
+	// 1. AC-SEC-01: 401 Unauthenticated when no auth provided
+	t.Run("GET /api/v1/tasks/:id/session - 401 unauthenticated", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/"+task.ID+"/session", nil)
+		resp, err := server.App.Test(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("expected 401 Unauthorized, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("POST /api/v1/tasks/:id/session/prompt - 401 unauthenticated", func(t *testing.T) {
+		body, _ := json.Marshal(dto.TaskSessionPromptRequest{Prompt: "hello"})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/session/prompt", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := server.App.Test(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("expected 401 Unauthorized, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("POST /api/v1/tasks/:id/session/compact - 401 unauthenticated", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/session/compact", nil)
+		resp, err := server.App.Test(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("expected 401 Unauthorized, got %d", resp.StatusCode)
+		}
+	})
+
+	// 2. AC-SEC-02: 403 Forbidden for outsider (non-member)
+	t.Run("GET /api/v1/tasks/:id/session - 403 non-member", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/"+task.ID+"/session", nil)
+		req.AddCookie(outsiderCookie)
+		resp, err := server.App.Test(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("expected 403 Forbidden, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("POST /api/v1/tasks/:id/session/prompt - 403 for viewer (requires member)", func(t *testing.T) {
+		body, _ := json.Marshal(dto.TaskSessionPromptRequest{Prompt: "hello"})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/session/prompt", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(viewerCookie)
+		resp, err := server.App.Test(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("expected 403 Forbidden, got %d", resp.StatusCode)
+		}
+	})
+
+	// 3. AC-SEC-06: Input validation on PromptSession
+	t.Run("POST /api/v1/tasks/:id/session/prompt - input validation empty prompt", func(t *testing.T) {
+		body, _ := json.Marshal(dto.TaskSessionPromptRequest{Prompt: ""})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/session/prompt", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(memberCookie)
+		resp, err := server.App.Test(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("expected 400 Bad Request for empty prompt, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("POST /api/v1/tasks/:id/session/prompt - input validation prompt exceeding 32768 bytes", func(t *testing.T) {
+		hugePrompt := strings.Repeat("A", 32769)
+		body, _ := json.Marshal(dto.TaskSessionPromptRequest{Prompt: hugePrompt})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/session/prompt", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(memberCookie)
+		resp, err := server.App.Test(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("expected 400 Bad Request for oversized prompt, got %d", resp.StatusCode)
+		}
+	})
+
+	// 4. Successful inspection & prompt & compact
+	t.Run("GET /api/v1/tasks/:id/session - success for viewer", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/"+task.ID+"/session", nil)
+		req.AddCookie(viewerCookie)
+		resp, err := server.App.Test(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
+		}
+
+		var sessResp dto.TaskSessionResponseDTO
+		if err := json.NewDecoder(resp.Body).Decode(&sessResp); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+		if sessResp.SessionID != sessionID || sessResp.TaskID != task.ID {
+			t.Errorf("unexpected session response: %+v", sessResp)
+		}
+	})
+
+	t.Run("POST /api/v1/tasks/:id/session/prompt - success for member", func(t *testing.T) {
+		body, _ := json.Marshal(dto.TaskSessionPromptRequest{Prompt: "Next instruction"})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/session/prompt", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(memberCookie)
+		resp, err := server.App.Test(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("POST /api/v1/tasks/:id/session/compact - success for member", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/session/compact", nil)
+		req.AddCookie(memberCookie)
+		resp, err := server.App.Test(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
+		}
+	})
+
+	// 5. 503 Daemon Offline
+	t.Run("GET /api/v1/tasks/:id/session - 503 daemon offline", func(t *testing.T) {
+		mockClient.failWith503 = true
+		defer func() { mockClient.failWith503 = false }()
+
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/"+task.ID+"/session", nil)
+		req.AddCookie(memberCookie)
+		resp, err := server.App.Test(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Errorf("expected 503 Service Unavailable, got %d", resp.StatusCode)
+		}
+	})
+}
+
+type mockOpenCodeClientRunner struct {
+	failWith503 bool
+}
+
+func (m *mockOpenCodeClientRunner) GetSession(ctx context.Context, sessionID string) (*runner.OpenCodeSessionDTO, error) {
+	if m.failWith503 {
+		return nil, common.ErrServiceUnavailable
+	}
+	return &runner.OpenCodeSessionDTO{ID: sessionID, Title: "Test Session"}, nil
+}
+
+func (m *mockOpenCodeClientRunner) GetSessionMessages(ctx context.Context, sessionID string) ([]dto.OpenCodeMessageDTO, error) {
+	if m.failWith503 {
+		return nil, common.ErrServiceUnavailable
+	}
+	return []dto.OpenCodeMessageDTO{{ID: "msg-1"}}, nil
+}
+
+func (m *mockOpenCodeClientRunner) PromptSession(ctx context.Context, sessionID, prompt string) error {
+	if m.failWith503 {
+		return common.ErrServiceUnavailable
+	}
+	return nil
+}
+
+func (m *mockOpenCodeClientRunner) CompactSession(ctx context.Context, sessionID string) error {
+	if m.failWith503 {
+		return common.ErrServiceUnavailable
+	}
+	return nil
 }

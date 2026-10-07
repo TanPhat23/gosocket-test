@@ -5,6 +5,7 @@ import (
 	"agent-task-manager/internal/config"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/repository"
+	"agent-task-manager/internal/runner"
 	"agent-task-manager/internal/service"
 
 	"github.com/gofiber/fiber/v3"
@@ -23,6 +24,7 @@ type Server struct {
 	TeamRepo           repository.TeamRepository
 	ProjectRepo       repository.ProjectRepository
 	WSHandler         *WSHandler
+	OpenCodeClient    runner.OpenCodeClient
 }
 
 // ServerOptions allows optional configuration or dependencies when constructing Server.
@@ -72,6 +74,13 @@ func WithWSHandler(wsh *WSHandler) Option {
 	}
 }
 
+// WithOpenCodeClient sets the OpenCodeClient.
+func WithOpenCodeClient(client runner.OpenCodeClient) Option {
+	return func(s *Server) {
+		s.OpenCodeClient = client
+	}
+}
+
 // NewServer creates and configures a Fiber v3 app.
 func NewServer(
 	cfg *config.Config,
@@ -96,6 +105,10 @@ func NewServer(
 
 	for _, opt := range opts {
 		opt(server)
+	}
+
+	if server.OpenCodeClient == nil && cfg != nil {
+		server.OpenCodeClient = runner.NewOpenCodeClient(cfg.OpenCodeServerURL, cfg.OpenCodePassword, nil)
 	}
 
 	server.setupRoutes()
@@ -132,6 +145,12 @@ func (s *Server) setupRoutes() {
 		v1.Post("/tasks", taskHandlers.Create)
 		v1.Post("/tasks/:task_id/cancel", taskHandlers.Cancel)
 		v1.Post("/tasks/:id/pr", taskHandlers.CreatePR)
+
+		// OpenCode session endpoints (AC-SEC-01: Protected by RequireAuth)
+		sessionGroup := v1.Group("/tasks/:id/session", RequireAuth(s.AuthService, s.SessionManager))
+		sessionGroup.Get("", taskHandlers.GetSession)
+		sessionGroup.Post("/prompt", taskHandlers.PromptSession)
+		sessionGroup.Post("/compact", taskHandlers.CompactSession)
 	}
 
 	// Team & Project routes
