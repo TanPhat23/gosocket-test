@@ -4,6 +4,7 @@ import { LoginForm } from '@/features/auth/components/LoginForm';
 import { useTaskStore } from '@/features/tasks/store/useTaskStore';
 import { useTeamStore } from '@/features/teams/store/useTeamStore';
 import { useTaskSubscription } from '@/features/tasks/hooks/useTaskSubscription';
+import { AppSidebar } from '@/components/layout/AppSidebar';
 import { Header } from '@/components/layout/Header';
 import { Footer } from '@/components/layout/Footer';
 import { TaskMetricsGrid } from '@/features/tasks/components/TaskMetricsGrid';
@@ -25,36 +26,42 @@ export const WorkspaceView: React.FC = () => {
   }, [fetchTasks, fetchTeams]);
 
   return (
-    <div className="min-h-screen bg-background text-foreground flex flex-col font-sans">
-      <Header />
+    <div className="h-screen bg-background text-foreground flex overflow-hidden font-sans">
+      {/* Left Sidebar */}
+      <AppSidebar />
 
-      {/* Main Workspace */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-6 flex flex-col gap-6">
-        {/* Top Control Bar with Metrics and New Task */}
-        <div className="flex flex-col gap-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-lg font-bold tracking-tight">Agent Control Plane</h2>
-              <p className="text-xs text-muted-foreground">
-                Autonomous task execution, isolated worktrees, and streaming agent diagnostics.
-              </p>
+      {/* Main Area */}
+      <div className="flex-1 flex flex-col h-full overflow-y-auto">
+        <Header />
+
+        {/* Main Workspace */}
+        <main className="flex-1 max-w-7xl w-full mx-auto p-6 flex flex-col gap-6">
+          {/* Top Control Bar with Metrics and New Task */}
+          <div className="flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-bold tracking-tight">Agent Control Plane</h2>
+                <p className="text-xs text-muted-foreground">
+                  Autonomous task execution, isolated worktrees, and streaming agent diagnostics.
+                </p>
+              </div>
+              <TaskModal />
             </div>
-            <TaskModal />
+
+            <TaskMetricsGrid />
           </div>
 
-          <TaskMetricsGrid />
-        </div>
+          {/* 4-Lane Kanban Board */}
+          <section className="flex-1 flex flex-col gap-3">
+            <KanbanBoard />
+          </section>
 
-        {/* 4-Lane Kanban Board */}
-        <section className="flex-1 flex flex-col gap-3">
-          <KanbanBoard />
-        </section>
+          {/* Task Inspector Modal (opens when selectedTaskId is set) */}
+          <TaskInspectorModal />
+        </main>
 
-        {/* Task Inspector Modal (opens when selectedTaskId is set) */}
-        <TaskInspectorModal />
-      </main>
-
-      <Footer />
+        <Footer />
+      </div>
     </div>
   );
 };

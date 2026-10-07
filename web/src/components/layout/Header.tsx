@@ -1,29 +1,34 @@
 import React from 'react';
 import { UserNav } from '@/features/auth/components/UserNav';
-import { TeamSwitcher } from '@/features/teams/components/TeamSwitcher';
-import { ProjectSwitcher } from '@/features/teams/components/ProjectSwitcher';
-import { ProjectIntegrationModal } from '@/features/integrations/components/ProjectIntegrationModal';
 import { ThemeSettingsDialog } from '@/components/theme/ThemeSettingsDialog';
+import {
+  useTeamsList,
+  useProjectsList,
+  useActiveTeamId,
+  useActiveProjectId,
+} from '@/features/teams/store/useTeamStore';
+import { ChevronRight } from 'lucide-react';
 
 export const Header: React.FC = () => {
+  const teams = useTeamsList();
+  const projects = useProjectsList();
+  const activeTeamId = useActiveTeamId();
+  const activeProjectId = useActiveProjectId();
+
+  const activeTeam = teams.find((t) => t.id === activeTeamId);
+  const activeProject = projects.find((p) => p.id === activeProjectId);
+
   return (
     <header className="border-b border-border bg-card/50 backdrop-blur px-6 py-3 flex items-center justify-between">
-      <div className="flex items-center gap-6">
-        <div className="flex items-center gap-3">
-          <div className="size-8 rounded-lg bg-primary text-primary-foreground flex items-center justify-center font-bold shadow-sm">
-            ATM
-          </div>
-          <div>
-            <h1 className="font-semibold text-sm leading-tight tracking-tight">Agent Task Manager</h1>
-            <p className="text-xs text-muted-foreground">Self-Hostable Autonomous Control Plane</p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <TeamSwitcher />
-          <ProjectSwitcher />
-          <ProjectIntegrationModal />
-        </div>
+      {/* Breadcrumb: <Workspace Name> / <Active Project Name> */}
+      <div className="flex items-center gap-2 text-xs" data-testid="header-breadcrumbs">
+        <span className="font-medium text-foreground">
+          {activeTeam ? activeTeam.name : 'Workspace'}
+        </span>
+        <ChevronRight className="size-3.5 text-muted-foreground/60 shrink-0" />
+        <span className="text-muted-foreground font-normal">
+          {activeProject ? activeProject.name : 'All Projects'}
+        </span>
       </div>
 
       <div className="flex items-center gap-3">

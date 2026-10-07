@@ -3,6 +3,8 @@ import {
   CredentialResponseSchema,
   CredentialDTO,
   CreateCredentialInput,
+  GitHubRepoSchema,
+  GitHubRepoDTO,
 } from '../schemas/credentialSchemas';
 
 export const credentialApi = {
@@ -28,5 +30,18 @@ export const credentialApi = {
 
   async deleteCredential(teamId: string, credentialId: string): Promise<void> {
     await axiosClient.delete<void>(`/teams/${encodeURIComponent(teamId)}/credentials/${encodeURIComponent(credentialId)}`);
+  },
+
+  async listGitHubRepositories(teamId: string, credentialId: string): Promise<GitHubRepoDTO[]> {
+    const res = await axiosClient.get<unknown>(
+      `/teams/${encodeURIComponent(teamId)}/credentials/${encodeURIComponent(credentialId)}/github/repos`
+    );
+    const data = res.data;
+    const rawList = Array.isArray(data)
+      ? data
+      : (data && typeof data === 'object' && 'repositories' in data && Array.isArray((data as { repositories: unknown[] }).repositories))
+      ? (data as { repositories: unknown[] }).repositories
+      : [];
+    return rawList.map((item) => GitHubRepoSchema.parse(item));
   },
 };

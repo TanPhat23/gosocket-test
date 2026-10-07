@@ -1,21 +1,33 @@
-import React, { useState } from 'react';
+import React from 'react';
+import { useForm } from '@tanstack/react-form';
+import { z } from 'zod';
 import { useAuthStore } from '../store/useAuthStore';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ArrowRight, AlertCircle } from 'lucide-react';
 
+const loginSchema = z.object({
+  email: z.string().min(1, 'Email is required').email('Invalid email address'),
+  password: z.string().min(1, 'Password is required'),
+});
+
 export const LoginForm: React.FC = () => {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
   const login = useAuthStore((state) => state.login);
   const isLoading = useAuthStore((state) => state.isLoading);
   const error = useAuthStore((state) => state.error);
 
-  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    if (!email || !password) return;
-    await login({ email, password });
-  };
+  const form = useForm({
+    defaultValues: {
+      email: '',
+      password: '',
+    },
+    validators: {
+      onSubmit: loginSchema,
+    },
+    onSubmit: async ({ value }) => {
+      await login({ email: value.email, password: value.password });
+    },
+  });
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col items-center justify-center p-4">
@@ -39,52 +51,102 @@ export const LoginForm: React.FC = () => {
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-          <div className="flex flex-col gap-1.5">
-            <label
-              htmlFor="email"
-              className="text-xs font-medium text-foreground tracking-tight"
-            >
-              Email
-            </label>
-            <Input
-              id="email"
-              type="email"
-              placeholder="name@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              disabled={isLoading}
-              autoComplete="email"
-            />
-          </div>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            form.handleSubmit();
+          }}
+          className="flex flex-col gap-4"
+        >
+          <form.Field
+            name="email"
+            children={(field) => {
+              const firstErr = field.state.meta.errors[0];
+              const errorMessage = firstErr
+                ? typeof firstErr === 'string'
+                  ? firstErr
+                  : (firstErr as unknown as { message?: string })?.message
+                : undefined;
 
-          <div className="flex flex-col gap-1.5">
-            <label
-              htmlFor="password"
-              className="text-xs font-medium text-foreground tracking-tight"
-            >
-              Password
-            </label>
-            <Input
-              id="password"
-              type="password"
-              placeholder="••••••••"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              disabled={isLoading}
-              autoComplete="current-password"
-            />
-          </div>
+              return (
+                <div className="flex flex-col gap-1.5">
+                  <label
+                    htmlFor={field.name}
+                    className="text-xs font-medium text-foreground tracking-tight"
+                  >
+                    Email
+                  </label>
+                  <Input
+                    id={field.name}
+                    name={field.name}
+                    type="email"
+                    placeholder="name@example.com"
+                    value={field.state.value}
+                    onBlur={field.handleBlur}
+                    onChange={(e) => field.handleChange(e.target.value)}
+                    required
+                    disabled={isLoading}
+                    autoComplete="email"
+                  />
+                  {errorMessage && (
+                    <p className="text-[11px] text-destructive font-medium">{errorMessage}</p>
+                  )}
+                </div>
+              );
+            }}
+          />
 
-          <Button
-            type="submit"
-            className="w-full mt-1"
-            disabled={isLoading}
-          >
-            {isLoading ? 'Signing in...' : 'Sign In'}
-          </Button>
+          <form.Field
+            name="password"
+            children={(field) => {
+              const firstErr = field.state.meta.errors[0];
+              const errorMessage = firstErr
+                ? typeof firstErr === 'string'
+                  ? firstErr
+                  : (firstErr as unknown as { message?: string })?.message
+                : undefined;
+
+              return (
+                <div className="flex flex-col gap-1.5">
+                  <label
+                    htmlFor={field.name}
+                    className="text-xs font-medium text-foreground tracking-tight"
+                  >
+                    Password
+                  </label>
+                  <Input
+                    id={field.name}
+                    name={field.name}
+                    type="password"
+                    placeholder="••••••••"
+                    value={field.state.value}
+                    onBlur={field.handleBlur}
+                    onChange={(e) => field.handleChange(e.target.value)}
+                    required
+                    disabled={isLoading}
+                    autoComplete="current-password"
+                  />
+                  {errorMessage && (
+                    <p className="text-[11px] text-destructive font-medium">{errorMessage}</p>
+                  )}
+                </div>
+              );
+            }}
+          />
+
+          <form.Subscribe
+            selector={(state) => [state.isSubmitting]}
+            children={([isSubmitting]) => (
+              <Button
+                type="submit"
+                className="w-full mt-1"
+                disabled={isLoading || isSubmitting}
+              >
+                {isLoading || isSubmitting ? 'Signing in...' : 'Sign In'}
+              </Button>
+            )}
+          />
         </form>
 
         <div className="relative my-6 text-center text-xs">

@@ -83,4 +83,62 @@ describe('credentialApi', () => {
       expect(result.label).toBe('New PAT');
     });
   });
+
+  describe('listGitHubRepositories', () => {
+    it('unpacks { repositories: [...] } payload from backend', async () => {
+      vi.spyOn(axiosClient, 'get').mockResolvedValueOnce({
+        data: {
+          repositories: [
+            {
+              id: 123456,
+              name: 'agent-task-manager',
+              full_name: 'test-org/agent-task-manager',
+              private: true,
+              description: 'Autonomous control plane',
+              html_url: 'https://github.com/test-org/agent-task-manager',
+              default_branch: 'main',
+            },
+          ],
+        },
+      });
+
+      const repos = await credentialApi.listGitHubRepositories('team-1', 'cred-1');
+      expect(repos).toHaveLength(1);
+      expect(repos[0].name).toBe('agent-task-manager');
+      expect(repos[0].full_name).toBe('test-org/agent-task-manager');
+      expect(repos[0].private).toBe(true);
+      expect(repos[0].default_branch).toBe('main');
+    });
+
+    it('handles direct array payload defensively', async () => {
+      vi.spyOn(axiosClient, 'get').mockResolvedValueOnce({
+        data: [
+          {
+            id: 999,
+            name: 'direct-repo',
+            full_name: 'test-org/direct-repo',
+            private: false,
+            description: null,
+            html_url: 'https://github.com/test-org/direct-repo',
+            default_branch: 'master',
+          },
+        ],
+      });
+
+      const repos = await credentialApi.listGitHubRepositories('team-1', 'cred-1');
+      expect(repos).toHaveLength(1);
+      expect(repos[0].name).toBe('direct-repo');
+      expect(repos[0].description).toBeNull();
+      expect(repos[0].default_branch).toBe('master');
+    });
+
+    it('returns empty array when repositories field is missing or empty', async () => {
+      vi.spyOn(axiosClient, 'get').mockResolvedValueOnce({
+        data: { repositories: [] },
+      });
+
+      const repos = await credentialApi.listGitHubRepositories('team-1', 'cred-1');
+      expect(repos).toEqual([]);
+    });
+  });
 });

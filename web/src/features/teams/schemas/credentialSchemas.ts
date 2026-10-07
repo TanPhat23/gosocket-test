@@ -23,3 +23,16 @@ export const CredentialResponseSchema = z.object({
 
 export type CredentialDTO = z.infer<typeof CredentialResponseSchema>;
 export type CredentialResponse = CredentialDTO;
+
+export const GitHubRepoSchema = z.object({
+  id: z.number(),
+  name: z.string(),
+  full_name: z.string(),
+  private: z.boolean(),
+  description: z.string().nullable().optional(),
+  html_url: z.string(),
+  default_branch: z.string().default('main'),
+});
+
+export type GitHubRepoDTO = z.infer<typeof GitHubRepoSchema>;
+

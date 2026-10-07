@@ -14,6 +14,7 @@ interface TeamState {
   selectTeam: (teamId: string) => void;
   fetchProjects: (teamId?: string) => Promise<void>;
   selectProject: (projectId: string | null) => void;
+  setActiveProjectId: (projectId: string | null) => void;
 }
 
 export const useTeamStore = create<TeamState>((set, get) => ({
@@ -57,6 +58,10 @@ export const useTeamStore = create<TeamState>((set, get) => ({
   },
 
   selectProject: (projectId: string | null) => {
+    set({ activeProjectId: projectId });
+  },
+
+  setActiveProjectId: (projectId: string | null) => {
     set({ activeProjectId: projectId });
   },
 }));

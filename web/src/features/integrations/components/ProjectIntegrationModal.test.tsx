@@ -192,4 +192,48 @@ describe('ProjectIntegrationModal', () => {
       expect(screen.queryByText('org/to-delete')).not.toBeInTheDocument();
     });
   });
+
+  it('renders repository picker and selects a repo when clicked', async () => {
+    vi.spyOn(integrationApi, 'listProjectIntegrations').mockResolvedValue([]);
+    vi.spyOn(credentialApi, 'listCredentials').mockResolvedValue([
+      {
+        id: 'cred-1',
+        team_id: 'team-1',
+        provider: 'github',
+        label: 'Default PAT',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    ]);
+    vi.spyOn(credentialApi, 'listGitHubRepositories').mockResolvedValue([
+      {
+        id: 123,
+        name: 'agent-repo',
+        full_name: 'test-org/agent-repo',
+        private: true,
+        description: 'Autonomous agent core',
+        html_url: 'https://github.com/test-org/agent-repo',
+        default_branch: 'develop',
+      },
+    ]);
+
+    render(<ProjectIntegrationModal />);
+
+    fireEvent.click(screen.getByTestId('integrations-trigger-button'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('toggle-connect-repo-btn')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('toggle-connect-repo-btn'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('repo-item-test-org/agent-repo')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('repo-item-test-org/agent-repo'));
+
+    const repoInput = screen.getByTestId('repo-input') as HTMLInputElement;
+    expect(repoInput.value).toBe('test-org/agent-repo');
+  });
 });
