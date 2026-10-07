@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -48,7 +50,14 @@ type openCodeClient struct {
 
 // NewOpenCodeClient creates and validates an OpenCodeClient instance.
 // AC-SEC-03: Strictly verifies HTTP/HTTPS URL scheme and disables redirects.
+// In containerized deployments, automatically bridges loopback port 49374 via local opencode.sock when present.
 func NewOpenCodeClient(baseURL, password string, httpClient *http.Client) OpenCodeClient {
+	unixSocketCandidate := ""
+	if strings.HasPrefix(baseURL, "unix://") {
+		unixSocketCandidate = strings.TrimPrefix(baseURL, "unix://")
+		baseURL = "http://localhost"
+	}
+
 	parsedURL, err := url.Parse(baseURL)
 	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
 		// Default to safe localhost if invalid or empty
@@ -58,10 +67,39 @@ func NewOpenCodeClient(baseURL, password string, httpClient *http.Client) OpenCo
 		baseURL = strings.TrimRight(baseURL, "/")
 	}
 
+	if unixSocketCandidate == "" {
+		candidates := []string{
+			"/home/ghug/.local/share/opencode/opencode.sock",
+			"/root/.local/share/opencode/opencode.sock",
+			"/tmp/opencode.sock",
+		}
+		for _, c := range candidates {
+			if _, err := os.Stat(c); err == nil {
+				unixSocketCandidate = c
+				break
+			}
+		}
+	}
+
 	client := httpClient
 	if client == nil {
+		transport := &http.Transport{}
+		if unixSocketCandidate != "" {
+			transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				// Only route to unix socket if destination port is 49374 (OpenCode daemon port)
+				if strings.HasSuffix(addr, ":49374") {
+					var d net.Dialer
+					if conn, err := d.DialContext(ctx, "unix", unixSocketCandidate); err == nil {
+						return conn, nil
+					}
+				}
+				var d net.Dialer
+				return d.DialContext(ctx, network, addr)
+			}
+		}
 		client = &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:   30 * time.Second,
+			Transport: transport,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
 			},

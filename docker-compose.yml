@@ -160,3 +160,12 @@ services:
       - "traefik.http.routers.web-ui.entrypoints=web,websecure"
       - "traefik.http.routers.web-ui.middlewares=security-headers@file"
       - "traefik.http.services.web-ui.loadbalancer.server.port=80"
+
+  opencode-bridge:
+    image: alpine/socat:latest
+    container_name: agent-opencode-bridge
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - "/home/ghug/.local/share/opencode:/opencode:rw"
+    command: ["UNIX-LISTEN:/opencode/opencode.sock,fork,reuseaddr,unlink-early,mode=777", "TCP:127.0.0.1:49374"]
