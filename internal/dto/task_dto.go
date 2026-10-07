@@ -35,6 +35,7 @@ type TaskResponse struct {
 	Skills        []string            `json:"skills"`
 	MCPServers    []string            `json:"mcp_servers"`
 	AsynqTaskID   *string             `json:"asynq_task_id,omitempty"`
+	SessionID     *string             `json:"session_id,omitempty"`
 	ExternalID    *string             `json:"external_id,omitempty"`
 	ExternalURL   *string             `json:"external_url,omitempty"`
 	PRURL          *string             `json:"pr_url,omitempty"`
@@ -79,6 +80,7 @@ func ToTaskResponse(t *models.Task) TaskResponse {
 		Skills:         skills,
 		MCPServers:     mcpServers,
 		AsynqTaskID:    t.AsynqTaskID,
+		SessionID:      t.SessionID,
 		ExternalID:     t.ExternalID,
 		ExternalURL:    t.ExternalURL,
 		PRURL:          prURL,

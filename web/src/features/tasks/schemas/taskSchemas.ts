@@ -50,6 +50,7 @@ export const TaskSchema = z.object({
   created_at: z.string(),
   updated_at: z.string(),
   heartbeat_at: z.string().optional().nullable(),
+  session_id: z.string().optional().nullable(),
 });
 
 export const TaskDTOSchema = TaskSchema;

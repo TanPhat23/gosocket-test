@@ -68,6 +68,7 @@ func setupFullTestDB(t *testing.T) *gorm.DB {
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		started_at DATETIME,
 		finished_at DATETIME,
+		session_id TEXT,
 		container_id TEXT,
 		worktree_path TEXT,
 		branch_name TEXT,

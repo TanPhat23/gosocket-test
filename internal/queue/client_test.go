@@ -119,6 +119,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		heartbeat_at DATETIME,
 		integration_id TEXT,
 		asynq_task_id TEXT,
+		session_id TEXT,
 		external_id TEXT,
 		external_url TEXT,
 		pr_url TEXT,

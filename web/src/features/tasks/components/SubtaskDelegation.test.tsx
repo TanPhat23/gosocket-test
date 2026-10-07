@@ -89,5 +89,22 @@ describe('Subagent task delegation UI', () => {
       fireEvent.click(screen.getByRole('button', { name: '#parent-1' }));
       expect(useTaskStore.getState().selectedTaskId).toBe(parentTask.id);
     });
+
+    it('displays OpenCode Session when session_id is present and allows copying', async () => {
+      const taskWithSession: Task = {
+        ...parentTask,
+        session_id: 'ses_123456abcdef',
+      };
+      useTaskStore.setState({
+        tasks: { [taskWithSession.id]: taskWithSession },
+        selectedTaskId: taskWithSession.id,
+      });
+
+      render(<TaskInspectorModal />);
+
+      expect(screen.getByText('OpenCode Session:')).toBeInTheDocument();
+      expect(screen.getByTestId('opencode-session-id')).toHaveTextContent('ses_123456abcdef');
+      expect(screen.getByRole('button', { name: 'Copy OpenCode Session ID' })).toBeInTheDocument();
+    });
   });
 });

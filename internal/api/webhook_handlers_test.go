@@ -75,6 +75,7 @@ func setupWebhookTestApp(t *testing.T) (*fiber.App, *gorm.DB, integrations.Idemp
 			heartbeat_at DATETIME,
 			integration_id TEXT,
 			asynq_task_id TEXT,
+			session_id TEXT,
 			external_id TEXT,
 			external_url TEXT,
 			pr_url TEXT,

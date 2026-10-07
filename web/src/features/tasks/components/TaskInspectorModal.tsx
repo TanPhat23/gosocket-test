@@ -29,6 +29,8 @@ import {
   CheckCircle,
   AlertCircle,
   Loader2,
+  Copy,
+  Check,
 } from 'lucide-react';
 import { taskApi } from '../api/taskApi';
 import type { TaskStatus } from '../schemas/taskSchemas';
@@ -84,8 +86,20 @@ export const TaskInspectorModal: React.FC = () => {
   const [isCreatingPR, setIsCreatingPR] = useState(false);
   const [prError, setPrError] = useState<string | null>(null);
   const [prToast, setPrToast] = useState<{ message: string; url?: string } | null>(null);
+  const [copiedSessionId, setCopiedSessionId] = useState(false);
 
   const isOpen = !!task;
+
+  const handleCopySessionId = async () => {
+    if (!task?.session_id) return;
+    try {
+      await navigator.clipboard.writeText(task.session_id);
+      setCopiedSessionId(true);
+      setTimeout(() => setCopiedSessionId(false), 2000);
+    } catch {
+      // fallback or ignore clipboard write error
+    }
+  };
 
   const childTasks = React.useMemo(() => {
     if (!task) return [];
@@ -345,6 +359,38 @@ export const TaskInspectorModal: React.FC = () => {
                     </span>
                     <span className="font-mono">worktrees/{task.id.slice(0, 8)}</span>
                   </div>
+                  {task.session_id && (
+                    <div className="flex items-center justify-between gap-2 pt-1 border-t border-border/40">
+                      <span className="text-muted-foreground flex items-center gap-1.5 shrink-0">
+                        <TerminalIcon className="size-3.5" /> OpenCode Session:
+                      </span>
+                      <div className="flex items-center gap-1 min-w-0">
+                        <Badge
+                          variant="secondary"
+                          className="font-mono text-[11px] truncate max-w-[180px] select-all font-normal"
+                          title={task.session_id}
+                          data-testid="opencode-session-id"
+                        >
+                          {task.session_id}
+                        </Badge>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          onClick={handleCopySessionId}
+                          className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
+                          title={copiedSessionId ? 'Copied' : 'Copy Session ID'}
+                          aria-label={copiedSessionId ? 'Copied OpenCode Session ID' : 'Copy OpenCode Session ID'}
+                        >
+                          {copiedSessionId ? (
+                            <Check className="size-3 text-emerald-500" />
+                          ) : (
+                            <Copy className="size-3" />
+                          )}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                   {task.parent_task_id && (
                     <div className="flex items-center justify-between pt-1 border-t border-border/40">
                       <span className="text-muted-foreground flex items-center gap-1.5">

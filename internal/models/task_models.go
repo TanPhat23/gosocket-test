@@ -12,6 +12,7 @@ type Task struct {
 	IntegrationID *string      `gorm:"type:uuid;index:idx_tasks_integration" json:"integration_id,omitempty"`
 	ParentTaskID  *string      `gorm:"type:uuid;index:idx_tasks_parent" json:"parent_task_id,omitempty" validate:"omitempty,uuid"`
 	AsynqTaskID   *string      `gorm:"type:text;index:idx_tasks_asynq_id" json:"asynq_task_id,omitempty"`
+	SessionID     *string      `gorm:"type:text;index:idx_tasks_session" json:"session_id,omitempty"`
 	ExternalID    *string      `gorm:"type:text" json:"external_id,omitempty"`
 	ExternalURL   *string      `gorm:"type:text" json:"external_url,omitempty" validate:"omitempty,url"`
 	PRURL          *string      `gorm:"type:text" json:"pr_url,omitempty" validate:"omitempty,url"`
@@ -38,6 +39,7 @@ type TaskAttempt struct {
 	CreatedAt     time.Time     `gorm:"type:timestamptz;not null;default:CURRENT_TIMESTAMP" json:"created_at"`
 	StartedAt     *time.Time    `gorm:"type:timestamptz" json:"started_at,omitempty"`
 	FinishedAt    *time.Time    `gorm:"type:timestamptz" json:"finished_at,omitempty"`
+	SessionID     *string       `gorm:"type:text" json:"session_id,omitempty"`
 	ContainerID   *string       `gorm:"type:text" json:"container_id,omitempty"`
 	WorktreePath  *string       `gorm:"type:text" json:"worktree_path,omitempty"`
 	BranchName    *string       `gorm:"type:text" json:"branch_name,omitempty"`

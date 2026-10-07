@@ -2,6 +2,7 @@ package runner_test
 
 import (
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,7 +13,13 @@ import (
 	"agent-task-manager/internal/git"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/runner"
+	"agent-task-manager/internal/sandbox"
 	"agent-task-manager/internal/ws"
+
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/network"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 type mockProjectRepo struct {
@@ -144,8 +151,30 @@ func TestBuildProcessEnv(t *testing.T) {
 	if envMap["ATM_TASK_MODEL"] != "gpt-4o" {
 		t.Errorf("expected ATM_TASK_MODEL=gpt-4o, got %s", envMap["ATM_TASK_MODEL"])
 	}
+	if envMap["ATM_SESSION_ID"] != "ses_atm_task-xyz" {
+		t.Errorf("expected ATM_SESSION_ID=ses_atm_task-xyz, got %s", envMap["ATM_SESSION_ID"])
+	}
 	if envMap["OPENCODE_PASSWORD"] != "secret-password" {
 		t.Errorf("expected OPENCODE_PASSWORD=secret-password, got %s", envMap["OPENCODE_PASSWORD"])
+	}
+
+	// Also verify with explicit task.SessionID set
+	explicitSession := "ses_custom_override"
+	taskWithSession := &models.Task{
+		ID:        "task-abc",
+		ProjectID: "proj-123",
+		SessionID: &explicitSession,
+	}
+	envCustom := ar.BuildProcessEnv(taskWithSession, "gpt-4o", "/home/test")
+	envCustomMap := make(map[string]string)
+	for _, e := range envCustom {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			envCustomMap[parts[0]] = parts[1]
+		}
+	}
+	if envCustomMap["ATM_SESSION_ID"] != "ses_custom_override" {
+		t.Errorf("expected ATM_SESSION_ID=ses_custom_override, got %s", envCustomMap["ATM_SESSION_ID"])
 	}
 }
 
@@ -197,5 +226,137 @@ func TestSyncRepoWithRemote_WithRemote(t *testing.T) {
 	}
 	if len(logs) < 2 {
 		t.Errorf("expected sync logs, got %v", logs)
+	}
+}
+
+type mockDockerClientForRunner struct {
+	createdConfig *container.Config
+	waitStatusCh  chan container.WaitResponse
+	waitErrCh     chan error
+	logsReader    io.ReadCloser
+}
+
+func (m *mockDockerClientForRunner) ContainerCreate(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *ocispec.Platform, containerName string) (container.CreateResponse, error) {
+	m.createdConfig = config
+	return container.CreateResponse{ID: "test-cid-123"}, nil
+}
+
+func (m *mockDockerClientForRunner) ContainerStart(ctx context.Context, containerID string, options container.StartOptions) error {
+	return nil
+}
+
+func (m *mockDockerClientForRunner) ContainerWait(ctx context.Context, containerID string, condition container.WaitCondition) (<-chan container.WaitResponse, <-chan error) {
+	return m.waitStatusCh, m.waitErrCh
+}
+
+func (m *mockDockerClientForRunner) ContainerLogs(ctx context.Context, containerID string, options container.LogsOptions) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
+
+func (m *mockDockerClientForRunner) ContainerStop(ctx context.Context, containerID string, options container.StopOptions) error {
+	return nil
+}
+
+func (m *mockDockerClientForRunner) ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error {
+	return nil
+}
+
+func (m *mockDockerClientForRunner) ImagePull(ctx context.Context, refStr string, options image.PullOptions) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
+
+func TestRunInDocker_SessionAndTitleFlags(t *testing.T) {
+	tmpDir := t.TempDir()
+	repoPath := filepath.Join(tmpDir, "repo")
+	if err := runner.EnsureGitRepo(repoPath); err != nil {
+		t.Fatalf("failed to init repo: %v", err)
+	}
+
+	cfg := &config.Config{
+		OpenCodeServerURL: "http://127.0.0.1:49374",
+		HostWorktreeRoot:  filepath.Join(tmpDir, "worktrees"),
+		HostRepoRoot:      tmpDir,
+	}
+	pRepo := &mockProjectRepo{
+		project: &models.Project{
+			ID:       "proj-docker-1",
+			RepoPath: repoPath,
+		},
+	}
+	sessionID := "ses_atm_task-docker-1"
+	task := &models.Task{
+		ID:        "task-docker-1",
+		ProjectID: "proj-docker-1",
+		Title:     "Add deterministic session binding",
+		Prompt:    "Write tests and update runner",
+		SessionID: &sessionID,
+	}
+	attempt := &models.TaskAttempt{
+		ID:     "attempt-1",
+		TaskID: task.ID,
+	}
+	tRepo := &mockTaskRepo{task: task}
+	lRepo := &mockLogRepo{}
+	wm := git.NewWorktreeManager(cfg.HostWorktreeRoot)
+
+	statusCh := make(chan container.WaitResponse, 1)
+	errCh := make(chan error, 1)
+	statusCh <- container.WaitResponse{StatusCode: 0}
+
+	mockCli := &mockDockerClientForRunner{
+		waitStatusCh: statusCh,
+		waitErrCh:    errCh,
+	}
+	dockerRunner := sandbox.NewRunner(mockCli)
+
+	ar := runner.NewAgentTaskRunner(cfg, pRepo, tRepo, lRepo, wm, dockerRunner, mockCli, nil)
+
+	ctx := context.Background()
+	err := ar.RunTask(ctx, task, attempt)
+	if err != nil {
+		t.Fatalf("RunTask failed: %v", err)
+	}
+
+	if mockCli.createdConfig == nil {
+		t.Fatalf("expected ContainerCreate to have been called")
+	}
+
+	cmd := mockCli.createdConfig.Cmd
+	// Assert --session and --title are present in cmd arguments
+	sessionIdx := -1
+	titleIdx := -1
+	for i, arg := range cmd {
+		if arg == "--session" && i+1 < len(cmd) {
+			sessionIdx = i + 1
+		}
+		if arg == "--title" && i+1 < len(cmd) {
+			titleIdx = i + 1
+		}
+	}
+
+	if sessionIdx == -1 {
+		t.Fatalf("expected --session flag in cmd: %v", cmd)
+	}
+	if cmd[sessionIdx] != "ses_atm_task-docker-1" {
+		t.Errorf("expected session ID ses_atm_task-docker-1, got %s", cmd[sessionIdx])
+	}
+
+	if titleIdx == -1 {
+		t.Fatalf("expected --title flag in cmd: %v", cmd)
+	}
+	if cmd[titleIdx] != task.Title {
+		t.Errorf("expected title %q, got %q", task.Title, cmd[titleIdx])
+	}
+
+	// Verify ATM_SESSION_ID in environment
+	envMap := make(map[string]string)
+	for _, e := range mockCli.createdConfig.Env {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+	if envMap["ATM_SESSION_ID"] != "ses_atm_task-docker-1" {
+		t.Errorf("expected ATM_SESSION_ID=ses_atm_task-docker-1 in container env, got %s", envMap["ATM_SESSION_ID"])
 	}
 }

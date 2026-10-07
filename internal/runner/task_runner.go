@@ -390,23 +390,47 @@ func (r *AgentTaskRunner) BuildProcessEnv(task *models.Task, model string, homeD
 		pw = r.cfg.OpenCodePassword
 	}
 
+	sessionID := ""
+	if task != nil {
+		if task.SessionID != nil && *task.SessionID != "" {
+			sessionID = *task.SessionID
+		} else if task.ID != "" {
+			sessionID = fmt.Sprintf("ses_atm_%s", task.ID)
+		}
+	}
+
+	taskID := ""
+	projectID := ""
+	if task != nil {
+		taskID = task.ID
+		projectID = task.ProjectID
+	}
+
 	return []string{
 		"HOME=" + homeDir,
 		"OPENCODE_PASSWORD=" + pw,
-		"ATM_TASK_ID=" + task.ID,
-		"ATM_PROJECT_ID=" + task.ProjectID,
+		"ATM_TASK_ID=" + taskID,
+		"ATM_PROJECT_ID=" + projectID,
 		"ATM_API_URL=" + apiURL,
 		"ATM_TASK_MODEL=" + model,
+		"ATM_SESSION_ID=" + sessionID,
 	}
 }
 
 func (r *AgentTaskRunner) runInDocker(ctx context.Context, task *models.Task, attempt *models.TaskAttempt, hostPath, model string) error {
 	imageName := "debian:bookworm-slim"
 
+	sessionID := fmt.Sprintf("ses_atm_%s", task.ID)
+	if task.SessionID != nil && *task.SessionID != "" {
+		sessionID = *task.SessionID
+	}
+
 	cmd := []string{
 		"/root/.opencode/bin/opencode",
 		"run",
 		"--server", r.cfg.OpenCodeServerURL,
+		"--session", sessionID,
+		"--title", task.Title,
 		"--model", model,
 		"--auto",
 		task.Prompt,
@@ -480,9 +504,16 @@ func (r *AgentTaskRunner) runOnHost(ctx context.Context, task *models.Task, atte
 		binPath = "opencode"
 	}
 
+	sessionID := fmt.Sprintf("ses_atm_%s", task.ID)
+	if task.SessionID != nil && *task.SessionID != "" {
+		sessionID = *task.SessionID
+	}
+
 	args := []string{
 		"run",
 		"--server", r.cfg.OpenCodeServerURL,
+		"--session", sessionID,
+		"--title", task.Title,
 		"--model", model,
 		"--auto",
 		task.Prompt,

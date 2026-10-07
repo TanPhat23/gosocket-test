@@ -97,6 +97,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 			heartbeat_at DATETIME,
 			integration_id TEXT,
 			asynq_task_id TEXT,
+			session_id TEXT,
 			external_id TEXT,
 			external_url TEXT,
 			pr_url TEXT,
@@ -115,6 +116,21 @@ func setupTestDB(t *testing.T) *gorm.DB {
 			assignee_type TEXT NOT NULL DEFAULT 'agent',
 			priority INTEGER NOT NULL DEFAULT 50,
 			parent_task_id TEXT
+		);
+		CREATE TABLE task_attempts (
+			id TEXT PRIMARY KEY,
+			task_id TEXT NOT NULL,
+			attempt_number INTEGER NOT NULL,
+			status TEXT NOT NULL,
+			session_id TEXT,
+			container_id TEXT,
+			worktree_path TEXT,
+			branch_name TEXT,
+			exit_code INTEGER,
+			failure_reason TEXT,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			started_at DATETIME,
+			finished_at DATETIME
 		);
 		CREATE TABLE task_logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -358,5 +374,99 @@ func TestTaskServiceCreateSubtaskAndListChildren(t *testing.T) {
 	}
 	if children[0].ParentTaskID == nil || *children[0].ParentTaskID != parentTask.ID {
 		t.Errorf("expected child ParentTaskID %s, got %+v", parentTask.ID, children[0].ParentTaskID)
+	}
+}
+
+type mockRunnerCapture struct {
+	capturedTask    *models.Task
+	capturedAttempt *models.TaskAttempt
+}
+
+func (m *mockRunnerCapture) RunTask(ctx context.Context, task *models.Task, attempt *models.TaskAttempt) error {
+	m.capturedTask = task
+	m.capturedAttempt = attempt
+	return nil
+}
+
+func TestTaskServiceSessionIDGenerationAndExecution(t *testing.T) {
+	gormDB := setupTestDB(t)
+	_, project, _ := createTestUserAndTask(t, gormDB)
+	taskRepo := repository.NewTaskRepository(gormDB)
+	attemptRepo := repository.NewAttemptRepository(gormDB)
+	mockQueue := &mockQueueClient{}
+
+	taskSvc := service.NewTaskService(taskRepo, attemptRepo, mockQueue, nil)
+	ctx := context.Background()
+
+	// 1. CreateTask initializes task.SessionID
+	req := &dto.CreateTaskRequest{
+		ProjectID:    project.ID,
+		Title:        "Test Session Determinism",
+		Prompt:       "Run prompt",
+		AssigneeID:   "agent-1",
+		AssigneeType: models.AssigneeAgent,
+		Priority:     int(models.PriorityNormal),
+	}
+
+	created, err := taskSvc.CreateTask(ctx, req)
+	if err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
+
+	expectedSessionID := "ses_atm_" + created.ID
+	if created.SessionID == nil || *created.SessionID != expectedSessionID {
+		t.Fatalf("expected SessionID %s, got %+v", expectedSessionID, created.SessionID)
+	}
+
+	// Verify dto.ToTaskResponse mapping includes SessionID
+	resp := dto.ToTaskResponse(created)
+	if resp.SessionID == nil || *resp.SessionID != expectedSessionID {
+		t.Fatalf("expected dto.TaskResponse.SessionID %s, got %+v", expectedSessionID, resp.SessionID)
+	}
+
+	// 2. ExecuteTask ensures attempt.SessionID matches task.SessionID
+	runnerCapture := &mockRunnerCapture{}
+	err = taskSvc.ExecuteTask(ctx, created.ID, runnerCapture)
+	if err != nil {
+		t.Fatalf("ExecuteTask failed: %v", err)
+	}
+
+	if runnerCapture.capturedAttempt == nil {
+		t.Fatalf("expected runner to be called with TaskAttempt")
+	}
+	if runnerCapture.capturedAttempt.SessionID == nil || *runnerCapture.capturedAttempt.SessionID != expectedSessionID {
+		t.Fatalf("expected attempt.SessionID %s, got %+v", expectedSessionID, runnerCapture.capturedAttempt.SessionID)
+	}
+
+	// 3. ExecuteTask on a legacy task with nil SessionID ensures it gets populated
+	legacyTask := &models.Task{
+		ID:           common.NewID(),
+		ProjectID:    project.ID,
+		Title:        "Legacy Task",
+		Prompt:       "Legacy prompt",
+		AssigneeID:   "agent-legacy",
+		Status:       models.TaskStatusQueued,
+		AssigneeType: models.AssigneeAgent,
+		Priority:     models.PriorityNormal,
+		SessionID:    nil, // intentionally nil
+		Skills:       models.StringArray{},
+		MCPServers:   models.StringArray{},
+	}
+	if err := taskRepo.Create(ctx, legacyTask); err != nil {
+		t.Fatalf("failed to create legacy task: %v", err)
+	}
+
+	legacyCapture := &mockRunnerCapture{}
+	err = taskSvc.ExecuteTask(ctx, legacyTask.ID, legacyCapture)
+	if err != nil {
+		t.Fatalf("ExecuteTask on legacy task failed: %v", err)
+	}
+
+	expectedLegacySessionID := "ses_atm_" + legacyTask.ID
+	if legacyCapture.capturedTask.SessionID == nil || *legacyCapture.capturedTask.SessionID != expectedLegacySessionID {
+		t.Fatalf("expected legacy task.SessionID to be %s, got %+v", expectedLegacySessionID, legacyCapture.capturedTask.SessionID)
+	}
+	if legacyCapture.capturedAttempt.SessionID == nil || *legacyCapture.capturedAttempt.SessionID != expectedLegacySessionID {
+		t.Fatalf("expected legacy attempt.SessionID to be %s, got %+v", expectedLegacySessionID, legacyCapture.capturedAttempt.SessionID)
 	}
 }

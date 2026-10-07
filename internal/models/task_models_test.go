@@ -44,6 +44,7 @@ func TestTaskMetadataAndRelationships(t *testing.T) {
 	now := time.Now()
 	heartbeat := now.Add(-5 * time.Minute)
 	asynqID := "asynq-task-123"
+	sessionID := "ses_atm_task-meta-1"
 	integID := "integ-1"
 	parentID := "11111111-2222-3333-4444-555555555555"
 	extID := "GH-101"
@@ -68,6 +69,7 @@ func TestTaskMetadataAndRelationships(t *testing.T) {
 		HeartbeatAt:   &heartbeat,
 		IntegrationID: &integID,
 		AsynqTaskID:   &asynqID,
+		SessionID:     &sessionID,
 		ExternalID:    &extID,
 		ExternalURL:   &extURL,
 		PRURL:         &prURL,
@@ -103,6 +105,7 @@ func TestTaskMetadataAndRelationships(t *testing.T) {
 		TaskID:        task.ID,
 		AttemptNumber: 1,
 		Status:        models.AttemptFailed,
+		SessionID:     &sessionID,
 		CreatedAt:     now,
 		StartedAt:     &attemptStarted,
 		FinishedAt:    &attemptFinished,

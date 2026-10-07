@@ -108,8 +108,11 @@ func (s *taskService) CreateTask(ctx context.Context, req *dto.CreateTaskRequest
 		priority = models.PriorityNormal
 	}
 
+	taskID := common.NewID()
+	sessionID := fmt.Sprintf("ses_atm_%s", taskID)
+
 	task := &models.Task{
-		ID:           common.NewID(),
+		ID:           taskID,
 		ProjectID:    req.ProjectID,
 		ParentTaskID: req.ParentTaskID,
 		Title:        req.Title,
@@ -120,6 +123,7 @@ func (s *taskService) CreateTask(ctx context.Context, req *dto.CreateTaskRequest
 		Model:        req.Model,
 		Skills:       models.StringArray(req.Skills),
 		MCPServers:   models.StringArray(req.MCPServers),
+		SessionID:    &sessionID,
 		Status:       models.TaskStatusQueued,
 	}
 
@@ -186,6 +190,12 @@ func (s *taskService) ExecuteTask(ctx context.Context, taskID string, runner Tas
 		return nil
 	}
 
+	// Ensure task.SessionID is initialized
+	if task.SessionID == nil || *task.SessionID == "" {
+		sesID := fmt.Sprintf("ses_atm_%s", task.ID)
+		task.SessionID = &sesID
+	}
+
 	// Update task status to in_progress and record heartbeat
 	now := time.Now().UTC()
 	task.Status = models.TaskStatusInProgress
@@ -210,6 +220,7 @@ func (s *taskService) ExecuteTask(ctx context.Context, taskID string, runner Tas
 		AttemptNumber: int(count) + 1,
 		Status:        models.AttemptRunning,
 		StartedAt:     &startedAt,
+		SessionID:     task.SessionID,
 	}
 	if err := s.attemptRepo.Create(ctx, attempt); err != nil {
 		return fmt.Errorf("failed to create task attempt: %w", err)
