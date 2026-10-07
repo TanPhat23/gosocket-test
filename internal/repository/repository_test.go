@@ -101,7 +101,8 @@ func setupTestDB(t *testing.T) *gorm.DB {
 			assignee_id TEXT NOT NULL,
 			status TEXT NOT NULL,
 			assignee_type TEXT NOT NULL DEFAULT 'agent',
-			priority INTEGER NOT NULL DEFAULT 50
+			priority INTEGER NOT NULL DEFAULT 50,
+			parent_task_id TEXT
 		);`,
 		`CREATE TABLE task_logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,

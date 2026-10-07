@@ -14,6 +14,7 @@ type CreateTaskRequest struct {
 	AssigneeID   string              `json:"assignee_id" validate:"required"`
 	AssigneeType models.AssigneeType `json:"assignee_type" validate:"required,assignee_type"`
 	Priority     int                 `json:"priority" validate:"task_priority"`
+	ParentTaskID *string             `json:"parent_task_id,omitempty" validate:"omitempty,uuid"`
 	Model        *string             `json:"model,omitempty"`
 	Skills       []string            `json:"skills,omitempty"`
 	MCPServers   []string            `json:"mcp_servers,omitempty"`
@@ -29,6 +30,7 @@ type TaskResponse struct {
 	AssigneeType  models.AssigneeType `json:"assignee_type"`
 	Status        models.TaskStatus   `json:"status"`
 	Priority      models.TaskPriority `json:"priority"`
+	ParentTaskID  *string             `json:"parent_task_id,omitempty"`
 	Model         *string             `json:"model,omitempty"`
 	Skills        []string            `json:"skills"`
 	MCPServers    []string            `json:"mcp_servers"`
@@ -67,6 +69,7 @@ func ToTaskResponse(t *models.Task) TaskResponse {
 		AssigneeType: t.AssigneeType,
 		Status:       t.Status,
 		Priority:     t.Priority,
+		ParentTaskID: t.ParentTaskID,
 		Model:        t.Model,
 		Skills:       skills,
 		MCPServers:   mcpServers,

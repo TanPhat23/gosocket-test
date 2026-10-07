@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"agent-task-manager/internal/config"
@@ -38,6 +39,9 @@ func (m *mockTaskRepo) GetByProjectAndExternalID(ctx context.Context, projectID,
 	return m.task, nil
 }
 func (m *mockTaskRepo) List(ctx context.Context, projectID string) ([]models.Task, error) {
+	return []models.Task{*m.task}, nil
+}
+func (m *mockTaskRepo) ListByParentID(ctx context.Context, parentTaskID string) ([]models.Task, error) {
 	return []models.Task{*m.task}, nil
 }
 func (m *mockTaskRepo) Update(ctx context.Context, t *models.Task) error {
@@ -105,6 +109,43 @@ func TestAgentTaskRunner_Initialization(t *testing.T) {
 	gitDir := filepath.Join(pRepo.project.RepoPath, ".git")
 	if _, err := os.Stat(gitDir); err != nil {
 		t.Errorf("expected .git directory to exist after EnsureGitRepo")
+	}
+}
+
+func TestBuildProcessEnv(t *testing.T) {
+	cfg := &config.Config{
+		Port:             9090,
+		OpenCodePassword: "secret-password",
+	}
+	ar := runner.NewAgentTaskRunner(cfg, nil, nil, nil, nil, nil, nil, nil)
+	task := &models.Task{
+		ID:        "task-xyz",
+		ProjectID: "proj-123",
+	}
+
+	env := ar.BuildProcessEnv(task, "gpt-4o", "/home/test")
+	envMap := make(map[string]string)
+	for _, e := range env {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+
+	if envMap["ATM_TASK_ID"] != "task-xyz" {
+		t.Errorf("expected ATM_TASK_ID=task-xyz, got %s", envMap["ATM_TASK_ID"])
+	}
+	if envMap["ATM_PROJECT_ID"] != "proj-123" {
+		t.Errorf("expected ATM_PROJECT_ID=proj-123, got %s", envMap["ATM_PROJECT_ID"])
+	}
+	if envMap["ATM_API_URL"] != "http://localhost:9090" {
+		t.Errorf("expected ATM_API_URL=http://localhost:9090, got %s", envMap["ATM_API_URL"])
+	}
+	if envMap["ATM_TASK_MODEL"] != "gpt-4o" {
+		t.Errorf("expected ATM_TASK_MODEL=gpt-4o, got %s", envMap["ATM_TASK_MODEL"])
+	}
+	if envMap["OPENCODE_PASSWORD"] != "secret-password" {
+		t.Errorf("expected OPENCODE_PASSWORD=secret-password, got %s", envMap["OPENCODE_PASSWORD"])
 	}
 }
 

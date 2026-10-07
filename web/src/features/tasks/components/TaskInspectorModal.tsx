@@ -8,6 +8,7 @@ import {
 } from '@/components/ui/dialog';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { TerminalView } from './TerminalView';
 import { DiffViewer } from './DiffViewer';
 import {
@@ -20,14 +21,65 @@ import {
   Layers,
   Cpu,
   User,
+  GitBranch,
+  CornerDownRight,
+  ChevronRight,
 } from 'lucide-react';
+import type { TaskStatus } from '../schemas/taskSchemas';
+
+const getStatusBadge = (status: TaskStatus) => {
+  switch (status) {
+    case 'in_progress':
+      return (
+        <Badge className="bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 text-[10px] font-mono">
+          in_progress
+        </Badge>
+      );
+    case 'done':
+      return (
+        <Badge variant="secondary" className="text-[10px] font-mono">
+          done
+        </Badge>
+      );
+    case 'failed':
+      return (
+        <Badge variant="destructive" className="text-[10px] font-mono">
+          failed
+        </Badge>
+      );
+    case 'cancelled':
+      return (
+        <Badge variant="outline" className="text-muted-foreground text-[10px] font-mono">
+          cancelled
+        </Badge>
+      );
+    case 'review':
+      return (
+        <Badge className="bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30 text-[10px] font-mono">
+          review
+        </Badge>
+      );
+    default:
+      return (
+        <Badge variant="outline" className="text-[10px] font-mono">
+          {status}
+        </Badge>
+      );
+  }
+};
 
 export const TaskInspectorModal: React.FC = () => {
   const task = useSelectedTask();
   const selectTask = useTaskStore((state) => state.selectTask);
+  const tasks = useTaskStore((state) => state.tasks);
   const [activeTab, setActiveTab] = useState<string>('overview');
 
   const isOpen = !!task;
+
+  const childTasks = React.useMemo(() => {
+    if (!task) return [];
+    return Object.values(tasks).filter((t) => t.parent_task_id === task.id);
+  }, [tasks, task]);
 
   const handleOpenChange = (open: boolean) => {
     if (!open) {
@@ -132,6 +184,22 @@ export const TaskInspectorModal: React.FC = () => {
                     </span>
                     <span className="font-mono">worktrees/{task.id.slice(0, 8)}</span>
                   </div>
+                  {task.parent_task_id && (
+                    <div className="flex items-center justify-between pt-1 border-t border-border/40">
+                      <span className="text-muted-foreground flex items-center gap-1.5">
+                        <CornerDownRight className="size-3.5" /> Parent Task:
+                      </span>
+                      <Button
+                        variant="link"
+                        size="xs"
+                        onClick={() => selectTask(task.parent_task_id!)}
+                        className="h-auto p-0 font-mono text-xs text-primary hover:underline"
+                        title={`Inspect parent task ${task.parent_task_id}`}
+                      >
+                        #{task.parent_task_id.slice(0, 8)}
+                      </Button>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -186,6 +254,50 @@ export const TaskInspectorModal: React.FC = () => {
                 </div>
               </div>
             )}
+
+            {/* Delegated Subtasks */}
+            <div className="space-y-2 pt-2 border-t border-border/60">
+              <div className="flex items-center justify-between">
+                <h5 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
+                  <GitBranch className="size-3.5 text-primary" />
+                  Delegated Subtasks
+                </h5>
+                <span className="text-xs font-mono text-muted-foreground">
+                  {childTasks.length} {childTasks.length === 1 ? 'task' : 'tasks'}
+                </span>
+              </div>
+
+              {childTasks.length === 0 ? (
+                <div className="p-4 rounded-lg border border-dashed border-border/70 bg-muted/15 text-center text-xs text-muted-foreground">
+                  No subtasks delegated by this task.
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  {childTasks.map((child) => (
+                    <button
+                      key={child.id}
+                      type="button"
+                      onClick={() => selectTask(child.id)}
+                      className="w-full flex items-center justify-between gap-3 p-2.5 rounded-lg border border-border bg-card hover:bg-muted/40 hover:border-primary/40 transition-colors text-left group cursor-pointer"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <CornerDownRight className="size-3.5 text-muted-foreground group-hover:text-primary transition-colors shrink-0" />
+                        <span className="text-xs font-mono text-muted-foreground shrink-0">
+                          #{child.id.slice(0, 8)}
+                        </span>
+                        <span className="text-xs font-medium text-foreground truncate group-hover:text-primary transition-colors">
+                          {child.title}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {getStatusBadge(child.status)}
+                        <ChevronRight className="size-3.5 text-muted-foreground group-hover:text-foreground transition-colors" />
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </TabsContent>
 
           {/* Terminal Tab */}

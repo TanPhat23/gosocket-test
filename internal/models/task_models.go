@@ -10,6 +10,7 @@ type Task struct {
 	UpdatedAt     time.Time    `gorm:"type:timestamptz;not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
 	HeartbeatAt   *time.Time   `gorm:"type:timestamptz" json:"heartbeat_at,omitempty"`
 	IntegrationID *string      `gorm:"type:uuid;index:idx_tasks_integration" json:"integration_id,omitempty"`
+	ParentTaskID  *string      `gorm:"type:uuid;index:idx_tasks_parent" json:"parent_task_id,omitempty" validate:"omitempty,uuid"`
 	AsynqTaskID   *string      `gorm:"type:text;index:idx_tasks_asynq_id" json:"asynq_task_id,omitempty"`
 	ExternalID    *string      `gorm:"type:text" json:"external_id,omitempty"`
 	ExternalURL   *string      `gorm:"type:text" json:"external_url,omitempty" validate:"omitempty,url"`

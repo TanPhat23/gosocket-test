@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"agent-task-manager/internal/common"
+	"agent-task-manager/internal/dto"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/repository"
 	"agent-task-manager/internal/service"
@@ -112,7 +113,8 @@ func setupTestDB(t *testing.T) *gorm.DB {
 			assignee_id TEXT NOT NULL,
 			status TEXT NOT NULL,
 			assignee_type TEXT NOT NULL DEFAULT 'agent',
-			priority INTEGER NOT NULL DEFAULT 50
+			priority INTEGER NOT NULL DEFAULT 50,
+			parent_task_id TEXT
 		);
 		CREATE TABLE task_logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -311,5 +313,50 @@ func TestLogServiceAppendAndBroadcast(t *testing.T) {
 	}
 	if len(logs) != 1 || logs[0].LogChunk != "Compiling package...\n" {
 		t.Fatalf("unexpected logs: %+v", logs)
+	}
+}
+
+func TestTaskServiceCreateSubtaskAndListChildren(t *testing.T) {
+	gormDB := setupTestDB(t)
+	_, project, parentTask := createTestUserAndTask(t, gormDB)
+	taskRepo := repository.NewTaskRepository(gormDB)
+	attemptRepo := repository.NewAttemptRepository(gormDB)
+	mockQueue := &mockQueueClient{}
+
+	taskSvc := service.NewTaskService(taskRepo, attemptRepo, mockQueue, nil)
+	ctx := context.Background()
+
+	subtaskReq := &dto.CreateTaskRequest{
+		ProjectID:    project.ID,
+		ParentTaskID: &parentTask.ID,
+		Title:        "Child task 1",
+		Prompt:       "Child prompt 1",
+		AssigneeID:   "sub-agent-1",
+		AssigneeType: models.AssigneeAgent,
+		Priority:     int(models.PriorityNormal),
+	}
+
+	createdChild, err := taskSvc.CreateTask(ctx, subtaskReq)
+	if err != nil {
+		t.Fatalf("CreateTask child failed: %v", err)
+	}
+
+	if createdChild.ParentTaskID == nil || *createdChild.ParentTaskID != parentTask.ID {
+		t.Fatalf("expected ParentTaskID %s, got %+v", parentTask.ID, createdChild.ParentTaskID)
+	}
+
+	children, err := taskSvc.ListSubtasks(ctx, parentTask.ID)
+	if err != nil {
+		t.Fatalf("ListSubtasks failed: %v", err)
+	}
+
+	if len(children) != 1 {
+		t.Fatalf("expected 1 child task, got %d", len(children))
+	}
+	if children[0].ID != createdChild.ID {
+		t.Errorf("expected child ID %s, got %s", createdChild.ID, children[0].ID)
+	}
+	if children[0].ParentTaskID == nil || *children[0].ParentTaskID != parentTask.ID {
+		t.Errorf("expected child ParentTaskID %s, got %+v", parentTask.ID, children[0].ParentTaskID)
 	}
 }

@@ -45,6 +45,7 @@ func TestTaskMetadataAndRelationships(t *testing.T) {
 	heartbeat := now.Add(-5 * time.Minute)
 	asynqID := "asynq-task-123"
 	integID := "integ-1"
+	parentID := "11111111-2222-3333-4444-555555555555"
 	extID := "GH-101"
 	extURL := "https://github.com/org/repo/issues/101"
 	prURL := "https://github.com/org/repo/pull/102"
@@ -55,9 +56,10 @@ func TestTaskMetadataAndRelationships(t *testing.T) {
 	exitCode := 0
 
 	task := models.Task{
-		ID:            "task-meta-1",
-		ProjectID:     "proj-1",
-		Title:         "Refactor queue handler",
+		ID:           "task-meta-1",
+		ProjectID:    "proj-1",
+		ParentTaskID: &parentID,
+		Title:        "Refactor queue handler",
 		Prompt:        "Fix queue handler logic",
 		AssigneeID:    "agent-runner",
 		Status:        models.TaskStatusInProgress,
@@ -82,6 +84,14 @@ func TestTaskMetadataAndRelationships(t *testing.T) {
 
 	if err := models.Validate.Struct(task); err != nil {
 		t.Fatalf("expected valid task with metadata, got: %v", err)
+	}
+
+	// Verify invalid ParentTaskID format
+	invalidParentTask := task
+	badParentID := "invalid-uuid-format"
+	invalidParentTask.ParentTaskID = &badParentID
+	if err := models.Validate.Struct(invalidParentTask); err == nil {
+		t.Errorf("expected validation failure for invalid ParentTaskID UUID, got nil")
 	}
 
 	// Test TaskAttempt fields and validation

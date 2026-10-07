@@ -12,6 +12,7 @@ type TaskRepository interface {
 	GetByID(ctx context.Context, id string) (*models.Task, error)
 	GetByProjectAndExternalID(ctx context.Context, projectID, externalID string) (*models.Task, error)
 	List(ctx context.Context, projectID string) ([]models.Task, error)
+	ListByParentID(ctx context.Context, parentTaskID string) ([]models.Task, error)
 	Create(ctx context.Context, task *models.Task) error
 	Update(ctx context.Context, task *models.Task) error
 	UpdateStatus(ctx context.Context, id string, status models.TaskStatus) error
@@ -47,6 +48,10 @@ func (r *taskRepo) List(ctx context.Context, projectID string) ([]models.Task, e
 		return gorm.G[models.Task](r.db).Where("project_id = ?", projectID).Order("created_at DESC").Find(ctx)
 	}
 	return gorm.G[models.Task](r.db).Order("created_at DESC").Find(ctx)
+}
+
+func (r *taskRepo) ListByParentID(ctx context.Context, parentTaskID string) ([]models.Task, error) {
+	return gorm.G[models.Task](r.db).Where("parent_task_id = ?", parentTaskID).Order("created_at ASC").Find(ctx)
 }
 
 func (r *taskRepo) Create(ctx context.Context, task *models.Task) error {

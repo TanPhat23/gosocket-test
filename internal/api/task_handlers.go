@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"agent-task-manager/internal/dto"
+	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/service"
 	"github.com/gofiber/fiber/v3"
 	"gorm.io/gorm"
@@ -21,10 +22,19 @@ func NewTaskHandlers(taskService service.TaskService) *TaskHandlers {
 	}
 }
 
-// List handles GET /api/v1/tasks?project_id=...
+// List handles GET /api/v1/tasks?project_id=...&parent_task_id=...
 func (h *TaskHandlers) List(c fiber.Ctx) error {
-	projectID := c.Query("project_id")
-	tasks, err := h.taskService.ListTasks(c.Context(), projectID)
+	parentTaskID := c.Query("parent_task_id")
+	var tasks []models.Task
+	var err error
+
+	if parentTaskID != "" {
+		tasks, err = h.taskService.ListSubtasks(c.Context(), parentTaskID)
+	} else {
+		projectID := c.Query("project_id")
+		tasks, err = h.taskService.ListTasks(c.Context(), projectID)
+	}
+
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to list tasks"})
 	}

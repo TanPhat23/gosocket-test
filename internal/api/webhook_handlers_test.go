@@ -91,7 +91,8 @@ func setupWebhookTestApp(t *testing.T) (*fiber.App, *gorm.DB, integrations.Idemp
 			assignee_id TEXT NOT NULL,
 			status TEXT NOT NULL,
 			assignee_type TEXT NOT NULL DEFAULT 'agent',
-			priority INTEGER NOT NULL DEFAULT 50
+			priority INTEGER NOT NULL DEFAULT 50,
+			parent_task_id TEXT
 		);`,
 		`CREATE TABLE webhook_events (
 			provider TEXT NOT NULL,

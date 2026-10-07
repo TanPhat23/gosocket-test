@@ -21,6 +21,7 @@ type TaskRunner = queue.TaskRunner
 type TaskService interface {
 	GetTask(ctx context.Context, taskID string) (*models.Task, error)
 	ListTasks(ctx context.Context, projectID string) ([]models.Task, error)
+	ListSubtasks(ctx context.Context, parentTaskID string) ([]models.Task, error)
 	CreateTask(ctx context.Context, req *dto.CreateTaskRequest) (*models.Task, error)
 	UpdateStatus(ctx context.Context, taskID string, status models.TaskStatus) error
 	CancelTask(ctx context.Context, taskID string) error
@@ -59,6 +60,11 @@ func (s *taskService) ListTasks(ctx context.Context, projectID string) ([]models
 	return s.taskRepo.List(ctx, projectID)
 }
 
+// ListSubtasks lists subtasks for a given parent task ID.
+func (s *taskService) ListSubtasks(ctx context.Context, parentTaskID string) ([]models.Task, error) {
+	return s.taskRepo.ListByParentID(ctx, parentTaskID)
+}
+
 // CreateTask validates input, creates a new task in DB, enqueues to Asynq queue if queued, and broadcasts status via WebSocket.
 func (s *taskService) CreateTask(ctx context.Context, req *dto.CreateTaskRequest) (*models.Task, error) {
 	if req == nil {
@@ -73,6 +79,7 @@ func (s *taskService) CreateTask(ctx context.Context, req *dto.CreateTaskRequest
 	task := &models.Task{
 		ID:           common.NewID(),
 		ProjectID:    req.ProjectID,
+		ParentTaskID: req.ParentTaskID,
 		Title:        req.Title,
 		Prompt:       req.Prompt,
 		AssigneeID:   req.AssigneeID,

@@ -3,7 +3,7 @@ import { useTask, useTaskStore } from '../store/useTaskStore';
 import { Card, CardHeader, CardContent, CardFooter } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Eye, GitCompare, Ban, Cpu, Wrench, Server } from 'lucide-react';
+import { Eye, GitCompare, Ban, Cpu, Wrench, Server, CornerDownRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export interface TaskCardProps {
@@ -88,8 +88,18 @@ export const TaskCard: React.FC<TaskCardProps> = ({ id }) => {
     >
       <CardHeader className="p-3.5 pb-2 flex flex-col gap-2">
         <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5 min-w-0">
+          <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
             {getPriorityBadge(task.priority)}
+            {task.parent_task_id && (
+              <Badge
+                variant="outline"
+                className="font-mono text-[10px] text-muted-foreground bg-muted/30 border-dashed gap-1 px-1.5 py-0 h-4.5"
+                title={`Subtask of parent task #${task.parent_task_id.slice(0, 8)}`}
+              >
+                <CornerDownRight className="size-2.5 text-muted-foreground" />
+                Subtask
+              </Badge>
+            )}
             <span className="text-[11px] font-mono text-muted-foreground truncate" title={task.id}>
               #{task.id.slice(0, 8)}
             </span>

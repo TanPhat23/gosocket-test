@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -118,12 +119,11 @@ func SyncRepoWithRemote(ctx context.Context, repoPath string, logFn func(string)
 	remotes := strings.Fields(string(out))
 	targetRemote := "origin"
 	foundTarget := false
-	for _, r := range remotes {
-		if r == "origin" {
+		if ok := slices.Contains(remotes, "origin"); ok {
+			targetRemote = "origin"
 			foundTarget = true
-			break
 		}
-	}
+	
 	if !foundTarget && len(remotes) > 0 {
 		targetRemote = remotes[0]
 	}
@@ -236,6 +236,32 @@ func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attemp
 	return nil
 }
 
+// BuildProcessEnv returns the process environment variables for an agent run.
+func (r *AgentTaskRunner) BuildProcessEnv(task *models.Task, model string, homeDir string) []string {
+	apiURL := os.Getenv("ATM_API_URL")
+	if apiURL == "" {
+		port := 8080
+		if r.cfg != nil && r.cfg.Port > 0 {
+			port = r.cfg.Port
+		}
+		apiURL = fmt.Sprintf("http://localhost:%d", port)
+	}
+
+	pw := ""
+	if r.cfg != nil {
+		pw = r.cfg.OpenCodePassword
+	}
+
+	return []string{
+		"HOME=" + homeDir,
+		"OPENCODE_PASSWORD=" + pw,
+		"ATM_TASK_ID=" + task.ID,
+		"ATM_PROJECT_ID=" + task.ProjectID,
+		"ATM_API_URL=" + apiURL,
+		"ATM_TASK_MODEL=" + model,
+	}
+}
+
 func (r *AgentTaskRunner) runInDocker(ctx context.Context, task *models.Task, attempt *models.TaskAttempt, hostPath, model string) error {
 	imageName := "debian:bookworm-slim"
 
@@ -248,13 +274,7 @@ func (r *AgentTaskRunner) runInDocker(ctx context.Context, task *models.Task, at
 		task.Prompt,
 	}
 
-	env := []string{
-		"HOME=/root",
-		"OPENCODE_PASSWORD=" + r.cfg.OpenCodePassword,
-		"ATM_TASK_ID=" + task.ID,
-		"ATM_PROJECT_ID=" + task.ProjectID,
-		"ATM_TASK_MODEL=" + model,
-	}
+	env := r.BuildProcessEnv(task, model, "/root")
 
 	containerCfg := &container.Config{
 		Image:        imageName,
@@ -332,13 +352,7 @@ func (r *AgentTaskRunner) runOnHost(ctx context.Context, task *models.Task, atte
 
 	cmd := exec.CommandContext(ctx, binPath, args...)
 	cmd.Dir = worktreeDir
-	cmd.Env = append(cmd.Environ(),
-		"HOME=/home/ghug",
-		"OPENCODE_PASSWORD="+r.cfg.OpenCodePassword,
-		"ATM_TASK_ID="+task.ID,
-		"ATM_PROJECT_ID="+task.ProjectID,
-		"ATM_TASK_MODEL="+model,
-	)
+	cmd.Env = append(cmd.Environ(), r.BuildProcessEnv(task, model, "/home/ghug")...)
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {

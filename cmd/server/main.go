@@ -41,11 +41,26 @@ func main() {
 
 	fmt.Printf("Starting Agent Task Manager Control Plane on port %d (env: %s)\n", cfg.Port, cfg.AppEnv)
 
-	// Database connection (migrations handled separately via cmd/migrate)
+	// Database connection and auto-migration
 	gormDB, err := db.Connect(cfg)
 	if err != nil {
 		log.Fatalf("failed to connect to database: %v", err)
 	}
+
+	// Auto-migrate schema on launch
+	_ = gormDB.AutoMigrate(
+		&models.Team{},
+		&models.User{},
+		&models.TeamMembership{},
+		&models.APIToken{},
+		&models.Project{},
+		&models.ProjectIntegration{},
+		&models.Credential{},
+		&models.Task{},
+		&models.TaskAttempt{},
+		&models.WebhookEvent{},
+		&models.TaskLog{},
+	)
 
 	// Seed default team and project if none exist
 	var teamCount int64

@@ -102,7 +102,8 @@ func setupAPITestDB(t *testing.T) *gorm.DB {
 			assignee_id TEXT NOT NULL,
 			status TEXT NOT NULL,
 			assignee_type TEXT NOT NULL DEFAULT 'agent',
-			priority INTEGER NOT NULL DEFAULT 50
+			priority INTEGER NOT NULL DEFAULT 50,
+			parent_task_id TEXT
 		);`,
 		`CREATE TABLE task_attempts (
 			id TEXT PRIMARY KEY,
@@ -351,6 +352,96 @@ func TestTaskAndTeamHandlers(t *testing.T) {
 
 		if len(tasks) != 1 || tasks[0].ID != createdTaskID {
 			t.Errorf("expected 1 task with id %s, got %+v", createdTaskID, tasks)
+		}
+	})
+
+	var createdSubtaskID string
+
+	t.Run("POST /api/v1/tasks - create child task with parent_task_id", func(t *testing.T) {
+		subtaskPayload := dto.CreateTaskRequest{
+			ProjectID:    projectID,
+			ParentTaskID: &createdTaskID,
+			Title:        "Implement subtask for parent",
+			Prompt:       "Break down problem and report",
+			AssigneeID:   "agent-sub",
+			AssigneeType: models.AssigneeAgent,
+			Priority:     int(models.PriorityNormal),
+		}
+
+		jsonBytes, _ := json.Marshal(subtaskPayload)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", bytes.NewReader(jsonBytes))
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := server.App.Test(req)
+		if err != nil {
+			t.Fatalf("POST /api/v1/tasks subtask failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("expected 201 Created, got: %d", resp.StatusCode)
+		}
+
+		var createdSub dto.TaskResponse
+		if err := json.NewDecoder(resp.Body).Decode(&createdSub); err != nil {
+			t.Fatalf("failed to decode subtask response: %v", err)
+		}
+
+		if createdSub.ParentTaskID == nil || *createdSub.ParentTaskID != createdTaskID {
+			t.Errorf("expected ParentTaskID %s, got %+v", createdTaskID, createdSub.ParentTaskID)
+		}
+		createdSubtaskID = createdSub.ID
+	})
+
+	t.Run("GET /api/v1/tasks?parent_task_id=... - list subtasks", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks?parent_task_id="+createdTaskID, nil)
+		resp, err := server.App.Test(req)
+		if err != nil {
+			t.Fatalf("GET /api/v1/tasks with parent_task_id failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 OK, got: %d", resp.StatusCode)
+		}
+
+		var subtasks []dto.TaskResponse
+		if err := json.NewDecoder(resp.Body).Decode(&subtasks); err != nil {
+			t.Fatalf("failed to decode subtasks list: %v", err)
+		}
+
+		if len(subtasks) != 1 || subtasks[0].ID != createdSubtaskID {
+			t.Errorf("expected 1 subtask with id %s, got %+v", createdSubtaskID, subtasks)
+		}
+		if subtasks[0].ParentTaskID == nil || *subtasks[0].ParentTaskID != createdTaskID {
+			t.Errorf("expected subtask parent_task_id %s, got %+v", createdTaskID, subtasks[0].ParentTaskID)
+		}
+	})
+
+	t.Run("POST /api/v1/tasks - invalid parent_task_id format", func(t *testing.T) {
+		badParentID := "not-a-valid-uuid"
+		payload := dto.CreateTaskRequest{
+			ProjectID:    projectID,
+			ParentTaskID: &badParentID,
+			Title:        "Invalid parent uuid",
+			Prompt:       "testing",
+			AssigneeID:   "agent-sub",
+			AssigneeType: models.AssigneeAgent,
+			Priority:     int(models.PriorityNormal),
+		}
+
+		jsonBytes, _ := json.Marshal(payload)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", bytes.NewReader(jsonBytes))
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := server.App.Test(req)
+		if err != nil {
+			t.Fatalf("POST /api/v1/tasks failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request on invalid parent_task_id, got: %d", resp.StatusCode)
 		}
 	})
 
