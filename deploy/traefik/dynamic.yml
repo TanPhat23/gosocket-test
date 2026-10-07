@@ -11,3 +11,33 @@ http:
           X-XSS-Protection: "1; mode=block"
           Referrer-Policy: "strict-origin-when-cross-origin"
           Permissions-Policy: "camera=(), microphone=(), geolocation=()"
+
+    traefik-auth:
+      basicAuth:
+        users:
+          - "admin:$2y$05$sTjyUiiS7IKeqC5t0.AIgeTp3Z1BVQCUWADVZ8Dw0N9ZmJ5Nw203y"
+
+    traefik-redirect:
+      redirectRegex:
+        regex: "^.*/traefik/?$"
+        replacement: "/dashboard/"
+        permanent: true
+
+  routers:
+    traefik-dashboard:
+      rule: "Host(`localhost`) && (PathPrefix(`/dashboard`) || (PathPrefix(`/api`) && !PathPrefix(`/api/v1`)))"
+      service: api@internal
+      entryPoints:
+        - web
+        - websecure
+      middlewares:
+        - traefik-auth
+
+    traefik-redirect-router:
+      rule: "Host(`localhost`) && PathPrefix(`/traefik`)"
+      service: api@internal
+      entryPoints:
+        - web
+        - websecure
+      middlewares:
+        - traefik-redirect

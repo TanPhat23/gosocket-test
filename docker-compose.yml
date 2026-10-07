@@ -138,7 +138,7 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=agent_ingress"
-      - "traefik.http.routers.control-plane.rule=Host(`${DOMAIN:-localhost}`) && (PathPrefix(`/api`) || PathPrefix(`/ws`))"
+      - "traefik.http.routers.control-plane.rule=Host(`${DOMAIN:-localhost}`) && (PathPrefix(`/api/v1`) || PathPrefix(`/ws`))"
       - "traefik.http.routers.control-plane.entrypoints=web,websecure"
       - "traefik.http.routers.control-plane.middlewares=security-headers@file"
       - "traefik.http.services.control-plane.loadbalancer.server.port=8080"

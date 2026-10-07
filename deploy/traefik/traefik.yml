@@ -2,6 +2,9 @@ global:
   checkNewVersion: false
   sendAnonymousUsage: false
 
+api:
+  dashboard: true
+
 entryPoints:
   web:
     address: ":80"
