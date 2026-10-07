@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"agent-task-manager/internal/config"
+	"agent-task-manager/internal/crypto"
 	"agent-task-manager/internal/git"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/runner"
@@ -29,6 +30,10 @@ type mockProjectRepo struct {
 }
 
 func (m *mockProjectRepo) Create(ctx context.Context, p *models.Project) error { return nil }
+func (m *mockProjectRepo) Update(ctx context.Context, p *models.Project) error {
+	m.project = p
+	return nil
+}
 func (m *mockProjectRepo) GetByID(ctx context.Context, id string) (*models.Project, error) {
 	return m.project, nil
 }
@@ -891,5 +896,278 @@ func TestAgentTaskRunner_RunTaskAsync(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatalf("timed out waiting for RunTaskAsync done channel")
+	}
+}
+
+type mockOpenCodeClientForRunner struct {
+	boundLocation  string
+	boundSessionID string
+}
+
+func (m *mockOpenCodeClientForRunner) GetSession(ctx context.Context, sessionID string) (*runner.OpenCodeSessionDTO, error) {
+	return &runner.OpenCodeSessionDTO{ID: sessionID}, nil
+}
+func (m *mockOpenCodeClientForRunner) GetSessionMessages(ctx context.Context, sessionID string) ([]runner.OpenCodeMessageDTO, error) {
+	return nil, nil
+}
+func (m *mockOpenCodeClientForRunner) PromptSession(ctx context.Context, sessionID, prompt string) error {
+	return nil
+}
+func (m *mockOpenCodeClientForRunner) CompactSession(ctx context.Context, sessionID string) error {
+	return nil
+}
+func (m *mockOpenCodeClientForRunner) EnsureSessionAtLocation(ctx context.Context, sessionID, title, directory string) error {
+	m.boundSessionID = sessionID
+	m.boundLocation = directory
+	return nil
+}
+
+func TestRunTask_EnsureSessionLocationBinding(t *testing.T) {
+	tmpDir := t.TempDir()
+	repoPath := filepath.Join(tmpDir, "repo")
+	if err := runner.EnsureGitRepo(repoPath); err != nil {
+		t.Fatalf("failed to init repo: %v", err)
+	}
+
+	cfg := &config.Config{
+		OpenCodeServerURL: "http://127.0.0.1:49374",
+		HostWorktreeRoot:  filepath.Join(tmpDir, "worktrees"),
+		HostRepoRoot:      tmpDir,
+	}
+	pRepo := &mockProjectRepo{
+		project: &models.Project{
+			ID:       "proj-bind-test",
+			RepoPath: repoPath,
+		},
+	}
+	task := &models.Task{
+		ID:        "task-bind-location",
+		ProjectID: "proj-bind-test",
+		Title:     "Session Binding Test",
+		Prompt:    "Verify directory locking",
+	}
+	attempt := &models.TaskAttempt{
+		ID:     "attempt-bind",
+		TaskID: task.ID,
+	}
+
+	t.Setenv("ATM_VERIFY_CMD", "echo 'ok'")
+	mockCli := &mockDockerClientForRunner{}
+	dockerRunner := sandbox.NewRunner(mockCli)
+	mockOC := &mockOpenCodeClientForRunner{}
+
+	ar := runner.NewAgentTaskRunner(
+		cfg,
+		pRepo,
+		&mockTaskRepo{task: task},
+		&mockLogRepo{},
+		git.NewWorktreeManager(cfg.HostWorktreeRoot),
+		dockerRunner,
+		mockCli,
+		nil,
+		runner.WithRunnerOpenCodeClient(mockOC),
+	)
+
+	err := ar.RunTask(context.Background(), task, attempt)
+	if err != nil {
+		t.Fatalf("expected RunTask to succeed: %v", err)
+	}
+
+	expectedSessionID := "ses_atm_task-bind-location"
+	if mockOC.boundSessionID != expectedSessionID {
+		t.Errorf("expected bound session ID %q, got %q", expectedSessionID, mockOC.boundSessionID)
+	}
+
+	expectedWorktree := filepath.Join(cfg.HostWorktreeRoot, task.ID)
+	if mockOC.boundLocation != expectedWorktree {
+		t.Errorf("expected bound worktree location %q, got %q", expectedWorktree, mockOC.boundLocation)
+	}
+}
+
+type mockIntegRepoForRunner struct {
+	integs []models.ProjectIntegration
+}
+
+func (m *mockIntegRepoForRunner) ListByProjectID(ctx context.Context, projectID string) ([]models.ProjectIntegration, error) {
+	return m.integs, nil
+}
+func (m *mockIntegRepoForRunner) GetByID(ctx context.Context, id string) (*models.ProjectIntegration, error) {
+	return nil, nil
+}
+func (m *mockIntegRepoForRunner) GetActiveByProviderAndExternalID(ctx context.Context, provider models.IntegrationProvider, externalID string) (*models.ProjectIntegration, error) {
+	return nil, nil
+}
+func (m *mockIntegRepoForRunner) Create(ctx context.Context, integ *models.ProjectIntegration) error {
+	return nil
+}
+func (m *mockIntegRepoForRunner) Update(ctx context.Context, integ *models.ProjectIntegration) error {
+	return nil
+}
+func (m *mockIntegRepoForRunner) Delete(ctx context.Context, id string) error {
+	return nil
+}
+
+type mockCredRepoForRunner struct {
+	cred *models.Credential
+}
+
+func (m *mockCredRepoForRunner) GetByID(ctx context.Context, id string) (*models.Credential, error) {
+	return m.cred, nil
+}
+func (m *mockCredRepoForRunner) GetByIDAndTeam(ctx context.Context, id, teamID string) (*models.Credential, error) {
+	return m.cred, nil
+}
+func (m *mockCredRepoForRunner) Create(ctx context.Context, cred *models.Credential) error {
+	return nil
+}
+func (m *mockCredRepoForRunner) ListByTeamID(ctx context.Context, teamID string) ([]models.Credential, error) {
+	return nil, nil
+}
+func (m *mockCredRepoForRunner) Delete(ctx context.Context, id, teamID string) error {
+	return nil
+}
+
+type mockGHProviderForRunner struct {
+	prCreated bool
+	prURL     string
+}
+
+func (m *mockGHProviderForRunner) CreatePullRequest(ctx context.Context, integ *models.ProjectIntegration, token, headBranch, title, body string) (string, error) {
+	m.prCreated = true
+	return m.prURL, nil
+}
+
+func TestRunTask_GitHubIntegrationSyncAndPushBranch(t *testing.T) {
+	// 1. Create a bare git repo as our remote target
+	remoteDir := t.TempDir()
+	initBareCmd := exec.Command("git", "init", "--bare", "-b", "main", remoteDir)
+	if out, err := initBareCmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to init bare remote: %v, out: %s", err, string(out))
+	}
+
+	// 2. Clone bare remote to seed it with an initial commit on main
+	seedDir := t.TempDir()
+	if out, err := exec.Command("git", "clone", remoteDir, seedDir).CombinedOutput(); err != nil {
+		t.Fatalf("failed to clone seed repo: %v, out: %s", err, string(out))
+	}
+	_ = exec.Command("git", "-C", seedDir, "config", "user.name", "Test").Run()
+	_ = exec.Command("git", "-C", seedDir, "config", "user.email", "test@test.local").Run()
+	testFilePath := filepath.Join(seedDir, "app.js")
+	_ = os.WriteFile(testFilePath, []byte("console.log('hello remote')"), 0644)
+	_ = exec.Command("git", "-C", seedDir, "add", ".").Run()
+	if out, err := exec.Command("git", "-C", seedDir, "commit", "-m", "Initial commit from remote").CombinedOutput(); err != nil {
+		t.Fatalf("seed commit failed: %v, out: %s", err, string(out))
+	}
+	if out, err := exec.Command("git", "-C", seedDir, "push", "origin", "main").CombinedOutput(); err != nil {
+		t.Fatalf("seed push failed: %v, out: %s", err, string(out))
+	}
+
+	// 3. Set up AgentTaskRunner with GitHub integration pointing to file:// remote
+	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		OpenCodeServerURL: "http://127.0.0.1:49374",
+		HostWorktreeRoot:  filepath.Join(tmpDir, "worktrees"),
+		HostRepoRoot:      filepath.Join(tmpDir, "repos"),
+	}
+
+	cipher, err := crypto.NewSecretCipher([]byte("01234567890123456789012345678901"))
+	if err != nil {
+		t.Fatalf("failed to create cipher: %v", err)
+	}
+	encToken, _ := cipher.Encrypt("test-pat-token")
+
+	credID := "cred-gh-1"
+	cred := &models.Credential{
+		ID:            credID,
+		Provider:      "github",
+		Label:         "Test PAT",
+		EncryptedData: encToken,
+	}
+
+	integ := models.ProjectIntegration{
+		ID:           "integ-1",
+		ProjectID:    "proj-gh-integrated",
+		CredentialID: credID,
+		Provider:     models.IntegrationGitHub,
+		ExternalID:   "file://" + remoteDir,
+		Enabled:      true,
+		Config: models.JSONMap{
+			"base_branch": "main",
+			"auto_pr":     true,
+		},
+	}
+
+	pRepo := &mockProjectRepo{
+		project: &models.Project{
+			ID:       "proj-gh-integrated",
+			RepoPath: "", // will be automatically set to HostRepoRoot/<cleanSlug>
+		},
+	}
+
+	task := &models.Task{
+		ID:        "task-gh-sync-test",
+		ProjectID: "proj-gh-integrated",
+		Title:     "Feature Implement Task",
+		Prompt:    "Modify app.js",
+	}
+	attempt := &models.TaskAttempt{
+		ID:     "attempt-gh-1",
+		TaskID: task.ID,
+	}
+
+	t.Setenv("ATM_VERIFY_CMD", "echo 'verification passed'")
+	mockCli := &mockDockerClientForRunner{}
+	dockerRunner := sandbox.NewRunner(mockCli)
+	mockOC := &mockOpenCodeClientForRunner{}
+	mockGH := &mockGHProviderForRunner{prURL: "https://github.com/test/repo/pull/1"}
+
+	ar := runner.NewAgentTaskRunner(
+		cfg,
+		pRepo,
+		&mockTaskRepo{task: task},
+		&mockLogRepo{},
+		git.NewWorktreeManager(cfg.HostWorktreeRoot),
+		dockerRunner,
+		mockCli,
+		nil,
+		runner.WithRunnerOpenCodeClient(mockOC),
+		runner.WithRunnerGitHubIntegration(
+			&mockIntegRepoForRunner{integs: []models.ProjectIntegration{integ}},
+			&mockCredRepoForRunner{cred: cred},
+			cipher,
+			mockGH,
+		),
+	)
+
+	ctx := context.Background()
+	err = ar.RunTask(ctx, task, attempt)
+	if err != nil {
+		t.Fatalf("RunTask failed with error: %v", err)
+	}
+
+	// 4. Verify worktree contains app.js synced from remote
+	worktreePath := filepath.Join(cfg.HostWorktreeRoot, task.ID)
+	content, readErr := os.ReadFile(filepath.Join(worktreePath, "app.js"))
+	if readErr != nil {
+		t.Fatalf("expected app.js to exist in worktree synced from remote, got: %v", readErr)
+	}
+	if !strings.Contains(string(content), "hello remote") {
+		t.Errorf("expected content 'hello remote', got %s", string(content))
+	}
+
+	// 5. Verify OpenCode session was locked to worktreePath
+	if mockOC.boundLocation != worktreePath {
+		t.Errorf("expected OpenCode session bound to %s, got %s", worktreePath, mockOC.boundLocation)
+	}
+
+	// 6. Verify PR was created
+	if !mockGH.prCreated {
+		t.Errorf("expected GitHub PR to have been created")
+	}
+
+	// 7. Verify branch was pushed to remote bare repo
+	checkBranchCmd := exec.Command("git", "--git-dir", remoteDir, "rev-parse", "--verify", "task/"+task.ID)
+	if out, err := checkBranchCmd.CombinedOutput(); err != nil {
+		t.Errorf("expected branch task/%s to exist in remote bare repo, out: %s, err: %v", task.ID, string(out), err)
 	}
 }

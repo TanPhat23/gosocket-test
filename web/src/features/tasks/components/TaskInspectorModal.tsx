@@ -157,7 +157,7 @@ export const TaskInspectorModal: React.FC = () => {
 
   return (
     <Dialog open={isOpen} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-4xl max-h-[90vh] h-[85vh] flex flex-col p-6">
+      <DialogContent className="sm:max-w-5xl lg:max-w-6xl xl:max-w-7xl max-h-[92vh] h-[90vh] flex flex-col p-6 w-full">
         <DialogHeader className="pb-3 border-b border-border">
           <div className="flex items-center justify-between gap-4 pr-6">
             <div className="flex items-center gap-2">

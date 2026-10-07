@@ -829,3 +829,10 @@ func (m *mockOpenCodeClientRunner) CompactSession(ctx context.Context, sessionID
 	}
 	return nil
 }
+
+func (m *mockOpenCodeClientRunner) EnsureSessionAtLocation(ctx context.Context, sessionID, title, directory string) error {
+	if m.failWith503 {
+		return common.ErrServiceUnavailable
+	}
+	return nil
+}

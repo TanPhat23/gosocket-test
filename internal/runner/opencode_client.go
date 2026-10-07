@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -40,6 +41,7 @@ type OpenCodeClient interface {
 	GetSessionMessages(ctx context.Context, sessionID string) ([]OpenCodeMessageDTO, error)
 	PromptSession(ctx context.Context, sessionID, prompt string) error
 	CompactSession(ctx context.Context, sessionID string) error
+	EnsureSessionAtLocation(ctx context.Context, sessionID, title, directory string) error
 }
 
 type openCodeClient struct {
@@ -348,6 +350,66 @@ func (c *openCodeClient) CompactSession(ctx context.Context, sessionID string) e
 	}
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("opencode server returned status %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+func (c *openCodeClient) EnsureSessionAtLocation(ctx context.Context, sessionID, title, directory string) error {
+	escapedID, err := validateSessionID(sessionID)
+	if err != nil {
+		return err
+	}
+
+	if directory == "" {
+		return errors.New("directory cannot be empty")
+	}
+
+	// 1. Try to create session with location directory
+	createPayload := map[string]any{
+		"id":    sessionID,
+		"title": title,
+		"location": map[string]string{
+			"directory": directory,
+		},
+	}
+	body, err := json.Marshal(createPayload)
+	if err == nil {
+		resp, reqErr := c.doRequest(ctx, http.MethodPost, "/api/session", bytes.NewReader(body))
+		if reqErr == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
+				return nil
+			}
+		}
+	}
+
+	// 2. If session already exists or create didn't finish, move session to directory
+	movePayload := map[string]string{
+		"directory": directory,
+	}
+	moveBody, err := json.Marshal(movePayload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal move session payload: %w", err)
+	}
+
+	moveResp, err := c.doRequest(ctx, http.MethodPost, "/api/session/"+escapedID+"/move", bytes.NewReader(moveBody))
+	if err != nil {
+		return err
+	}
+	defer moveResp.Body.Close()
+
+	if moveResp.StatusCode == http.StatusOK || moveResp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if moveResp.StatusCode == http.StatusNotFound {
+		return common.ErrNotFound
+	}
+	if moveResp.StatusCode >= 500 {
+		return common.ErrServiceUnavailable
+	}
+	if moveResp.StatusCode >= 400 {
+		return fmt.Errorf("opencode server returned status %d on move", moveResp.StatusCode)
 	}
 
 	return nil

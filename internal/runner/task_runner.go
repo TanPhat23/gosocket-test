@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -46,19 +47,28 @@ func WithRunnerGitHubIntegration(
 		r.ghProvider = ghProvider
 	}
 }
+
+// WithRunnerOpenCodeClient sets the OpenCode client for session lifecycle management.
+func WithRunnerOpenCodeClient(client OpenCodeClient) RunnerOption {
+	return func(r *AgentTaskRunner) {
+		r.openCodeClient = client
+	}
+}
+
 type AgentTaskRunner struct {
-	cfg          *config.Config
-	projectRepo  repository.ProjectRepository
-	taskRepo     repository.TaskRepository
-	logRepo      repository.LogRepository
-	worktreeMgr  *git.WorktreeManager
-	dockerRunner *sandbox.Runner
-	dockerCli    sandbox.DockerClient
-	hub          *ws.Hub
-	integRepo    repository.IntegrationRepository
-	credRepo     repository.CredentialRepository
-	cipher       *crypto.SecretCipher
-	ghProvider   integrations.PullRequestProvider
+	cfg            *config.Config
+	projectRepo    repository.ProjectRepository
+	taskRepo       repository.TaskRepository
+	logRepo        repository.LogRepository
+	worktreeMgr    *git.WorktreeManager
+	dockerRunner   *sandbox.Runner
+	dockerCli      sandbox.DockerClient
+	hub            *ws.Hub
+	integRepo      repository.IntegrationRepository
+	credRepo       repository.CredentialRepository
+	cipher         *crypto.SecretCipher
+	ghProvider     integrations.PullRequestProvider
+	openCodeClient OpenCodeClient
 
 	mu        sync.RWMutex
 	doneChans map[string][]chan error
@@ -94,6 +104,9 @@ func NewAgentTaskRunner(
 	for _, opt := range opts {
 		opt(runner)
 	}
+	if runner.openCodeClient == nil && cfg != nil && cfg.OpenCodeServerURL != "" {
+		runner.openCodeClient = NewOpenCodeClient(cfg.OpenCodeServerURL, cfg.OpenCodePassword, nil)
+	}
 	return runner
 }
 
@@ -120,8 +133,16 @@ func DetectVerificationCommand(worktreePath string) string {
 	}
 
 	// 2. Node / JS / TS project
-	if _, err := os.Stat(filepath.Join(worktreePath, "package.json")); err == nil {
-		return "npm test"
+	pkgPath := filepath.Join(worktreePath, "package.json")
+	if pkgBytes, err := os.ReadFile(pkgPath); err == nil {
+		var pkg struct {
+			Scripts map[string]string `json:"scripts"`
+		}
+		if json.Unmarshal(pkgBytes, &pkg) == nil && pkg.Scripts != nil {
+			if _, ok := pkg.Scripts["test"]; ok {
+				return "npm test"
+			}
+		}
 	}
 
 	// 3. Rust project
@@ -218,6 +239,8 @@ func EnsureGitRepo(repoPath string) error {
 	cfgEmail := exec.Command("git", "config", "user.email", "agent@task-manager.local")
 	cfgEmail.Dir = repoPath
 	_ = cfgEmail.Run()
+
+	_ = exec.Command("git", "-C", repoPath, "config", "core.fileMode", "false").Run()
 
 	commitCmd := exec.Command("git", "commit", "--allow-empty", "-m", "Initial repository commit")
 	commitCmd.Dir = repoPath
@@ -381,14 +404,62 @@ func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attemp
 		repoPath = filepath.Join(r.cfg.HostRepoRoot, "core")
 	}
 
-	if err := EnsureGitRepo(repoPath); err != nil {
-		return fmt.Errorf("failed to ensure git repo at %s: %w", repoPath, err)
+	// 1. Check for active GitHub integration on this project
+	var ghInteg *models.ProjectIntegration
+	var token string
+	if r.integRepo != nil && r.credRepo != nil && r.cipher != nil {
+		integrationsList, err := r.integRepo.ListByProjectID(ctx, task.ProjectID)
+		if err == nil {
+			for i := range integrationsList {
+				if integrationsList[i].Provider == models.IntegrationGitHub && integrationsList[i].Enabled {
+					ghInteg = &integrationsList[i]
+					break
+				}
+			}
+		}
+		if ghInteg != nil {
+			if cred, err := r.credRepo.GetByID(ctx, ghInteg.CredentialID); err == nil {
+				if t, err := r.cipher.Decrypt(cred.EncryptedData); err == nil {
+					token = t
+				}
+			}
+		}
 	}
 
-	// Sync with remote GitHub repo if a remote is configured
-	_ = SyncRepoWithRemote(ctx, repoPath, func(msg string) {
-		r.broadcastLog(ctx, task.ID, attempt.ID, msg)
-	})
+	if ghInteg != nil && token != "" {
+		repoSlug := ghInteg.ExternalID
+		baseBranch := "main"
+		if ghInteg.Config != nil {
+			if b, ok := ghInteg.Config["base_branch"].(string); ok && b != "" {
+				baseBranch = b
+			}
+		}
+
+		// Ensure a dedicated repository directory for this GitHub repo
+		if repoPath == "" || strings.HasSuffix(repoPath, "/core") {
+			cleanSlug := strings.ReplaceAll(repoSlug, "/", "_")
+			repoPath = filepath.Join(r.cfg.HostRepoRoot, cleanSlug)
+			project.RepoPath = repoPath
+			_ = r.projectRepo.Update(ctx, project)
+		}
+
+		r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[36m[Agent Control Plane]\x1b[0m Syncing GitHub repository %s (%s)...\r\n", repoSlug, baseBranch))
+		if err := git.SyncGitHubRepo(ctx, repoPath, repoSlug, baseBranch, token, func(msg string) {
+			r.broadcastLog(ctx, task.ID, attempt.ID, msg)
+		}); err != nil {
+			r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[31m[Agent Control Plane] Failed to sync GitHub repository: %v\x1b[0m\r\n", err))
+			return fmt.Errorf("failed to sync github repo %s: %w", repoSlug, err)
+		}
+	} else {
+		if err := EnsureGitRepo(repoPath); err != nil {
+			return fmt.Errorf("failed to ensure git repo at %s: %w", repoPath, err)
+		}
+
+		// Sync with remote GitHub repo if a remote is configured
+		_ = SyncRepoWithRemote(ctx, repoPath, func(msg string) {
+			r.broadcastLog(ctx, task.ID, attempt.ID, msg)
+		})
+	}
 
 	branchName := fmt.Sprintf("task/%s", task.ID)
 	localWorktreePath, hostWorktreePath, _, err := r.worktreeMgr.CreateWorktree(ctx, repoPath, task.ID, branchName)
@@ -396,7 +467,7 @@ func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attemp
 		return fmt.Errorf("failed to create worktree: %w", err)
 	}
 
-	// Guarantee full 0777 permissions across worktree so host OpenCode user (e.g. uid 1000) has write access
+	// Guarantee full 0777 permissions across worktree so agent user has write access
 	_ = exec.CommandContext(ctx, "chmod", "-R", "0777", localWorktreePath).Run()
 
 	task.WorktreePath = &hostWorktreePath
@@ -408,6 +479,21 @@ func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attemp
 
 	if err := InjectSandboxedConfig(localWorktreePath, task.Skills, task.MCPServers); err != nil {
 		log.Printf("warning: failed to inject sandboxed configs into worktree: %v", err)
+	}
+
+	sessionID := fmt.Sprintf("ses_atm_%s", task.ID)
+	if task.SessionID != nil && *task.SessionID != "" {
+		sessionID = *task.SessionID
+	} else {
+		task.SessionID = &sessionID
+		_ = r.taskRepo.Update(ctx, task)
+	}
+
+	// Ensure the OpenCode session is bound to the task worktree directory
+	if r.openCodeClient != nil {
+		if err := r.openCodeClient.EnsureSessionAtLocation(ctx, sessionID, task.Title, hostWorktreePath); err != nil {
+			log.Printf("warning: failed to bind OpenCode session to worktree %s: %v", hostWorktreePath, err)
+		}
 	}
 
 	selectedModel := "google/gemini-3.8-flash"
@@ -558,6 +644,9 @@ func (r *AgentTaskRunner) maybeAutoCreatePR(
 
 	branchName := fmt.Sprintf("task/%s", task.ID)
 	remoteURL := fmt.Sprintf("https://github.com/%s.git", ghInteg.ExternalID)
+	if strings.HasPrefix(ghInteg.ExternalID, "http://") || strings.HasPrefix(ghInteg.ExternalID, "https://") || strings.HasPrefix(ghInteg.ExternalID, "file://") {
+		remoteURL = ghInteg.ExternalID
+	}
 
 	r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[36m[Agent Control Plane]\x1b[0m Pushing branch %s to remote %s...\r\n", branchName, ghInteg.ExternalID))
 	if err := git.PushBranch(ctx, localWorktreePath, remoteURL, token, branchName); err != nil {

@@ -290,7 +290,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
       />
 
       <DialogContent
-        className="sm:max-w-2xl max-h-[90vh] overflow-y-auto p-6"
+        className="sm:max-w-5xl lg:max-w-6xl max-h-[92vh] overflow-y-auto p-6 w-full"
         data-testid="project-integration-modal"
       >
         <DialogHeader className="pb-3 border-b border-border">

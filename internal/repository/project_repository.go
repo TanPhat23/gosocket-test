@@ -12,6 +12,7 @@ type ProjectRepository interface {
 	List(ctx context.Context, teamID string) ([]models.Project, error)
 	GetByID(ctx context.Context, id string) (*models.Project, error)
 	Create(ctx context.Context, p *models.Project) error
+	Update(ctx context.Context, p *models.Project) error
 }
 
 type projectRepo struct {
@@ -40,4 +41,8 @@ func (r *projectRepo) GetByID(ctx context.Context, id string) (*models.Project, 
 
 func (r *projectRepo) Create(ctx context.Context, p *models.Project) error {
 	return gorm.G[models.Project](r.db).Create(ctx, p)
+}
+
+func (r *projectRepo) Update(ctx context.Context, p *models.Project) error {
+	return r.db.WithContext(ctx).Save(p).Error
 }

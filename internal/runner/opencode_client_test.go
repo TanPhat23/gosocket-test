@@ -160,3 +160,57 @@ func TestOpenCodeClient_DaemonOfflineAnd503(t *testing.T) {
 		t.Fatalf("expected ErrServiceUnavailable on 500, got %v", err)
 	}
 }
+
+func TestOpenCodeClient_EnsureSessionAtLocation(t *testing.T) {
+	created := false
+	moved := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/session" && r.Method == http.MethodPost {
+			created = true
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"data":{"id":"ses_test_123","location":{"directory":"/workspace/test"}}}`))
+			return
+		}
+		if r.URL.Path == "/api/session/ses_test_123/move" && r.Method == http.MethodPost {
+			moved = true
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := runner.NewOpenCodeClient(server.URL, "secret", nil)
+	err := client.EnsureSessionAtLocation(context.Background(), "ses_test_123", "Test Title", "/workspace/test")
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+	if !created {
+		t.Errorf("expected session create to be called")
+	}
+
+	// Test move fallback when create returns 400
+	failCreateServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/session" && r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if r.URL.Path == "/api/session/ses_test_123/move" && r.Method == http.MethodPost {
+			moved = true
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer failCreateServer.Close()
+
+	client2 := runner.NewOpenCodeClient(failCreateServer.URL, "secret", nil)
+	err = client2.EnsureSessionAtLocation(context.Background(), "ses_test_123", "Test Title", "/workspace/test")
+	if err != nil {
+		t.Fatalf("expected nil error on move fallback, got: %v", err)
+	}
+	if !moved {
+		t.Errorf("expected session move to be called on fallback")
+	}
+}

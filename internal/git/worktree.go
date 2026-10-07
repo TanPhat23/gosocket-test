@@ -66,6 +66,18 @@ func (m *WorktreeManager) CreateWorktree(ctx context.Context, repoPath, taskID, 
 		return "", "", "", fmt.Errorf("failed to create local worktree root %q: %w", m.localWorktreeRoot, err)
 	}
 
+	// If directory already exists, check if it's already an existing worktree for this branch
+	if info, statErr := os.Stat(localPath); statErr == nil && info.IsDir() {
+		checkCmd := exec.CommandContext(ctx, "git", "-C", localPath, "rev-parse", "--is-inside-work-tree")
+		if checkOut, checkErr := checkCmd.Output(); checkErr == nil && strings.TrimSpace(string(checkOut)) == "true" {
+			_ = exec.CommandContext(ctx, "git", "-C", localPath, "config", "core.fileMode", "false").Run()
+			return localPath, hostPath, bindPath, nil
+		}
+		_ = exec.CommandContext(ctx, "git", "-C", repoPath, "worktree", "remove", "--force", localPath).Run()
+		_ = os.RemoveAll(localPath)
+		_ = exec.CommandContext(ctx, "git", "-C", repoPath, "worktree", "prune").Run()
+	}
+
 	// Resolve base ref (preferring remote origin/main so branch starts with latest GitHub commits)
 	baseRef := resolveBaseRef(ctx, repoPath)
 
@@ -96,6 +108,7 @@ func (m *WorktreeManager) CreateWorktree(ctx context.Context, repoPath, taskID, 
 
 	// Ensure permissive permissions so non-root agent runners (e.g. OpenCode uid 1000) can read and write files without sudo
 	_ = exec.CommandContext(ctx, "chmod", "-R", "0777", localPath).Run()
+	_ = exec.CommandContext(ctx, "git", "-C", localPath, "config", "core.fileMode", "false").Run()
 
 	return localPath, hostPath, bindPath, nil
 }

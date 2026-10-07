@@ -508,6 +508,10 @@ func (m *mockOpenCodeClient) CompactSession(ctx context.Context, sessionID strin
 	return nil
 }
 
+func (m *mockOpenCodeClient) EnsureSessionAtLocation(ctx context.Context, sessionID, title, directory string) error {
+	return nil
+}
+
 func TestTaskService_SessionOperationsAndRBAC(t *testing.T) {
 	db := setupTestDB(t)
 	taskRepo := repository.NewTaskRepository(db)

@@ -20,6 +20,11 @@ func PushBranch(ctx context.Context, worktreeDir, remoteURL, token, branchName s
 	pushCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 
+	targetRemote := "origin"
+	if remoteURL != "" {
+		targetRemote = remoteURL
+	}
+
 	cmd := exec.CommandContext(
 		pushCtx,
 		"git",
@@ -27,7 +32,7 @@ func PushBranch(ctx context.Context, worktreeDir, remoteURL, token, branchName s
 		"http.extraHeader="+authHeader,
 		"push",
 		"-u",
-		"origin",
+		targetRemote,
 		"--",
 		fmt.Sprintf("%s:%s", branchName, branchName),
 	)
