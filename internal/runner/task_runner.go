@@ -2,6 +2,7 @@ package runner
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"agent-task-manager/internal/config"
@@ -98,6 +100,61 @@ func EnsureGitRepo(repoPath string) error {
 	return nil
 }
 
+// SyncRepoWithRemote checks if repoPath has a git remote configured (such as origin)
+// and fetches the latest commits to ensure newly branched worktrees start from the freshest upstream code.
+func SyncRepoWithRemote(ctx context.Context, repoPath string, logFn func(string)) error {
+	if repoPath == "" {
+		return nil
+	}
+
+	// 1. Check if any remote is configured
+	checkCmd := exec.CommandContext(ctx, "git", "remote")
+	checkCmd.Dir = repoPath
+	out, err := checkCmd.Output()
+	if err != nil || len(bytes.TrimSpace(out)) == 0 {
+		return nil
+	}
+
+	remotes := strings.Fields(string(out))
+	targetRemote := "origin"
+	foundTarget := false
+	for _, r := range remotes {
+		if r == "origin" {
+			foundTarget = true
+			break
+		}
+	}
+	if !foundTarget && len(remotes) > 0 {
+		targetRemote = remotes[0]
+	}
+
+	if logFn != nil {
+		logFn(fmt.Sprintf("\x1b[36m[Agent Control Plane]\x1b[0m Syncing with remote %s upstream...\r\n", targetRemote))
+	}
+
+	fetchCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
+
+	fetchCmd := exec.CommandContext(fetchCtx, "git", "fetch", "--prune", targetRemote)
+	fetchCmd.Dir = repoPath
+	var fetchStderr bytes.Buffer
+	fetchCmd.Stderr = &fetchStderr
+
+	if err := fetchCmd.Run(); err != nil {
+		errMsg := strings.TrimSpace(fetchStderr.String())
+		if logFn != nil {
+			logFn(fmt.Sprintf("\x1b[33m[Agent Control Plane] Remote fetch warning: %s. Continuing with local commits.\x1b[0m\r\n", errMsg))
+		}
+		return fmt.Errorf("git fetch %s failed: %w", targetRemote, err)
+	}
+
+	if logFn != nil {
+		logFn(fmt.Sprintf("\x1b[32m[Agent Control Plane] ✔ Repository successfully synced with remote %s.\x1b[0m\r\n", targetRemote))
+	}
+
+	return nil
+}
+
 // RunTask executes an individual task attempt in an isolated worktree and runs OpenCode.
 func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attempt *models.TaskAttempt) error {
 	if task == nil {
@@ -117,6 +174,11 @@ func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attemp
 	if err := EnsureGitRepo(repoPath); err != nil {
 		return fmt.Errorf("failed to ensure git repo at %s: %w", repoPath, err)
 	}
+
+	// Sync with remote GitHub repo if a remote is configured
+	_ = SyncRepoWithRemote(ctx, repoPath, func(msg string) {
+		r.broadcastLog(ctx, task.ID, attempt.ID, msg)
+	})
 
 	branchName := fmt.Sprintf("task/%s", task.ID)
 	localWorktreePath, hostWorktreePath, _, err := r.worktreeMgr.CreateWorktree(ctx, repoPath, task.ID, branchName)

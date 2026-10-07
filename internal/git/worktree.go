@@ -42,6 +42,19 @@ func (m *WorktreeManager) ResolveLocalPath(taskID string) string {
 	return filepath.Join(m.localWorktreeRoot, taskID)
 }
 
+// resolveBaseRef finds the best base ref to branch from, prioritizing the latest upstream remote ref.
+func resolveBaseRef(ctx context.Context, repoPath string) string {
+	candidates := []string{"origin/main", "origin/master", "main", "master", "HEAD"}
+	for _, ref := range candidates {
+		cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", ref)
+		cmd.Dir = repoPath
+		if err := cmd.Run(); err == nil {
+			return ref
+		}
+	}
+	return ""
+}
+
 // CreateWorktree creates a new Git worktree for the task at the resolved local path,
 // checks out or creates the specified branch, and returns the local path, host path, and bind mount spec.
 func (m *WorktreeManager) CreateWorktree(ctx context.Context, repoPath, taskID, branch string) (localPath, hostPath, bindPath string, err error) {
@@ -53,8 +66,15 @@ func (m *WorktreeManager) CreateWorktree(ctx context.Context, repoPath, taskID, 
 		return "", "", "", fmt.Errorf("failed to create local worktree root %q: %w", m.localWorktreeRoot, err)
 	}
 
-	// Try adding worktree with a new branch: git worktree add <localPath> -b <branch>
-	cmd := exec.CommandContext(ctx, "git", "worktree", "add", localPath, "-b", branch)
+	// Resolve base ref (preferring remote origin/main so branch starts with latest GitHub commits)
+	baseRef := resolveBaseRef(ctx, repoPath)
+
+	var cmd *exec.Cmd
+	if baseRef != "" {
+		cmd = exec.CommandContext(ctx, "git", "worktree", "add", localPath, "-b", branch, baseRef)
+	} else {
+		cmd = exec.CommandContext(ctx, "git", "worktree", "add", localPath, "-b", branch)
+	}
 	cmd.Dir = repoPath
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

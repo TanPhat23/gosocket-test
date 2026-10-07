@@ -3,6 +3,7 @@ package runner_test
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -104,5 +105,56 @@ func TestAgentTaskRunner_Initialization(t *testing.T) {
 	gitDir := filepath.Join(pRepo.project.RepoPath, ".git")
 	if _, err := os.Stat(gitDir); err != nil {
 		t.Errorf("expected .git directory to exist after EnsureGitRepo")
+	}
+}
+
+func TestSyncRepoWithRemote_NoRemote(t *testing.T) {
+	tmpDir := t.TempDir()
+	repoPath := filepath.Join(tmpDir, "local-repo")
+
+	if err := runner.EnsureGitRepo(repoPath); err != nil {
+		t.Fatalf("failed to create repo: %v", err)
+	}
+
+	var logs []string
+	err := runner.SyncRepoWithRemote(context.Background(), repoPath, func(msg string) {
+		logs = append(logs, msg)
+	})
+	if err != nil {
+		t.Fatalf("expected no error on local repo without remotes: %v", err)
+	}
+	if len(logs) != 0 {
+		t.Errorf("expected no logs for local repo without remotes, got %v", logs)
+	}
+}
+
+func TestSyncRepoWithRemote_WithRemote(t *testing.T) {
+	tmpDir := t.TempDir()
+	upstreamPath := filepath.Join(tmpDir, "upstream")
+	localPath := filepath.Join(tmpDir, "local")
+
+	if err := runner.EnsureGitRepo(upstreamPath); err != nil {
+		t.Fatalf("failed to create upstream: %v", err)
+	}
+	if err := runner.EnsureGitRepo(localPath); err != nil {
+		t.Fatalf("failed to create local: %v", err)
+	}
+
+	// Add upstream as origin remote in local repo
+	addRemoteCmd := exec.Command("git", "remote", "add", "origin", upstreamPath)
+	addRemoteCmd.Dir = localPath
+	if err := addRemoteCmd.Run(); err != nil {
+		t.Fatalf("failed to add remote: %v", err)
+	}
+
+	var logs []string
+	err := runner.SyncRepoWithRemote(context.Background(), localPath, func(msg string) {
+		logs = append(logs, msg)
+	})
+	if err != nil {
+		t.Fatalf("expected sync to succeed: %v", err)
+	}
+	if len(logs) < 2 {
+		t.Errorf("expected sync logs, got %v", logs)
 	}
 }
