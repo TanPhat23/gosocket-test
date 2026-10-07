@@ -160,4 +160,96 @@ describe('apiClient (axios)', () => {
     expect(fetched.title).toBe('Fix issue');
     expect(getSpy).toHaveBeenCalledWith('/tasks/task-1');
   });
+
+  it('creates task pull request via createTaskPR', async () => {
+    const postSpy = vi.spyOn(apiClient.client, 'post').mockResolvedValue({
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config: {} as any,
+      data: {
+        task_id: 'task-123',
+        pull_request_url: 'https://github.com/org/repo/pull/42',
+      },
+    });
+
+    const res = await apiClient.createTaskPR('task-123');
+    expect(res.task_id).toBe('task-123');
+    expect(res.pull_request_url).toBe('https://github.com/org/repo/pull/42');
+    expect(postSpy).toHaveBeenCalledWith('/tasks/task-123/pr');
+  });
+
+  it('manages project integrations (list, create, update, delete)', async () => {
+    const getSpy = vi.spyOn(apiClient.client, 'get').mockResolvedValue({
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config: {} as any,
+      data: [
+        {
+          id: 'integ-1',
+          project_id: 'proj-1',
+          credential_id: 'cred-1',
+          provider: 'github',
+          external_id: 'org/repo',
+          external_url: 'https://github.com/org/repo',
+          enabled: true,
+          config: {},
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+      ],
+    });
+
+    const list = await apiClient.listProjectIntegrations('proj-1');
+    expect(list).toHaveLength(1);
+    expect(list[0].external_id).toBe('org/repo');
+    expect(getSpy).toHaveBeenCalledWith('/projects/proj-1/integrations');
+
+    const postSpy = vi.spyOn(apiClient.client, 'post').mockResolvedValue({
+      status: 201,
+      statusText: 'Created',
+      headers: {},
+      config: {} as any,
+      data: {
+        id: 'integ-2',
+        project_id: 'proj-1',
+        credential_id: 'cred-1',
+        provider: 'github',
+        external_id: 'org/repo-2',
+        external_url: 'https://github.com/org/repo-2',
+        enabled: true,
+        config: {},
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    });
+
+    const created = await apiClient.createProjectIntegration('proj-1', {
+      credential_id: 'cred-1',
+      provider: 'github',
+      repo: 'org/repo-2',
+      base_branch: 'main',
+      auto_pr: true,
+    });
+    expect(created.id).toBe('integ-2');
+    expect(postSpy).toHaveBeenCalledWith('/projects/proj-1/integrations', {
+      credential_id: 'cred-1',
+      provider: 'github',
+      repo: 'org/repo-2',
+      base_branch: 'main',
+      auto_pr: true,
+    });
+
+    const deleteSpy = vi.spyOn(apiClient.client, 'delete').mockResolvedValue({
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config: {} as any,
+      data: {},
+    });
+
+    await apiClient.deleteProjectIntegration('proj-1', 'integ-1');
+    expect(deleteSpy).toHaveBeenCalledWith('/projects/proj-1/integrations/integ-1');
+  });
 });

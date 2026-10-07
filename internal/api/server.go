@@ -15,25 +15,34 @@ type Server struct {
 	App               *fiber.App
 	Config            *config.Config
 	SessionManager    *auth.SessionManager
-	AuthService       service.AuthService
-	CredentialService service.CredentialService
-	WebhookService    service.WebhookService
-	TaskService       service.TaskService
-	TeamRepo          repository.TeamRepository
+	AuthService        service.AuthService
+	CredentialService  service.CredentialService
+	WebhookService     service.WebhookService
+	TaskService        service.TaskService
+	IntegrationService service.IntegrationService
+	TeamRepo           repository.TeamRepository
 	ProjectRepo       repository.ProjectRepository
 	WSHandler         *WSHandler
 }
 
 // ServerOptions allows optional configuration or dependencies when constructing Server.
 type ServerOptions struct {
-	TaskService service.TaskService
-	TeamRepo    repository.TeamRepository
-	ProjectRepo repository.ProjectRepository
-	WSHandler   *WSHandler
+	TaskService        service.TaskService
+	IntegrationService service.IntegrationService
+	TeamRepo           repository.TeamRepository
+	ProjectRepo        repository.ProjectRepository
+	WSHandler          *WSHandler
 }
 
 // Option configures Server.
 type Option func(*Server)
+
+// WithIntegrationService sets the IntegrationService.
+func WithIntegrationService(is service.IntegrationService) Option {
+	return func(s *Server) {
+		s.IntegrationService = is
+	}
+}
 
 // WithTaskService sets the TaskService.
 func WithTaskService(ts service.TaskService) Option {
@@ -121,6 +130,7 @@ func (s *Server) setupRoutes() {
 		v1.Get("/tasks/:task_id", taskHandlers.Get)
 		v1.Post("/tasks", taskHandlers.Create)
 		v1.Post("/tasks/:task_id/cancel", taskHandlers.Cancel)
+		v1.Post("/tasks/:id/pr", taskHandlers.CreatePR)
 	}
 
 	// Team & Project routes
@@ -138,6 +148,17 @@ func (s *Server) setupRoutes() {
 	if s.WSHandler != nil {
 		v1.Get("/ws/events", s.WSHandler.HandleEventsWS)
 		v1.Get("/ws/terminal/:task_id", s.WSHandler.HandleTerminalWS)
+	}
+
+	// Project integrations routes
+	if s.IntegrationService != nil {
+		integHandlers := NewIntegrationHandlers(s.IntegrationService)
+		projIntegGroup := v1.Group("/projects/:project_id/integrations")
+		projIntegGroup.Get("", integHandlers.List)
+		projIntegGroup.Post("", integHandlers.Create)
+		projIntegGroup.Get("/:id", integHandlers.Get)
+		projIntegGroup.Patch("/:id", integHandlers.Update)
+		projIntegGroup.Delete("/:id", integHandlers.Delete)
 	}
 
 	// Team credential routes protected by RequireAuth and RequireTeamRole(owner)

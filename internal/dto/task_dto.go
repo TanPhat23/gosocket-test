@@ -37,8 +37,9 @@ type TaskResponse struct {
 	AsynqTaskID   *string             `json:"asynq_task_id,omitempty"`
 	ExternalID    *string             `json:"external_id,omitempty"`
 	ExternalURL   *string             `json:"external_url,omitempty"`
-	PRURL         *string             `json:"pr_url,omitempty"`
-	WorktreePath  *string             `json:"worktree_path,omitempty"`
+	PRURL          *string             `json:"pr_url,omitempty"`
+	PullRequestURL *string             `json:"pull_request_url,omitempty"`
+	WorktreePath   *string             `json:"worktree_path,omitempty"`
 	BranchName    *string             `json:"branch_name,omitempty"`
 	ContainerID   *string             `json:"container_id,omitempty"`
 	ExitCode      *int                `json:"exit_code,omitempty"`
@@ -60,24 +61,29 @@ func ToTaskResponse(t *models.Task) TaskResponse {
 	if mcpServers == nil {
 		mcpServers = []string{}
 	}
+	prURL := t.PRURL
+	if prURL == nil && t.PullRequestURL != nil {
+		prURL = t.PullRequestURL
+	}
 	return TaskResponse{
-		ID:           t.ID,
-		ProjectID:    t.ProjectID,
-		Title:        t.Title,
-		Prompt:       t.Prompt,
-		AssigneeID:   t.AssigneeID,
-		AssigneeType: t.AssigneeType,
-		Status:       t.Status,
-		Priority:     t.Priority,
-		ParentTaskID: t.ParentTaskID,
-		Model:        t.Model,
-		Skills:       skills,
-		MCPServers:   mcpServers,
-		AsynqTaskID:  t.AsynqTaskID,
-		ExternalID:   t.ExternalID,
-		ExternalURL:  t.ExternalURL,
-		PRURL:        t.PRURL,
-		WorktreePath: t.WorktreePath,
+		ID:             t.ID,
+		ProjectID:      t.ProjectID,
+		Title:          t.Title,
+		Prompt:         t.Prompt,
+		AssigneeID:     t.AssigneeID,
+		AssigneeType:   t.AssigneeType,
+		Status:         t.Status,
+		Priority:       t.Priority,
+		ParentTaskID:   t.ParentTaskID,
+		Model:          t.Model,
+		Skills:         skills,
+		MCPServers:     mcpServers,
+		AsynqTaskID:    t.AsynqTaskID,
+		ExternalID:     t.ExternalID,
+		ExternalURL:    t.ExternalURL,
+		PRURL:          prURL,
+		PullRequestURL: prURL,
+		WorktreePath:   t.WorktreePath,
 		BranchName:   t.BranchName,
 		ContainerID:  t.ContainerID,
 		ExitCode:     t.ExitCode,

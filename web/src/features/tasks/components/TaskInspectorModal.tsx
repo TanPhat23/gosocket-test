@@ -24,7 +24,13 @@ import {
   GitBranch,
   CornerDownRight,
   ChevronRight,
+  GitPullRequest,
+  ExternalLink,
+  CheckCircle,
+  AlertCircle,
+  Loader2,
 } from 'lucide-react';
+import { taskApi } from '../api/taskApi';
 import type { TaskStatus } from '../schemas/taskSchemas';
 
 const getStatusBadge = (status: TaskStatus) => {
@@ -71,8 +77,13 @@ const getStatusBadge = (status: TaskStatus) => {
 export const TaskInspectorModal: React.FC = () => {
   const task = useSelectedTask();
   const selectTask = useTaskStore((state) => state.selectTask);
+  const updateTask = useTaskStore((state) => state.updateTask);
   const tasks = useTaskStore((state) => state.tasks);
   const [activeTab, setActiveTab] = useState<string>('overview');
+
+  const [isCreatingPR, setIsCreatingPR] = useState(false);
+  const [prError, setPrError] = useState<string | null>(null);
+  const [prToast, setPrToast] = useState<{ message: string; url?: string } | null>(null);
 
   const isOpen = !!task;
 
@@ -88,6 +99,37 @@ export const TaskInspectorModal: React.FC = () => {
   };
 
   if (!task) return null;
+
+  const prLink = task ? task.pull_request_url || task.pr_url : null;
+  const isCompleted = task ? ['done', 'review'].includes(task.status) : false;
+
+  const handleCreatePR = async () => {
+    if (!task) return;
+    setIsCreatingPR(true);
+    setPrError(null);
+    try {
+      const res = await taskApi.createTaskPR(task.id);
+      const updatedPrUrl = res.pull_request_url;
+      const updated: typeof task = {
+        ...task,
+        pull_request_url: updatedPrUrl,
+        pr_url: updatedPrUrl,
+        updated_at: new Date().toISOString(),
+      };
+      updateTask(updated);
+      setPrToast({
+        message: 'Pull request created successfully!',
+        url: updatedPrUrl,
+      });
+      setTimeout(() => {
+        setPrToast(null);
+      }, 5000);
+    } catch (err) {
+      setPrError(err instanceof Error ? err.message : 'Failed to create pull request');
+    } finally {
+      setIsCreatingPR(false);
+    }
+  };
 
   const formatDate = (isoString: string) => {
     try {
@@ -111,6 +153,43 @@ export const TaskInspectorModal: React.FC = () => {
               </DialogTitle>
             </div>
             <div className="flex items-center gap-2 shrink-0">
+              {/* GitHub Issue Link */}
+              {task.external_url ? (
+                <a
+                  href={task.external_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-xs font-mono text-muted-foreground hover:text-foreground bg-muted/60 border border-border/80 rounded px-2 py-0.5 transition-colors"
+                  title="View GitHub Issue"
+                  data-testid="inspector-gh-issue-link"
+                >
+                  <GitBranch className="size-3" />
+                  <span>Issue #{task.external_id || ''}</span>
+                  <ExternalLink className="size-2.5" />
+                </a>
+              ) : task.external_id ? (
+                <Badge variant="outline" className="text-xs font-mono gap-1">
+                  <GitBranch className="size-3" />
+                  <span>Issue #{task.external_id}</span>
+                </Badge>
+              ) : null}
+
+              {/* Pull Request Link */}
+              {prLink && (
+                <a
+                  href={prLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-xs font-mono text-emerald-600 dark:text-emerald-400 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 rounded px-2 py-0.5 font-medium transition-colors"
+                  title="View Pull Request"
+                  data-testid="inspector-pr-link"
+                >
+                  <GitPullRequest className="size-3" />
+                  <span>Pull Request</span>
+                  <ExternalLink className="size-2.5" />
+                </a>
+              )}
+
               <Badge variant="outline" className="font-mono text-xs capitalize">
                 {task.status}
               </Badge>
@@ -120,6 +199,88 @@ export const TaskInspectorModal: React.FC = () => {
             </div>
           </div>
         </DialogHeader>
+
+        {/* PR Action Notification / Toast */}
+        {prToast && (
+          <div
+            className="flex items-center justify-between gap-3 p-3 text-xs bg-emerald-500/15 border border-emerald-500/30 rounded-lg text-emerald-700 dark:text-emerald-300 animate-in fade-in-50"
+            data-testid="pr-success-toast"
+          >
+            <div className="flex items-center gap-2">
+              <CheckCircle className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+              <span className="font-medium">{prToast.message}</span>
+            </div>
+            {prToast.url && (
+              <a
+                href={prToast.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 font-mono text-xs underline font-semibold text-emerald-700 dark:text-emerald-300 hover:text-emerald-900"
+              >
+                Open PR
+                <ExternalLink className="size-3" />
+              </a>
+            )}
+          </div>
+        )}
+
+        {/* PR Error Notification */}
+        {prError && (
+          <div
+            className="flex items-center gap-2 p-3 text-xs bg-destructive/10 border border-destructive/20 rounded-lg text-destructive"
+            data-testid="pr-error-banner"
+          >
+            <AlertCircle className="size-4 shrink-0" />
+            <span className="font-medium">{prError}</span>
+          </div>
+        )}
+
+        {/* Actions Bar for Tasks */}
+        <div className="flex items-center justify-between gap-3 p-2.5 rounded-lg border border-border bg-muted/20">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">Task Workflow:</span>
+            <span>Status is <strong className="text-foreground">{task.status}</strong></span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {/* PR Action: completed and no PR yet */}
+            {isCompleted && !prLink && (
+              <Button
+                size="sm"
+                onClick={handleCreatePR}
+                disabled={isCreatingPR}
+                className="h-7 text-xs gap-1.5 font-medium bg-emerald-600 hover:bg-emerald-700 text-white"
+                data-testid="create-pr-btn"
+              >
+                {isCreatingPR ? (
+                  <>
+                    <Loader2 className="size-3 animate-spin" />
+                    Creating PR...
+                  </>
+                ) : (
+                  <>
+                    <GitPullRequest className="size-3" />
+                    Create Pull Request
+                  </>
+                )}
+              </Button>
+            )}
+
+            {prLink && (
+              <a
+                href={prLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 h-7 px-3 text-xs font-mono rounded-md bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 transition-colors font-medium"
+                data-testid="view-pr-btn"
+              >
+                <GitPullRequest className="size-3" />
+                View PR ({prLink.split('/').slice(-2).join('/') || 'Link'})
+                <ExternalLink className="size-2.5" />
+              </a>
+            )}
+          </div>
+        </div>
 
         <Tabs
           value={activeTab}

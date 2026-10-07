@@ -99,3 +99,32 @@ func (h *TaskHandlers) Cancel(c fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{"status": "cancelled"})
 }
+
+// CreatePR handles POST /api/v1/tasks/:id/pr
+func (h *TaskHandlers) CreatePR(c fiber.Ctx) error {
+	taskID := c.Params("id")
+	if taskID == "" {
+		taskID = c.Params("task_id")
+	}
+	if taskID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "task id is required"})
+	}
+
+	task, err := h.taskService.CreatePullRequestForTask(c.Context(), taskID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Task not found"})
+		}
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	prURL := ""
+	if task.PRURL != nil {
+		prURL = *task.PRURL
+	}
+	return c.JSON(fiber.Map{
+		"task_id":          task.ID,
+		"pull_request_url": prURL,
+		"pr_url":           prURL,
+	})
+}

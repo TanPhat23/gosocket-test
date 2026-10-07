@@ -162,8 +162,16 @@ func main() {
 	authService := service.NewAuthService(userRepo, teamRepo, tokenRepo, authenticator)
 	credService := service.NewCredentialService(credRepo, cipher)
 	webhookService := service.NewWebhookService(integrationRepo, credRepo, taskRepo, idempotencyStore, cipher, queueClient)
-	taskService := service.NewTaskService(taskRepo, attemptRepo, queueClient, hub)
+	ghProvider := github.NewProvider()
+	taskService := service.NewTaskService(
+		taskRepo,
+		attemptRepo,
+		queueClient,
+		hub,
+		service.WithTaskGitHubIntegration(integrationRepo, credRepo, cipher, ghProvider),
+	)
 	logService := service.NewLogService(logRepo, hub)
+	integrationService := service.NewIntegrationService(integrationRepo, projectRepo, credRepo)
 
 	// Worktree Manager & Sandbox Docker Runner
 	worktreeMgr := git.NewWorktreeManager(cfg.HostWorktreeRoot)
@@ -178,7 +186,17 @@ func main() {
 	}
 
 	// Concrete Agent Task Runner (orchestrating worktrees, OpenCode, and diff snapshots)
-	agentRunner := runner.NewAgentTaskRunner(cfg, projectRepo, taskRepo, logRepo, worktreeMgr, dockerRunner, dockerCli, hub)
+	agentRunner := runner.NewAgentTaskRunner(
+		cfg,
+		projectRepo,
+		taskRepo,
+		logRepo,
+		worktreeMgr,
+		dockerRunner,
+		dockerCli,
+		hub,
+		runner.WithRunnerGitHubIntegration(integrationRepo, credRepo, cipher, ghProvider),
+	)
 
 	// Concurrency-bounded Asynq Worker Server
 	workerServer := queue.NewWorkerServer(cfg, taskService, agentRunner)
@@ -199,6 +217,7 @@ func main() {
 		credService,
 		webhookService,
 		api.WithTaskService(taskService),
+		api.WithIntegrationService(integrationService),
 		api.WithTeamRepository(teamRepo),
 		api.WithProjectRepository(projectRepo),
 		api.WithWSHandler(wsHandler),

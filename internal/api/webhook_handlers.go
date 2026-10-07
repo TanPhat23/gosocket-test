@@ -36,10 +36,11 @@ func (h *WebhookHandlers) HandleWebhook(c fiber.Ctx) error {
 			switch {
 			case errors.Is(err, service.ErrInvalidWebhookPayload):
 				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
-			case errors.Is(err, service.ErrIntegrationNotFound):
-				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "no active integration found"})
-			case errors.Is(err, service.ErrInvalidSignature):
-				return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid signature"})
+			case errors.Is(err, service.ErrMissingDeliveryID):
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+			case errors.Is(err, service.ErrIntegrationNotFound) || errors.Is(err, service.ErrInvalidSignature):
+				// Security Fix 5: Return uniform 401 Unauthorized on signature/integration lookup failures to avoid enumeration oracles
+				return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
 			default:
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 			}

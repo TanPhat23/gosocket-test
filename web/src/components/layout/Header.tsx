@@ -1,6 +1,8 @@
 import React from 'react';
 import { UserNav } from '@/features/auth/components/UserNav';
 import { TeamSwitcher } from '@/features/teams/components/TeamSwitcher';
+import { ProjectSwitcher } from '@/features/teams/components/ProjectSwitcher';
+import { ProjectIntegrationModal } from '@/features/integrations/components/ProjectIntegrationModal';
 import { ThemeSettingsDialog } from '@/components/theme/ThemeSettingsDialog';
 
 export const Header: React.FC = () => {
@@ -17,7 +19,11 @@ export const Header: React.FC = () => {
           </div>
         </div>
 
-        <TeamSwitcher />
+        <div className="flex items-center gap-2">
+          <TeamSwitcher />
+          <ProjectSwitcher />
+          <ProjectIntegrationModal />
+        </div>
       </div>
 
       <div className="flex items-center gap-3">

@@ -21,6 +21,7 @@ var (
 	ErrInvalidWebhookPayload = errors.New("invalid webhook payload")
 	ErrIntegrationNotFound   = errors.New("active integration not found")
 	ErrInvalidSignature       = errors.New("invalid webhook signature")
+	ErrMissingDeliveryID      = errors.New("missing webhook delivery id")
 )
 
 // WebhookService encapsulates external webhook verification, idempotency, and task creation.
@@ -64,11 +65,14 @@ type ghWebhookPayload struct {
 		FullName string `json:"full_name"`
 	} `json:"repository"`
 	Issue *struct {
-		Number  int    `json:"number"`
-		Title   string `json:"title"`
-		Body    string `json:"body"`
-		State   string `json:"state"`
-		HTMLURL string `json:"html_url"`
+		Number  int      `json:"number"`
+		Title   string   `json:"title"`
+		Body    string   `json:"body"`
+		State   string   `json:"state"`
+		HTMLURL string   `json:"html_url"`
+		Labels  []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
 	} `json:"issue"`
 }
 
@@ -99,6 +103,11 @@ type trelloWebhookPayload struct {
 }
 
 func (s *webhookService) HandleGitHubWebhook(ctx context.Context, payload []byte, deliveryID, signature string) (*dto.WebhookResultDTO, error) {
+	// Security Fix 5: require deliveryID != "" (do NOT generate fresh UUID allowing replay attacks)
+	if deliveryID == "" {
+		return nil, ErrMissingDeliveryID
+	}
+
 	ghPayload, err := common.Unmarshal[ghWebhookPayload](payload)
 	if err != nil {
 		return nil, ErrInvalidWebhookPayload
@@ -114,27 +123,34 @@ func (s *webhookService) HandleGitHubWebhook(ctx context.Context, payload []byte
 		return nil, ErrIntegrationNotFound
 	}
 
-	if s.cipher == nil {
-		return nil, errors.New("cipher not configured")
+	// Secret resolution: check integration.Config["webhook_secret"] first; fallback to credential PAT
+	var hmacSecret string
+	if integration.Config != nil {
+		if sec, ok := integration.Config["webhook_secret"].(string); ok && sec != "" {
+			hmacSecret = sec
+		}
 	}
 
-	cred, err := s.credRepo.GetByID(ctx, integration.CredentialID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load integration credential: %w", err)
-	}
+	if hmacSecret == "" {
+		if s.cipher == nil {
+			return nil, errors.New("cipher not configured")
+		}
 
-	plainSecret, err := s.cipher.Decrypt(cred.EncryptedData)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt integration secret: %w", err)
+		cred, err := s.credRepo.GetByID(ctx, integration.CredentialID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load integration credential: %w", err)
+		}
+
+		plainSecret, err := s.cipher.Decrypt(cred.EncryptedData)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decrypt integration secret: %w", err)
+		}
+		hmacSecret = plainSecret
 	}
 
 	// Verify HMAC signature BEFORE any mutation or idempotency check
-	if !github.VerifySignature(plainSecret, payload, signature) {
+	if !github.VerifySignature(hmacSecret, payload, signature) {
 		return nil, ErrInvalidSignature
-	}
-
-	if deliveryID == "" {
-		deliveryID = uuid.NewString()
 	}
 
 	if s.idempotencyStore != nil {
@@ -153,45 +169,66 @@ func (s *webhookService) HandleGitHubWebhook(ctx context.Context, payload []byte
 	var taskIDCreated string
 	if ghPayload.Issue != nil && (ghPayload.Action == "opened" || ghPayload.Action == "reopened" || ghPayload.Action == "labeled") {
 		issue := ghPayload.Issue
-		externalID := fmt.Sprintf("%d", issue.Number)
 
-		existingTask, err := s.taskRepo.GetByProjectAndExternalID(ctx, integration.ProjectID, externalID)
-		if err == nil && existingTask != nil {
-			existingTask.Title = issue.Title
-			existingTask.Prompt = issue.Body
-			_ = s.taskRepo.Update(ctx, existingTask)
-			taskIDCreated = existingTask.ID
-		} else {
-			taskID := "task-" + uuid.NewString()
-			integID := integration.ID
-			task := models.Task{
-				ID:            taskID,
-				ProjectID:     integration.ProjectID,
-				IntegrationID: &integID,
-				ExternalID:    &externalID,
-				ExternalURL:   &issue.HTMLURL,
-				Title:         issue.Title,
-				Prompt:        issue.Body,
-				AssigneeID:    "agent",
-				Status:        models.TaskStatusQueued,
-				AssigneeType:  models.AssigneeAgent,
-				Priority:      models.PriorityNormal,
-				Skills:        models.StringArray{},
-				MCPServers:    models.StringArray{},
-				CreatedAt:     time.Now().UTC(),
-				UpdatedAt:     time.Now().UTC(),
+		// Check filter_label if configured in integration config
+		filterLabel := ""
+		if integration.Config != nil {
+			if fl, ok := integration.Config["filter_label"].(string); ok && fl != "" {
+				filterLabel = fl
 			}
+		}
 
-			if err := s.taskRepo.Create(ctx, &task); err != nil {
-				if s.idempotencyStore != nil {
-					_ = s.idempotencyStore.MarkFailed(ctx, string(models.IntegrationGitHub), integration.ProjectID, deliveryID, err.Error())
+		hasFilterLabel := filterLabel == ""
+		if filterLabel != "" {
+			for _, lbl := range issue.Labels {
+				if lbl.Name == filterLabel {
+					hasFilterLabel = true
+					break
 				}
-				return nil, fmt.Errorf("failed to create task: %w", err)
 			}
-			taskIDCreated = task.ID
+		}
 
-			if s.queueClient != nil {
-				_, _ = s.queueClient.EnqueueTask(ctx, &task)
+		if hasFilterLabel {
+			externalID := fmt.Sprintf("%d", issue.Number)
+
+			existingTask, err := s.taskRepo.GetByProjectAndExternalID(ctx, integration.ProjectID, externalID)
+			if err == nil && existingTask != nil {
+				existingTask.Title = issue.Title
+				existingTask.Prompt = issue.Body
+				_ = s.taskRepo.Update(ctx, existingTask)
+				taskIDCreated = existingTask.ID
+			} else {
+				taskID := "task-" + uuid.NewString()
+				integID := integration.ID
+				task := models.Task{
+					ID:            taskID,
+					ProjectID:     integration.ProjectID,
+					IntegrationID: &integID,
+					ExternalID:    &externalID,
+					ExternalURL:   &issue.HTMLURL,
+					Title:         issue.Title,
+					Prompt:        issue.Body,
+					AssigneeID:    "agent",
+					Status:        models.TaskStatusQueued,
+					AssigneeType:  models.AssigneeAgent,
+					Priority:      models.PriorityNormal,
+					Skills:        models.StringArray{},
+					MCPServers:    models.StringArray{},
+					CreatedAt:     time.Now().UTC(),
+					UpdatedAt:     time.Now().UTC(),
+				}
+
+				if err := s.taskRepo.Create(ctx, &task); err != nil {
+					if s.idempotencyStore != nil {
+						_ = s.idempotencyStore.MarkFailed(ctx, string(models.IntegrationGitHub), integration.ProjectID, deliveryID, err.Error())
+					}
+					return nil, fmt.Errorf("failed to create task: %w", err)
+				}
+				taskIDCreated = task.ID
+
+				if s.queueClient != nil {
+					_, _ = s.queueClient.EnqueueTask(ctx, &task)
+				}
 			}
 		}
 	}

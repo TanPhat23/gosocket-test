@@ -4,6 +4,7 @@ import { authApi } from '@/features/auth/api/authApi';
 import { taskApi } from '@/features/tasks/api/taskApi';
 import { teamApi } from '@/features/teams/api/teamApi';
 import { credentialApi } from '@/features/teams/api/credentialApi';
+import { integrationApi } from '@/features/integrations/api/integrationApi';
 import type {
   UserDTO as User,
   CredentialDTO as CredentialResponse,
@@ -15,6 +16,9 @@ import type {
   TaskStatus,
   AssigneeType,
   CredentialProvider,
+  IntegrationDTO as Integration,
+  CreateIntegrationInput as CreateIntegrationRequest,
+  UpdateIntegrationInput as UpdateIntegrationRequest,
 } from './schemas';
 
 export type {
@@ -28,6 +32,9 @@ export type {
   TaskStatus,
   AssigneeType,
   CredentialProvider,
+  Integration,
+  CreateIntegrationRequest,
+  UpdateIntegrationRequest,
 };
 
 export interface WebhookResult {
@@ -61,6 +68,13 @@ export class ApiClient {
   getTask = taskApi.getTask;
   createTask = taskApi.createTask;
   cancelTask = taskApi.cancelTask;
+  createTaskPR = taskApi.createTaskPR;
+
+  // Integrations
+  listProjectIntegrations = integrationApi.listProjectIntegrations;
+  createProjectIntegration = integrationApi.createProjectIntegration;
+  updateProjectIntegration = integrationApi.updateProjectIntegration;
+  deleteProjectIntegration = integrationApi.deleteProjectIntegration;
 
   // Webhooks
   async sendWebhook(provider: string, payload: unknown, headers?: RawAxiosRequestHeaders): Promise<WebhookResult> {

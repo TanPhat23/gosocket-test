@@ -3,7 +3,7 @@ import { useTask, useTaskStore } from '../store/useTaskStore';
 import { Card, CardHeader, CardContent, CardFooter } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Eye, GitCompare, Ban, Cpu, Wrench, Server, CornerDownRight } from 'lucide-react';
+import { Eye, GitCompare, Ban, Cpu, Wrench, Server, CornerDownRight, GitPullRequest } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export interface TaskCardProps {
@@ -55,6 +55,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({ id }) => {
     );
   };
 
+  const prLink = task.pull_request_url || task.pr_url;
   const isLive = task.status === 'in_progress';
   const isCancellable = ['backlog', 'queued', 'in_progress', 'review'].includes(task.status);
 
@@ -103,6 +104,44 @@ export const TaskCard: React.FC<TaskCardProps> = ({ id }) => {
             <span className="text-[11px] font-mono text-muted-foreground truncate" title={task.id}>
               #{task.id.slice(0, 8)}
             </span>
+
+            {/* GitHub Issue badge if external_url or external_id is present */}
+            {task.external_url ? (
+              <a
+                href={task.external_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="inline-flex items-center gap-1 font-mono text-[10px] text-muted-foreground bg-muted/50 hover:bg-muted hover:text-foreground border border-border/70 rounded px-1.5 py-0 h-4.5 transition-colors"
+                title={`GitHub Issue ${task.external_id ? `#${task.external_id}` : ''}`}
+                data-testid={`task-gh-issue-${task.id}`}
+              >
+                <span>GH #{task.external_id || 'issue'}</span>
+              </a>
+            ) : task.external_id ? (
+              <span
+                className="inline-flex items-center gap-1 font-mono text-[10px] text-muted-foreground bg-muted/50 border border-border/70 rounded px-1.5 py-0 h-4.5"
+                title={`GitHub Issue #${task.external_id}`}
+              >
+                <span>GH #{task.external_id}</span>
+              </span>
+            ) : null}
+
+            {/* Subtle green PR badge with GitPullRequest icon */}
+            {prLink && (
+              <a
+                href={prLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="inline-flex items-center gap-1 font-mono text-[10px] text-emerald-600 dark:text-emerald-400 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 rounded px-1.5 py-0 h-4.5 transition-colors font-medium"
+                title={`Pull Request: ${prLink}`}
+                data-testid={`task-pr-badge-${task.id}`}
+              >
+                <GitPullRequest className="size-2.5 shrink-0" />
+                <span>PR</span>
+              </a>
+            )}
           </div>
 
           {/* Status badge with live pulse */}

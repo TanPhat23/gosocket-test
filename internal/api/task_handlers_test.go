@@ -488,4 +488,18 @@ func TestTaskAndTeamHandlers(t *testing.T) {
 			t.Errorf("expected 400 Bad Request for non-websocket request, got %d", resp.StatusCode)
 		}
 	})
+
+	t.Run("POST /api/v1/tasks/:id/pr - manual PR creation endpoint", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+createdTaskID+"/pr", nil)
+		resp, err := server.App.Test(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		// Without git remote worktree configured in this mock, it returns 400 Bad Request with descriptive message
+		if resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusOK {
+			t.Errorf("expected 400 or 200, got %d", resp.StatusCode)
+		}
+	})
 }

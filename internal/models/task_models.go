@@ -14,7 +14,8 @@ type Task struct {
 	AsynqTaskID   *string      `gorm:"type:text;index:idx_tasks_asynq_id" json:"asynq_task_id,omitempty"`
 	ExternalID    *string      `gorm:"type:text" json:"external_id,omitempty"`
 	ExternalURL   *string      `gorm:"type:text" json:"external_url,omitempty" validate:"omitempty,url"`
-	PRURL         *string      `gorm:"type:text" json:"pr_url,omitempty" validate:"omitempty,url"`
+	PRURL          *string      `gorm:"type:text" json:"pr_url,omitempty" validate:"omitempty,url"`
+	PullRequestURL *string      `gorm:"-" json:"pull_request_url,omitempty"`
 	WorktreePath  *string      `gorm:"type:text" json:"worktree_path,omitempty"`
 	BranchName    *string      `gorm:"type:text" json:"branch_name,omitempty"`
 	Model         *string      `gorm:"type:text" json:"model,omitempty"`
