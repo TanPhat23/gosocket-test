@@ -22,6 +22,11 @@ services:
     restart: unless-stopped
     command:
       - "--configFile=/etc/traefik/traefik.yml"
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+      - TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_EMAIL=${ACME_EMAIL:-admin@agenttaskmanager.io}
+      - TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_STORAGE=/letsencrypt/acme.json
+      - TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_HTTPCHALLENGE_ENTRYPOINT=web
     ports:
       - "80:80"
       - "443:443"

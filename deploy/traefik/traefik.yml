@@ -11,7 +11,16 @@ entryPoints:
   websecure:
     address: ":443"
     http:
-      tls: {}
+      tls:
+        certResolver: letsencrypt
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: admin@agenttaskmanager.io
+      storage: /letsencrypt/acme.json
+      httpChallenge:
+        entryPoint: web
 
 providers:
   docker:
