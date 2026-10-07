@@ -8,10 +8,16 @@ import {
 
 export const integrationApi = {
   async listProjectIntegrations(projectId: string): Promise<IntegrationDTO[]> {
-    const res = await axiosClient.get<unknown[]>(
+    const res = await axiosClient.get<unknown>(
       `/projects/${encodeURIComponent(projectId)}/integrations`
     );
-    return res.data.map((item) => IntegrationSchema.parse(item));
+    const data = res.data;
+    const rawList = Array.isArray(data)
+      ? data
+      : (data && typeof data === 'object' && 'integrations' in data && Array.isArray((data as { integrations: unknown[] }).integrations))
+      ? (data as { integrations: unknown[] }).integrations
+      : [];
+    return rawList.map((item) => IntegrationSchema.parse(item));
   },
 
   async createProjectIntegration(
@@ -22,7 +28,11 @@ export const integrationApi = {
       `/projects/${encodeURIComponent(projectId)}/integrations`,
       req
     );
-    return IntegrationSchema.parse(res.data);
+    const data = res.data;
+    const raw = (data && typeof data === 'object' && 'integration' in data)
+      ? (data as { integration: unknown }).integration
+      : data;
+    return IntegrationSchema.parse(raw);
   },
 
   async updateProjectIntegration(
@@ -34,7 +44,11 @@ export const integrationApi = {
       `/projects/${encodeURIComponent(projectId)}/integrations/${encodeURIComponent(integrationId)}`,
       req
     );
-    return IntegrationSchema.parse(res.data);
+    const data = res.data;
+    const raw = (data && typeof data === 'object' && 'integration' in data)
+      ? (data as { integration: unknown }).integration
+      : data;
+    return IntegrationSchema.parse(raw);
   },
 
   async deleteProjectIntegration(

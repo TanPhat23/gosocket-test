@@ -1,0 +1,86 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { credentialApi } from './credentialApi';
+import { axiosClient } from '@/lib/axios';
+
+describe('credentialApi', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('listCredentials', () => {
+    it('unpacks { credentials: [...] } payload from backend', async () => {
+      vi.spyOn(axiosClient, 'get').mockResolvedValueOnce({
+        data: {
+          credentials: [
+            {
+              id: 'a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d',
+              team_id: 'b2c3d4e5-f6a7-8b9c-0d1e-2f3a4b5c6d7e',
+              provider: 'github',
+              label: 'Production PAT',
+              created_at: '2026-10-07T00:00:00Z',
+              updated_at: '2026-10-07T00:00:00Z',
+            },
+          ],
+        },
+      });
+
+      const result = await credentialApi.listCredentials('b2c3d4e5-f6a7-8b9c-0d1e-2f3a4b5c6d7e');
+      expect(result).toHaveLength(1);
+      expect(result[0].label).toBe('Production PAT');
+      expect(result[0].provider).toBe('github');
+    });
+
+    it('handles direct array payload defensively', async () => {
+      vi.spyOn(axiosClient, 'get').mockResolvedValueOnce({
+        data: [
+          {
+            id: 'a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d',
+            team_id: 'b2c3d4e5-f6a7-8b9c-0d1e-2f3a4b5c6d7e',
+            provider: 'github',
+            label: 'Direct Array PAT',
+            created_at: '2026-10-07T00:00:00Z',
+            updated_at: '2026-10-07T00:00:00Z',
+          },
+        ],
+      });
+
+      const result = await credentialApi.listCredentials('b2c3d4e5-f6a7-8b9c-0d1e-2f3a4b5c6d7e');
+      expect(result).toHaveLength(1);
+      expect(result[0].label).toBe('Direct Array PAT');
+    });
+
+    it('returns empty array when credentials property is empty or missing', async () => {
+      vi.spyOn(axiosClient, 'get').mockResolvedValueOnce({
+        data: { credentials: [] },
+      });
+
+      const result = await credentialApi.listCredentials('team-1');
+      expect(result).toEqual([]);
+    });
+  });
+
+  describe('createCredential', () => {
+    it('unpacks { credential: {...} } payload from backend', async () => {
+      vi.spyOn(axiosClient, 'post').mockResolvedValueOnce({
+        data: {
+          credential: {
+            id: 'a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d',
+            team_id: 'b2c3d4e5-f6a7-8b9c-0d1e-2f3a4b5c6d7e',
+            provider: 'github',
+            label: 'New PAT',
+            created_at: '2026-10-07T00:00:00Z',
+            updated_at: '2026-10-07T00:00:00Z',
+          },
+        },
+      });
+
+      const result = await credentialApi.createCredential('b2c3d4e5-f6a7-8b9c-0d1e-2f3a4b5c6d7e', {
+        provider: 'github',
+        label: 'New PAT',
+        secret: 'ghp_secret',
+      });
+      expect(result.id).toBe('a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d');
+      expect(result.label).toBe('New PAT');
+    });
+  });
+});
