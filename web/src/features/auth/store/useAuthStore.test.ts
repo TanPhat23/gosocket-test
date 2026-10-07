@@ -5,6 +5,7 @@ import { authApi } from '../api/authApi';
 vi.mock('../api/authApi', () => ({
   authApi: {
     getMe: vi.fn(),
+    login: vi.fn(),
     logout: vi.fn(),
   },
 }));
@@ -26,6 +27,39 @@ describe('useAuthStore', () => {
     expect(state.isLoading).toBe(true);
     expect(state.isInitialized).toBe(false);
     expect(state.error).toBeNull();
+  });
+
+  describe('login', () => {
+    it('sets user, isLoading=false, isInitialized=true, error=null on success', async () => {
+      const mockUser = {
+        id: 'usr-admin',
+        email: 'admin@example.com',
+        display_name: 'Admin',
+      };
+      vi.mocked(authApi.login).mockResolvedValueOnce(mockUser);
+
+      await useAuthStore.getState().login({ email: 'admin@example.com', password: 'password123' });
+
+      const state = useAuthStore.getState();
+      expect(state.user).toEqual(mockUser);
+      expect(state.isLoading).toBe(false);
+      expect(state.isInitialized).toBe(true);
+      expect(state.error).toBeNull();
+      expect(authApi.login).toHaveBeenCalledWith({
+        email: 'admin@example.com',
+        password: 'password123',
+      });
+    });
+
+    it('sets error and isLoading=false on failure without clearing existing user', async () => {
+      vi.mocked(authApi.login).mockRejectedValueOnce(new Error('Invalid email or password'));
+
+      await useAuthStore.getState().login({ email: 'bad@example.com', password: 'wrong' });
+
+      const state = useAuthStore.getState();
+      expect(state.isLoading).toBe(false);
+      expect(state.error).toBe('Invalid email or password');
+    });
   });
 
   describe('fetchUser', () => {

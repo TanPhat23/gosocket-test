@@ -112,6 +112,7 @@ func (s *Server) setupRoutes() {
 	authGroup := v1.Group("/auth")
 
 	authGroup.Get("/login", authHandlers.Login)
+	authGroup.Post("/login", authHandlers.LoginWithCredentials)
 	authGroup.Get("/callback", authHandlers.Callback)
 	authGroup.Post("/logout", authHandlers.Logout)
 	authGroup.Get("/me", authHandlers.Me)

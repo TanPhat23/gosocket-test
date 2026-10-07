@@ -11,6 +11,8 @@ import (
 	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/repository"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 var (
@@ -22,6 +24,7 @@ var (
 	ErrVerifyIDToken     = errors.New("failed to verify ID token")
 	ErrNonceMismatch     = errors.New("nonce mismatch")
 	ErrInvalidToken      = errors.New("invalid or expired personal access token")
+	ErrInvalidCredentials = errors.New("invalid email or password")
 	ErrNotTeamMember     = errors.New("user is not a member of this team")
 	ErrForbidden         = errors.New("insufficient team role permissions")
 )
@@ -30,6 +33,7 @@ var (
 type AuthService interface {
 	GenerateLoginURL() (authURL string, signedState string, state *auth.OIDCState, err error)
 	HandleCallback(ctx context.Context, stateCookie, stateParam, code string) (*models.User, error)
+	LoginWithCredentials(ctx context.Context, email, password string) (*models.User, error)
 	GetUserByID(ctx context.Context, userID string) (*models.User, error)
 	AuthenticatePAT(ctx context.Context, rawToken string) (*models.User, *models.APIToken, error)
 	AuthorizeTeamRole(ctx context.Context, teamID, userID string, requiredRole models.TeamRole) (models.TeamRole, error)
@@ -153,6 +157,61 @@ func (s *authService) HandleCallback(ctx context.Context, stateCookie, statePara
 		if name, ok := updates["display_name"].(string); ok {
 			existingUser.DisplayName = name
 		}
+	}
+
+	return existingUser, nil
+}
+
+type localAccount struct {
+	subject  string
+	name     string
+	passHash string
+}
+
+var localAccounts = map[string]localAccount{
+	"admin@example.com": {
+		subject:  "CiQwOGE1MmM2My00NDRhLTRkNTYtOTgzMy00MTUyYmIwZDQ0YWMSBWxvY2Fs",
+		name:     "admin",
+		passHash: "$2a$10$kky4TaVOWLyxpZsBNNktmeSgy0pqobTo1aYbjlpgCG.IxEReQpgqi",
+	},
+	"developer@example.com": {
+		subject:  "CiQxOGE1MmM2My00NDRhLTRkNTYtOTgzMy00MTUyYmIwZDQ0YWQSBWxvY2Fs",
+		name:     "developer",
+		passHash: "$2a$10$kky4TaVOWLyxpZsBNNktmeSgy0pqobTo1aYbjlpgCG.IxEReQpgqi",
+	},
+}
+
+func (s *authService) LoginWithCredentials(ctx context.Context, email, password string) (*models.User, error) {
+	acc, ok := localAccounts[strings.ToLower(strings.TrimSpace(email))]
+	if !ok {
+		return nil, ErrInvalidCredentials
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(acc.passHash), []byte(password)); err != nil {
+		return nil, ErrInvalidCredentials
+	}
+
+	issuer := "http://localhost/dex"
+	if s.authenticator != nil && s.authenticator.IssuerURL() != "" {
+		issuer = s.authenticator.IssuerURL()
+	}
+
+	existingUser, err := s.userRepo.GetByIssuerSubject(ctx, issuer, acc.subject)
+	if err != nil {
+		now := time.Now()
+		newUser := &models.User{
+			ID:          common.NewID(),
+			Issuer:      issuer,
+			Subject:     acc.subject,
+			Email:       email,
+			DisplayName: acc.name,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}
+		if err := s.userRepo.Create(ctx, newUser); err != nil {
+			return nil, fmt.Errorf("failed to create user record: %w", err)
+		}
+		return newUser, nil
 	}
 
 	return existingUser, nil

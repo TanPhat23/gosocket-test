@@ -61,6 +61,42 @@ func (h *AuthHandlers) Login(c fiber.Ctx) error {
 	return c.Redirect().To(authURL)
 }
 
+// LoginWithCredentials authenticates direct user credentials and creates a session.
+// POST /api/v1/auth/login
+func (h *AuthHandlers) LoginWithCredentials(c fiber.Ctx) error {
+	var req dto.LoginRequestDTO
+	if err := c.Bind().Body(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid request body",
+		})
+	}
+
+	user, err := h.authService.LoginWithCredentials(c.Context(), req.Email, req.Password)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"error": "Invalid email or password",
+		})
+	}
+
+	_, err = h.sessionManager.CreateSessionFiber(c, user.ID, user.Issuer, user.Subject)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to create session",
+		})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"status": "authenticated",
+		"user": dto.UserResponseDTO{
+			ID:          user.ID,
+			Issuer:      user.Issuer,
+			Subject:     user.Subject,
+			Email:       user.Email,
+			DisplayName: user.DisplayName,
+		},
+	})
+}
+
 // Callback handles the OIDC provider redirect, exchanges code, verifies ID token,
 // upserts user, and establishes an atm_session cookie.
 // GET /api/v1/auth/callback

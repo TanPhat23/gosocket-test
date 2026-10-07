@@ -14,6 +14,44 @@ describe('authApi', () => {
     vi.clearAllMocks();
   });
 
+  describe('login', () => {
+    it('calls POST /auth/login with credentials and parses response', async () => {
+      const mockPayload = {
+        user: {
+          id: 'user_login_1',
+          email: 'admin@example.com',
+          display_name: 'Admin User',
+        },
+      };
+
+      vi.mocked(axiosClient.post).mockResolvedValueOnce({ data: mockPayload });
+
+      const credentials = { email: 'admin@example.com', password: 'password123' };
+      const result = await authApi.login(credentials);
+
+      expect(axiosClient.post).toHaveBeenCalledWith('/auth/login', credentials);
+      expect(result).toEqual({
+        id: 'user_login_1',
+        email: 'admin@example.com',
+        display_name: 'Admin User',
+      });
+    });
+
+    it('throws validation error if login response is invalid', async () => {
+      vi.mocked(axiosClient.post).mockResolvedValueOnce({
+        data: {
+          user: {
+            email: 'admin@example.com',
+          },
+        },
+      });
+
+      await expect(
+        authApi.login({ email: 'admin@example.com', password: 'password123' })
+      ).rejects.toThrow();
+    });
+  });
+
   describe('getMe', () => {
     it('parses nested user payload { user: { ... } } returned by backend', async () => {
       const mockPayload = {

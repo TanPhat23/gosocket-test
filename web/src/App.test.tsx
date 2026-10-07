@@ -59,48 +59,24 @@ describe('App Auth Gateway', () => {
     expect(fetchTeamsMock).not.toHaveBeenCalled();
   });
 
-  it('triggers auto-redirect to /api/v1/auth/login and renders "Redirecting to sign-in..." when unauthenticated', () => {
-    // Set up location mock
-    const locationHrefSpy = vi.fn();
-    const originalLocation = window.location;
-
-    // In jsdom, window.location can be redefined or spied on
-    Object.defineProperty(window, 'location', {
-      writable: true,
-      value: {
-        ...originalLocation,
-        get href() {
-          return 'http://localhost/';
-        },
-        set href(val: string) {
-          locationHrefSpy(val);
-        },
-      },
+  it('renders LoginForm when session is initialized and unauthenticated', () => {
+    useAuthStore.setState({
+      user: null,
+      isLoading: false,
+      isInitialized: true,
+      error: null,
+      fetchUser: fetchUserMock,
     });
 
-    try {
-      useAuthStore.setState({
-        user: null,
-        isLoading: false,
-        isInitialized: true,
-        error: null,
-        fetchUser: fetchUserMock,
-      });
+    renderWithProviders(<App />);
 
-      renderWithProviders(<App />);
-
-      expect(fetchUserMock).toHaveBeenCalledTimes(1);
-      expect(locationHrefSpy).toHaveBeenCalledWith('/api/v1/auth/login');
-      expect(screen.getByText('Redirecting to sign-in...')).toBeInTheDocument();
-      expect(screen.queryByText(/Agent Control Plane/i)).not.toBeInTheDocument();
-      expect(fetchTasksMock).not.toHaveBeenCalled();
-      expect(fetchTeamsMock).not.toHaveBeenCalled();
-    } finally {
-      Object.defineProperty(window, 'location', {
-        writable: true,
-        value: originalLocation,
-      });
-    }
+    expect(fetchUserMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Agent Task Manager')).toBeInTheDocument();
+    expect(screen.getByText('Sign in to access your control plane')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Sign In' })).toBeInTheDocument();
+    expect(screen.queryByText(/Agent Control Plane/i)).not.toBeInTheDocument();
+    expect(fetchTasksMock).not.toHaveBeenCalled();
+    expect(fetchTeamsMock).not.toHaveBeenCalled();
   });
 
   it('renders authenticated workspace when user is logged in and triggers task/team fetches', () => {

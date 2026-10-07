@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
 import { useAuthStore } from '@/features/auth/store/useAuthStore';
+import { LoginForm } from '@/features/auth/components/LoginForm';
 import { useTaskStore } from '@/features/tasks/store/useTaskStore';
 import { useTeamStore } from '@/features/teams/store/useTeamStore';
 import { useTaskSubscription } from '@/features/tasks/hooks/useTaskSubscription';
@@ -68,13 +69,6 @@ export const App: React.FC = () => {
     fetchUser();
   }, [fetchUser]);
 
-  // Unauthenticated: auto-redirect to SSO gateway
-  useEffect(() => {
-    if (isInitialized && !user) {
-      window.location.href = '/api/v1/auth/login';
-    }
-  }, [isInitialized, user]);
-
   // Initial session check in progress
   if (!isInitialized || (isLoading && !user)) {
     return (
@@ -89,18 +83,9 @@ export const App: React.FC = () => {
     );
   }
 
-  // Session check resolved without user; redirecting to SSO
+  // Session check resolved without user; show in-app direct login form
   if (!user) {
-    return (
-      <div className="min-h-screen bg-background text-foreground flex flex-col items-center justify-center p-4">
-        <div className="flex flex-col items-center gap-3 text-center" role="status" aria-live="polite">
-          <Loader2 className="size-5 animate-spin text-muted-foreground" aria-hidden="true" />
-          <p className="text-sm font-medium text-foreground tracking-tight">
-            Redirecting to sign-in...
-          </p>
-        </div>
-      </div>
-    );
+    return <LoginForm />;
   }
 
   // Authenticated workspace

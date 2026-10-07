@@ -8,6 +8,7 @@ interface AuthState {
   isInitialized: boolean;
   error: string | null;
   fetchUser: () => Promise<void>;
+  login: (credentials: { email: string; password: string }) => Promise<void>;
   logout: () => Promise<void>;
   setUser: (user: UserDTO | null) => void;
 }
@@ -17,6 +18,19 @@ export const useAuthStore = create<AuthState>((set) => ({
   isLoading: true,
   isInitialized: false,
   error: null,
+
+  login: async (credentials) => {
+    set({ isLoading: true, error: null });
+    try {
+      const user = await authApi.login(credentials);
+      set({ user, isLoading: false, isInitialized: true, error: null });
+    } catch (err) {
+      set({
+        isLoading: false,
+        error: err instanceof Error ? err.message : 'Failed to sign in',
+      });
+    }
+  },
 
   fetchUser: async () => {
     set({ isLoading: true, error: null });

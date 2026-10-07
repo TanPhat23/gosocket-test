@@ -9,6 +9,12 @@ type UserResponseDTO struct {
 	DisplayName string `json:"display_name,omitempty"`
 }
 
+// LoginRequestDTO represents the credentials payload for direct login.
+type LoginRequestDTO struct {
+	Email    string `json:"email" validate:"required,email"`
+	Password string `json:"password" validate:"required"`
+}
+
 // LoginResponseDTO represents the response from login/callback.
 type LoginResponseDTO struct {
 	Status string          `json:"status"`
