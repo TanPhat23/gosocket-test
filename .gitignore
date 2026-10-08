@@ -39,3 +39,4 @@ web/.vite/
 # Traefik ACME storage
 acme.json
 .playwright-mcp/
+data
