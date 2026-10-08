@@ -24,10 +24,15 @@ describe('DiffViewer', () => {
     expect(screen.getByText('console.log("new");')).toBeInTheDocument();
   });
 
-  it('renders review action buttons', () => {
-    render(<DiffViewer diff={sampleDiff} />);
+  it('renders review action buttons when handlers provided', () => {
+    render(<DiffViewer diff={sampleDiff} onApprove={() => {}} onReject={() => {}} />);
 
     expect(screen.getByRole('button', { name: /approve/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /reject/i })).toBeInTheDocument();
+  });
+
+  it('renders clean empty state when diff is empty', () => {
+    render(<DiffViewer diff="" />);
+    expect(screen.getByText('No Code Changes Recorded')).toBeInTheDocument();
   });
 });

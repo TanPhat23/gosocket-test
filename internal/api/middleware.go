@@ -85,6 +85,35 @@ func RequireAuth(authService service.AuthService, sm *auth.SessionManager) fiber
 	}
 }
 
+// OptionalAuth populates CurrentUser if a valid session cookie or token is present, but does not block requests if unauthenticated.
+func OptionalAuth(authService service.AuthService, sm *auth.SessionManager) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		if sm != nil {
+			claims, err := sm.ValidateFiberRequest(c)
+			if err == nil && claims != nil {
+				user, err := authService.GetUserByID(c.Context(), claims.UserID)
+				if err == nil && user != nil {
+					c.Locals(LocalsUserKey, user)
+					return c.Next()
+				}
+			}
+		}
+
+		authHeader := c.Get(fiber.HeaderAuthorization)
+		if strings.HasPrefix(authHeader, BearerPrefix) {
+			rawToken := strings.TrimSpace(strings.TrimPrefix(authHeader, BearerPrefix))
+			user, apiToken, err := authService.AuthenticatePAT(c.Context(), rawToken)
+			if err == nil && user != nil {
+				c.Locals(LocalsUserKey, user)
+				c.Locals(LocalsAPITokenKey, apiToken)
+				return c.Next()
+			}
+		}
+
+		return c.Next()
+	}
+}
+
 // RequireTeamRole enforces team-level RBAC based on team_id in params or queries.
 // It checks the authenticated user's role against minRole: owner > admin > member > viewer.
 // Returns 403 Forbidden if the user is not in the team or lacks sufficient permission.

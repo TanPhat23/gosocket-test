@@ -269,11 +269,11 @@ func SyncRepoWithRemote(ctx context.Context, repoPath string, logFn func(string)
 	remotes := strings.Fields(string(out))
 	targetRemote := "origin"
 	foundTarget := false
-		if ok := slices.Contains(remotes, "origin"); ok {
-			targetRemote = "origin"
-			foundTarget = true
-		}
-	
+	if ok := slices.Contains(remotes, "origin"); ok {
+		targetRemote = "origin"
+		foundTarget = true
+	}
+
 	if !foundTarget && len(remotes) > 0 {
 		targetRemote = remotes[0]
 	}
@@ -479,6 +479,14 @@ func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attemp
 
 	if err := InjectSandboxedConfig(localWorktreePath, task.Skills, task.MCPServers); err != nil {
 		log.Printf("warning: failed to inject sandboxed configs into worktree: %v", err)
+	}
+
+	// Install project dependencies if needed (e.g. npm install for Next.js/React/Node, with persistent cache from repoPath)
+	if err := InstallDependencies(ctx, localWorktreePath, repoPath, func(msg string) {
+		r.broadcastLog(ctx, task.ID, attempt.ID, msg)
+	}); err != nil {
+		r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[33m[Agent Control Plane] Dependency installation warning: %v\x1b[0m\r\n", err))
+		log.Printf("warning: dependency installation failed in %s: %v", localWorktreePath, err)
 	}
 
 	sessionID := fmt.Sprintf("ses_atm_%s", task.ID)
@@ -782,9 +790,7 @@ func (r *AgentTaskRunner) runInDocker(ctx context.Context, task *models.Task, at
 			fmt.Sprintf("%s:/root/.config/opencode:ro", r.cfg.OpenCodeConfigDir),
 			fmt.Sprintf("%s:/root/.local/share/opencode:rw", r.cfg.OpenCodeDataDir),
 		},
-		Resources: container.Resources{
-			Memory: 4 * 1024 * 1024 * 1024,
-		},
+		Memory: 4 * 1024 * 1024 * 1024,
 	}
 
 	resp, err := r.dockerCli.ContainerCreate(ctx, containerCfg, hostCfg, nil, nil, "")

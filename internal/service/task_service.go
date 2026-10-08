@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -36,6 +37,7 @@ type TaskService interface {
 	GetTaskSession(ctx context.Context, taskID, userID string) (*dto.TaskSessionResponseDTO, error)
 	PromptTaskSession(ctx context.Context, taskID, userID string, req *dto.TaskSessionPromptRequest) error
 	CompactTaskSession(ctx context.Context, taskID, userID string) error
+	GetTaskDiff(ctx context.Context, taskID, userID string) (string, error)
 }
 
 type taskService struct {
@@ -484,6 +486,52 @@ func (s *taskService) CompactTaskSession(ctx context.Context, taskID, userID str
 	}
 
 	return s.openCodeClient.CompactSession(ctx, *task.SessionID)
+}
+
+// GetTaskDiff retrieves the unified git diff between origin/main and the task branch or current worktree.
+// AC-SEC-02: Requires RoleViewer or higher when userID is provided.
+func (s *taskService) GetTaskDiff(ctx context.Context, taskID, userID string) (string, error) {
+	var task *models.Task
+	var err error
+	if userID != "" {
+		task, err = s.authorizeUserForTask(ctx, taskID, userID, models.RoleViewer)
+		if err != nil {
+			return "", err
+		}
+	} else {
+		task, err = s.taskRepo.GetByID(ctx, taskID)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	worktreePath := ""
+	if task.WorktreePath != nil && *task.WorktreePath != "" {
+		worktreePath = *task.WorktreePath
+	}
+
+	if worktreePath == "" {
+		return "", nil
+	}
+
+	res, err := git.CaptureSnapshot(ctx, worktreePath, "main")
+	if err == nil && res != nil && res.RawDiff != "" {
+		return res.RawDiff, nil
+	}
+
+	// Fallback to git diff origin/main...HEAD
+	cmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "diff", "origin/main...HEAD")
+	if out, dErr := cmd.Output(); dErr == nil && len(out) > 0 {
+		return string(out), nil
+	}
+
+	// Fallback to git diff HEAD~1...HEAD
+	cmdLast := exec.CommandContext(ctx, "git", "-C", worktreePath, "diff", "HEAD~1...HEAD")
+	if out, lErr := cmdLast.Output(); lErr == nil && len(out) > 0 {
+		return string(out), nil
+	}
+
+	return "", nil
 }
 
 // LogService defines the business operations for appending and streaming task logs.

@@ -89,6 +89,32 @@ export const TaskInspectorModal: React.FC = () => {
   const [prError, setPrError] = useState<string | null>(null);
   const [prToast, setPrToast] = useState<{ message: string; url?: string } | null>(null);
   const [copiedSessionId, setCopiedSessionId] = useState(false);
+  const [taskDiff, setTaskDiff] = useState<string>('');
+  const [loadingDiff, setLoadingDiff] = useState(false);
+
+  React.useEffect(() => {
+    if (!task) {
+      setTaskDiff('');
+      return;
+    }
+    let isMounted = true;
+    setLoadingDiff(true);
+    taskApi
+      .getTaskDiff(task.id)
+      .then((d) => {
+        if (isMounted) setTaskDiff(d || '');
+      })
+      .catch(() => {
+        if (isMounted) setTaskDiff('');
+      })
+      .finally(() => {
+        if (isMounted) setLoadingDiff(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [task?.id, activeTab]);
 
   const isOpen = !!task;
 
@@ -531,9 +557,9 @@ export const TaskInspectorModal: React.FC = () => {
           <TabsContent value="diff" className="flex-1 mt-4 overflow-hidden h-full">
             <div className="h-full w-full min-h-[380px]">
               <DiffViewer
-                onApprove={() => {
-                  alert(`Approved changes for task ${task.id}. Creating PR.`);
-                }}
+                diff={taskDiff}
+                loading={loadingDiff}
+                onApprove={handleCreatePR}
                 onReject={() => {
                   alert(`Rejected changes for task ${task.id}. Prompting agent for fixes.`);
                 }}

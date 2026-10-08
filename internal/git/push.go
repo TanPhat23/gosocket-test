@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -25,23 +26,28 @@ func PushBranch(ctx context.Context, worktreeDir, remoteURL, token, branchName s
 		targetRemote = remoteURL
 	}
 
-	cmd := exec.CommandContext(
-		pushCtx,
-		"git",
-		"-c",
-		"http.extraHeader="+authHeader,
-		"push",
-		"-u",
-		targetRemote,
-		"--",
-		fmt.Sprintf("%s:%s", branchName, branchName),
-	)
+	pushArgs := []string{"-c", "http.extraHeader=" + authHeader}
+	if os.Getenv("GIT_SSL_NO_VERIFY") == "true" {
+		pushArgs = append(pushArgs, "-c", "http.sslVerify=false")
+	}
+	pushArgs = append(pushArgs, "push", "-u", targetRemote, "--", fmt.Sprintf("%s:%s", branchName, branchName))
+
+	cmd := exec.CommandContext(pushCtx, "git", pushArgs...)
 	cmd.Dir = worktreeDir
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
+		errStr := stderr.String()
+		if strings.Contains(errStr, "certificate") || strings.Contains(errStr, "SSL") {
+			sslPushArgs := []string{"-c", "http.extraHeader=" + authHeader, "-c", "http.sslVerify=false", "push", "-u", targetRemote, "--", fmt.Sprintf("%s:%s", branchName, branchName)}
+			sslCmd := exec.CommandContext(pushCtx, "git", sslPushArgs...)
+			sslCmd.Dir = worktreeDir
+			if sErr := sslCmd.Run(); sErr == nil {
+				return nil
+			}
+		}
 		rawErr := fmt.Sprintf("git push %s failed: %v (stderr: %s)", branchName, err, stderr.String())
 		return fmt.Errorf("%s", scrubSensitiveGitOutput(rawErr, token, authHeader))
 	}

@@ -234,3 +234,33 @@ func (h *TaskHandlers) CompactSession(c fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{"status": "compacted"})
 }
+
+// GetDiff returns the unified git diff for a task.
+func (h *TaskHandlers) GetDiff(c fiber.Ctx) error {
+	taskID := c.Params("id")
+	if taskID == "" {
+		taskID = c.Params("task_id")
+	}
+	if taskID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "task id is required"})
+	}
+
+	user := CurrentUser(c)
+	userID := ""
+	if user != nil {
+		userID = user.ID
+	}
+
+	diff, err := h.taskService.GetTaskDiff(c.Context(), taskID, userID)
+	if err != nil {
+		if errors.Is(err, common.ErrForbidden) {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Forbidden: insufficient permissions"})
+		}
+		if errors.Is(err, common.ErrNotFound) || errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Task not found"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{"diff": diff})
+}

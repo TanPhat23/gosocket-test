@@ -145,6 +145,7 @@ func (s *Server) setupRoutes() {
 		v1.Post("/tasks", taskHandlers.Create)
 		v1.Post("/tasks/:task_id/cancel", taskHandlers.Cancel)
 		v1.Post("/tasks/:id/pr", taskHandlers.CreatePR)
+		v1.Get("/tasks/:id/diff", OptionalAuth(s.AuthService, s.SessionManager), taskHandlers.GetDiff)
 
 		// OpenCode session endpoints (AC-SEC-01: Protected by RequireAuth)
 		sessionGroup := v1.Group("/tasks/:id/session", RequireAuth(s.AuthService, s.SessionManager))

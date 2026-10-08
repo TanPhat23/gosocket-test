@@ -94,6 +94,9 @@ services:
     image: agent-control-plane:latest
     container_name: agent-control-plane
     restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     depends_on:
       postgres:
         condition: service_healthy
@@ -126,6 +129,7 @@ services:
       HOST_REPO_ROOT: ${HOST_REPO_ROOT:-/home/ghug/Code/Go/agent-task-manager/data/repos}
       OPENCODE_SERVER_URL: ${OPENCODE_SERVER_URL:-http://127.0.0.1:49374}
       OPENCODE_PASSWORD: ${OPENCODE_PASSWORD:-4YXQ3udRl8k_UkFdyhHSFF-bdInQgKk0F9Qz6zp2y0U}
+      GIT_SSL_NO_VERIFY: ${GIT_SSL_NO_VERIFY:-true}
     volumes:
       - "/var/run/docker.sock:/var/run/docker.sock"
       - "${HOST_WORKTREE_ROOT:-/home/ghug/Code/Go/agent-task-manager/data/worktrees}:${HOST_WORKTREE_ROOT:-/home/ghug/Code/Go/agent-task-manager/data/worktrees}"

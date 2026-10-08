@@ -666,3 +666,50 @@ func TestTaskService_SessionOperationsAndRBAC(t *testing.T) {
 		t.Fatalf("expected ErrServiceUnavailable on CompactTaskSession, got %v", err)
 	}
 }
+
+func TestGetTaskDiff(t *testing.T) {
+	db := setupTestDB(t)
+	taskRepo := repository.NewTaskRepository(db)
+	attemptRepo := repository.NewAttemptRepository(db)
+	projectRepo := repository.NewProjectRepository(db)
+	teamRepo := repository.NewTeamRepository(db)
+	mockQueue := &mockQueueClient{}
+
+	ctx := context.Background()
+	ownerUser := &models.User{ID: common.NewID(), Email: "diff-owner@test.com", DisplayName: "Owner", Subject: "sub-owner", Issuer: "test"}
+	db.Create(ownerUser)
+
+	team := &models.Team{ID: common.NewID(), Name: "Diff Team"}
+	db.Create(team)
+	db.Create(&models.TeamMembership{TeamID: team.ID, UserID: ownerUser.ID, Role: models.RoleOwner})
+
+	project := &models.Project{ID: common.NewID(), TeamID: team.ID, Name: "Diff Project", RepoPath: "/tmp"}
+	db.Create(project)
+
+	worktreeDir := t.TempDir()
+	task := &models.Task{
+		ID:           common.NewID(),
+		ProjectID:    project.ID,
+		Title:        "Diff Task",
+		Prompt:       "Change file",
+		WorktreePath: &worktreeDir,
+		Status:       models.TaskStatusReview,
+	}
+	db.Create(task)
+
+	taskSvc := service.NewTaskService(
+		taskRepo,
+		attemptRepo,
+		mockQueue,
+		nil,
+		service.WithTaskSessionDependencies(nil, projectRepo, teamRepo),
+	)
+
+	diff, err := taskSvc.GetTaskDiff(ctx, task.ID, ownerUser.ID)
+	if err != nil {
+		t.Fatalf("expected nil error from GetTaskDiff: %v", err)
+	}
+	if diff != "" {
+		t.Errorf("expected empty diff on fresh dir, got: %s", diff)
+	}
+}

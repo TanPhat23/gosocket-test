@@ -54,4 +54,9 @@ export const taskApi = {
   async compactTaskSession(taskId: string): Promise<void> {
     await axiosClient.post(`/tasks/${encodeURIComponent(taskId)}/session/compact`, {});
   },
+
+  async getTaskDiff(taskId: string): Promise<string> {
+    const res = await axiosClient.get<{ diff?: string }>(`/tasks/${encodeURIComponent(taskId)}/diff`);
+    return res.data?.diff ?? '';
+  },
 };

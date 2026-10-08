@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils';
 
 export interface DiffViewerProps {
   diff?: string;
+  loading?: boolean;
   onApprove?: () => void;
   onReject?: () => void;
 }
@@ -25,40 +26,10 @@ interface DiffFile {
   deletions: number;
 }
 
-const SAMPLE_DIFF = `diff --git a/internal/agent/executor.go b/internal/agent/executor.go
---- a/internal/agent/executor.go
-+++ b/internal/agent/executor.go
-@@ -12,6 +12,8 @@ type TaskExecutor struct {
- 	worktreeDir string
- 	containerId string
-+	skillEngine *skills.Engine
-+	mcpClient   *mcp.Client
- }
- 
- func (e *TaskExecutor) Execute(ctx context.Context) error {
-@@ -35,3 +37,4 @@ func (e *TaskExecutor) Execute(ctx context.Context) error {
--	return nil
-+	log.Printf("Executing task within isolated worktree: %s", e.worktreeDir)
-+	return e.runPipeline(ctx)
- }
-diff --git a/internal/agent/skills/engine.go b/internal/agent/skills/engine.go
---- a/internal/agent/skills/engine.go
-+++ b/internal/agent/skills/engine.go
-@@ -0,0 +1,15 @@
-+package skills
-+
-+type Engine struct {
-+	registry map[string]Skill
-+}
-+
-+func NewEngine() *Engine {
-+	return &Engine{
-+		registry: make(map[string]Skill),
-+	}
-+}
-`;
-
 function parseUnifiedDiff(rawDiff: string): DiffFile[] {
+  if (!rawDiff || rawDiff.trim() === '') {
+    return [];
+  }
   const files: DiffFile[] = [];
   const lines = rawDiff.split('\n');
 
@@ -95,11 +66,10 @@ function parseUnifiedDiff(rawDiff: string): DiffFile[] {
     }
 
     if (line.startsWith('@@')) {
-      // Chunk header e.g. @@ -12,6 +12,8 @@
-      const chunkMatch = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-      if (chunkMatch) {
-        oldLine = parseInt(chunkMatch[1], 10);
-        newLine = parseInt(chunkMatch[2], 10);
+      const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      if (match) {
+        oldLine = parseInt(match[1], 10);
+        newLine = parseInt(match[2], 10);
       }
       if (currentFile) {
         currentFile.lines.push({
@@ -144,7 +114,8 @@ function parseUnifiedDiff(rawDiff: string): DiffFile[] {
 }
 
 export const DiffViewer: React.FC<DiffViewerProps> = ({
-  diff = SAMPLE_DIFF,
+  diff = '',
+  loading = false,
   onApprove,
   onReject,
 }) => {
@@ -161,6 +132,27 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
     () => parsedFiles.reduce((acc, f) => acc + f.deletions, 0),
     [parsedFiles]
   );
+
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full w-full rounded-lg border border-border bg-card p-8 text-center min-h-[350px]">
+        <div className="size-6 border-2 border-primary border-t-transparent rounded-full animate-spin mb-3" />
+        <p className="text-xs text-muted-foreground">Loading code changes...</p>
+      </div>
+    );
+  }
+
+  if (parsedFiles.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full w-full rounded-lg border border-border bg-card p-8 text-center min-h-[350px]">
+        <FileCode2 className="size-10 text-muted-foreground/40 mb-3" />
+        <h4 className="text-sm font-medium text-foreground">No Code Changes Recorded</h4>
+        <p className="text-xs text-muted-foreground mt-1 max-w-sm">
+          No file modifications have been captured yet for this task. Changes will appear here once files are committed or staged in the task worktree.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-full w-full rounded-lg border border-border bg-card overflow-hidden">
@@ -179,25 +171,29 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={onReject}
-            className="text-xs text-rose-600 dark:text-rose-400 hover:text-rose-500 hover:bg-rose-500/10 border-rose-500/20"
-          >
-            <RotateCcw className="size-3.5 mr-1" />
-            Reject / Re-prompt
-          </Button>
+          {onReject && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onReject}
+              className="text-xs text-rose-600 dark:text-rose-400 hover:text-rose-500 hover:bg-rose-500/10 border-rose-500/20"
+            >
+              <RotateCcw className="size-3.5 mr-1" />
+              Reject / Re-prompt
+            </Button>
+          )}
 
-          <Button
-            size="sm"
-            variant="default"
-            onClick={onApprove}
-            className="text-xs bg-emerald-600 hover:bg-emerald-500 text-white"
-          >
-            <GitPullRequest className="size-3.5 mr-1" />
-            Approve &amp; Create PR
-          </Button>
+          {onApprove && (
+            <Button
+              size="sm"
+              variant="default"
+              onClick={onApprove}
+              className="text-xs bg-emerald-600 hover:bg-emerald-500 text-white"
+            >
+              <GitPullRequest className="size-3.5 mr-1" />
+              Approve &amp; Create PR
+            </Button>
+          )}
         </div>
       </div>
 
@@ -216,17 +212,17 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
                   key={file.newPath + idx}
                   onClick={() => setSelectedFileIndex(idx)}
                   className={cn(
-                    'w-full text-left px-2 py-1.5 rounded-md text-xs font-mono flex items-center justify-between transition-colors',
+                    'w-full text-left px-2.5 py-1.5 rounded text-xs flex items-center justify-between transition-colors',
                     isSelected
-                      ? 'bg-primary/10 text-primary font-semibold'
-                      : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                      ? 'bg-primary/10 text-primary font-medium'
+                      : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'
                   )}
                 >
-                  <span className="truncate pr-2 flex items-center gap-1.5">
+                  <div className="flex items-center gap-1.5 truncate pr-2">
                     <FileText className="size-3.5 shrink-0" />
-                    {file.newPath}
-                  </span>
-                  <div className="flex items-center gap-1 text-[10px] shrink-0 font-medium">
+                    <span className="truncate font-mono text-[11px]">{file.newPath}</span>
+                  </div>
+                  <div className="flex items-center gap-1 text-[10px] font-mono shrink-0">
                     <span className="text-emerald-600 dark:text-emerald-400">+{file.additions}</span>
                     <span className="text-rose-600 dark:text-rose-400">-{file.deletions}</span>
                   </div>
@@ -236,61 +232,59 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
           </div>
         </div>
 
-        {/* Right: Code Viewer */}
-        <div className="flex-1 flex flex-col bg-background overflow-hidden">
+        {/* Right: File Diff Viewer */}
+        <div className="flex-1 flex flex-col overflow-hidden bg-background">
           {activeFile ? (
-            <div className="flex flex-col h-full">
-              {/* File header */}
-              <div className="px-4 py-2 border-b border-border/60 bg-muted/30 font-mono text-xs text-foreground flex items-center justify-between">
-                <span>{activeFile.newPath}</span>
-                <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+            <>
+              {/* File Header */}
+              <div className="p-2.5 px-4 bg-muted/30 border-b border-border/50 flex items-center justify-between text-xs">
+                <span className="font-mono font-medium text-foreground">{activeFile.newPath}</span>
+                <div className="flex items-center gap-2 text-xs font-mono text-muted-foreground">
                   <span className="text-emerald-600 dark:text-emerald-400">+{activeFile.additions}</span>
                   <span className="text-rose-600 dark:text-rose-400">-{activeFile.deletions}</span>
                 </div>
               </div>
 
-              {/* Code lines */}
-              <div className="flex-1 overflow-auto font-mono text-xs">
+              {/* Lines */}
+              <div className="flex-1 overflow-auto font-mono text-xs select-text">
                 <table className="w-full border-collapse">
                   <tbody>
-                    {activeFile.lines.map((line, lineIdx) => {
+                    {activeFile.lines.map((line, lIdx) => {
                       if (line.type === 'header') {
                         return (
-                          <tr
-                            key={lineIdx}
-                            className="bg-blue-500/10 text-blue-500 select-none text-[11px] font-semibold"
-                          >
-                            <td colSpan={3} className="px-4 py-1">
+                          <tr key={lIdx} className="bg-primary/5 text-primary/80 font-medium">
+                            <td colSpan={3} className="py-1 px-4 text-[11px]">
                               {line.content}
                             </td>
                           </tr>
                         );
                       }
 
-                      const isAddition = line.type === 'addition';
-                      const isDeletion = line.type === 'deletion';
-
                       return (
                         <tr
-                          key={lineIdx}
+                          key={lIdx}
                           className={cn(
-                            'hover:bg-muted/40 transition-colors',
-                            isAddition && 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-l-2 border-emerald-500',
-                            isDeletion && 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-l-2 border-rose-500'
+                            'hover:bg-muted/30 transition-colors',
+                            line.type === 'addition' && 'bg-emerald-500/10 text-emerald-950 dark:text-emerald-200',
+                            line.type === 'deletion' && 'bg-rose-500/10 text-rose-950 dark:text-rose-200'
                           )}
                         >
-                          {/* Old line number */}
-                          <td className="w-10 px-2 py-0.5 text-right select-none text-muted-foreground/60 text-[11px] border-r border-border/30">
+                          <td className="w-12 text-right pr-2 select-none text-[10px] text-muted-foreground/60 border-r border-border/30">
                             {line.oldLineNumber ?? ''}
                           </td>
-                          {/* New line number */}
-                          <td className="w-10 px-2 py-0.5 text-right select-none text-muted-foreground/60 text-[11px] border-r border-border/30">
+                          <td className="w-12 text-right pr-2 select-none text-[10px] text-muted-foreground/60 border-r border-border/30">
                             {line.newLineNumber ?? ''}
                           </td>
-                          {/* Prefix sign */}
-                          <td className="px-3 py-0.5 whitespace-pre font-mono">
-                            <span className="inline-block w-4 select-none opacity-70">
-                              {isAddition ? '+' : isDeletion ? '-' : ' '}
+                          <td className="px-3 whitespace-pre overflow-x-visible">
+                            <span
+                              className={cn(
+                                'inline-block w-4 select-none',
+                                line.type === 'addition' && 'text-emerald-600 dark:text-emerald-400 font-bold',
+                                line.type === 'deletion' && 'text-rose-600 dark:text-rose-400 font-bold',
+                                line.type === 'context' && 'text-transparent'
+                              )}
+                            >
+                              {line.type === 'addition' ? '+' : line.type === 'deletion' ? '-' : ' '}
                             </span>
                             {line.content}
                           </td>
@@ -300,10 +294,10 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
                   </tbody>
                 </table>
               </div>
-            </div>
+            </>
           ) : (
-            <div className="flex-1 flex items-center justify-center text-muted-foreground text-xs">
-              No file selected
+            <div className="flex items-center justify-center h-full text-xs text-muted-foreground">
+              Select a file to inspect differences
             </div>
           )}
         </div>
