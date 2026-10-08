@@ -107,4 +107,57 @@ describe('GitHub enhancements in TaskCard and TaskInspectorModal', () => {
     const updatedTask = useTaskStore.getState().tasks[completedTask.id];
     expect(updatedTask.pull_request_url).toBe('https://github.com/my-org/my-repo/pull/777');
   });
+
+  it('renders clean PR Merged state and suppresses review approve/reject buttons when task is done and PR is merged', async () => {
+    const mergedTask: TaskDTO = {
+      id: 'task-merged-1',
+      project_id: 'proj-1',
+      title: 'Merged Autonomous Feature',
+      prompt: 'Implement cool feature',
+      assignee_id: 'agent-1',
+      assignee_type: 'agent',
+      status: 'done',
+      priority: 50,
+      skills: [],
+      mcp_servers: [],
+      external_id: '102',
+      external_url: 'https://github.com/my-org/my-repo/issues/102',
+      pull_request_url: 'https://github.com/my-org/my-repo/pull/1',
+      pr_url: 'https://github.com/my-org/my-repo/pull/1',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    useTaskStore.setState({
+      tasks: { [mergedTask.id]: mergedTask },
+      taskIds: [mergedTask.id],
+      selectedTaskId: mergedTask.id,
+    });
+
+    vi.spyOn(taskApi, 'getTaskDiff').mockResolvedValue('diff --git a/README.md b/README.md\n+hello');
+
+    render(<TaskInspectorModal />);
+
+    // Header has issue link and status, but not duplicate green PR link
+    expect(screen.getByTestId('inspector-gh-issue-link')).toBeInTheDocument();
+    expect(screen.queryByTestId('inspector-pr-link')).not.toBeInTheDocument();
+
+    // Workflow bar shows PR Merged
+    const prMergedBtn = screen.getByTestId('view-pr-btn');
+    expect(prMergedBtn).toBeInTheDocument();
+    expect(prMergedBtn).toHaveTextContent(/PR Merged/i);
+
+    // Switch to Git Diff Review tab
+    const diffTab = screen.getByRole('tab', { name: /git diff review/i });
+    fireEvent.click(diffTab);
+
+    // Approve & Create PR / Reject buttons must NOT be present
+    expect(screen.queryByRole('button', { name: /approve/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /reject/i })).not.toBeInTheDocument();
+
+    // In diff review, PR Merged badge is displayed
+    await waitFor(() => {
+      expect(screen.getAllByText(/PR Merged/i).length).toBeGreaterThanOrEqual(1);
+    });
+  });
 });

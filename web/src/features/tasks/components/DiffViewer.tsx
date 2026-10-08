@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { FileCode2, GitPullRequest, RotateCcw, FileText } from 'lucide-react';
+import { FileCode2, GitPullRequest, RotateCcw, FileText, GitMerge, ExternalLink } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export interface DiffViewerProps {
@@ -9,6 +9,8 @@ export interface DiffViewerProps {
   loading?: boolean;
   onApprove?: () => void;
   onReject?: () => void;
+  prUrl?: string | null;
+  isMerged?: boolean;
 }
 
 interface DiffLine {
@@ -118,6 +120,8 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
   loading = false,
   onApprove,
   onReject,
+  prUrl,
+  isMerged = false,
 }) => {
   const parsedFiles = useMemo(() => parseUnifiedDiff(diff), [diff]);
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
@@ -154,45 +158,75 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
     );
   }
 
+  const prRef = prUrl ? prUrl.split('/').slice(-2).join('/') || 'Link' : null;
+
   return (
     <div className="flex flex-col h-full w-full rounded-lg border border-border bg-card overflow-hidden">
       {/* Top Review Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 p-3 bg-muted/40 border-b border-border">
-        <div className="flex items-center gap-3">
-          <FileCode2 className="size-4 text-primary" />
-          <span className="font-semibold text-xs tracking-tight">Code Review &amp; Pull Request Diff</span>
-          <div className="flex items-center gap-1.5 text-xs font-mono">
+      <div className="flex items-center justify-between gap-3 p-3 bg-muted/40 border-b border-border">
+        <div className="flex items-center gap-3 min-w-0">
+          <FileCode2 className="size-4 text-primary shrink-0" />
+          <span className="font-semibold text-xs tracking-tight truncate">Code Review &amp; Pull Request Diff</span>
+          <div className="flex items-center gap-1.5 text-xs font-mono shrink-0">
             <span className="text-emerald-600 dark:text-emerald-400 font-medium">+{totalAdditions}</span>
             <span className="text-rose-600 dark:text-rose-400 font-medium">-{totalDeletions}</span>
           </div>
-          <Badge variant="outline" className="text-[11px] font-mono">
+          <Badge variant="outline" className="text-[11px] font-mono shrink-0">
             {parsedFiles.length} file{parsedFiles.length === 1 ? '' : 's'}
           </Badge>
         </div>
 
-        <div className="flex items-center gap-2">
-          {onReject && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={onReject}
-              className="text-xs text-rose-600 dark:text-rose-400 hover:text-rose-500 hover:bg-rose-500/10 border-rose-500/20"
+        <div className="flex items-center gap-2 shrink-0">
+          {isMerged && prUrl ? (
+            <a
+              href={prUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 h-7 px-2.5 text-xs font-mono rounded-md bg-purple-500/15 text-purple-600 dark:text-purple-400 border border-purple-500/30 hover:bg-purple-500/25 transition-colors font-medium"
+              title="Pull Request merged into base branch"
             >
-              <RotateCcw className="size-3.5 mr-1" />
-              Reject / Re-prompt
-            </Button>
-          )}
+              <GitMerge className="size-3" />
+              <span>PR Merged ({prRef})</span>
+              <ExternalLink className="size-2.5" />
+            </a>
+          ) : prUrl ? (
+            <a
+              href={prUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 h-7 px-2.5 text-xs font-mono rounded-md bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 transition-colors font-medium"
+              title="View active pull request on GitHub"
+            >
+              <GitPullRequest className="size-3" />
+              <span>PR Active ({prRef})</span>
+              <ExternalLink className="size-2.5" />
+            </a>
+          ) : (
+            <>
+              {onReject && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={onReject}
+                  className="h-7 text-xs text-rose-600 dark:text-rose-400 hover:text-rose-500 hover:bg-rose-500/10 border-rose-500/20"
+                >
+                  <RotateCcw className="size-3.5 mr-1" />
+                  Reject / Re-prompt
+                </Button>
+              )}
 
-          {onApprove && (
-            <Button
-              size="sm"
-              variant="default"
-              onClick={onApprove}
-              className="text-xs bg-emerald-600 hover:bg-emerald-500 text-white"
-            >
-              <GitPullRequest className="size-3.5 mr-1" />
-              Approve &amp; Create PR
-            </Button>
+              {onApprove && (
+                <Button
+                  size="sm"
+                  variant="default"
+                  onClick={onApprove}
+                  className="h-7 text-xs bg-emerald-600 hover:bg-emerald-500 text-white"
+                >
+                  <GitPullRequest className="size-3.5 mr-1" />
+                  Approve &amp; Create PR
+                </Button>
+              )}
+            </>
           )}
         </div>
       </div>

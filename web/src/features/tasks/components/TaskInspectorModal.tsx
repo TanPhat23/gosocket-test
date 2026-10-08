@@ -248,22 +248,6 @@ export const TaskInspectorModal: React.FC = () => {
                 </Badge>
               ) : null}
 
-              {/* Pull Request Link */}
-              {prLink && (
-                <a
-                  href={prLink}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 text-xs font-mono text-emerald-600 dark:text-emerald-400 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 rounded px-2 py-0.5 font-medium transition-colors"
-                  title="View Pull Request"
-                  data-testid="inspector-pr-link"
-                >
-                  <GitPullRequest className="size-3" />
-                  <span>Pull Request</span>
-                  <ExternalLink className="size-2.5" />
-                </a>
-              )}
-
               <Badge variant="outline" className="font-mono text-xs capitalize">
                 {task.status}
               </Badge>
@@ -620,10 +604,16 @@ export const TaskInspectorModal: React.FC = () => {
               <DiffViewer
                 diff={taskDiff}
                 loading={loadingDiff}
-                onApprove={handleCreatePR}
-                onReject={() => {
-                  alert(`Rejected changes for task ${task.id}. Prompting agent for fixes.`);
-                }}
+                prUrl={prLink}
+                isMerged={task.status === 'done'}
+                onApprove={task.status === 'review' && !prLink ? handleCreatePR : undefined}
+                onReject={
+                  task.status === 'review' && !prLink
+                    ? () => {
+                        alert(`Rejected changes for task ${task.id}. Prompting agent for fixes.`);
+                      }
+                    : undefined
+                }
               />
             </div>
           </TabsContent>
