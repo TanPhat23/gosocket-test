@@ -3,7 +3,9 @@ package runner_test
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -65,6 +67,14 @@ func TestOpenCodeClient_AuthenticationAndSecretHygiene(t *testing.T) {
 			return
 		}
 		if r.URL.Path == "/api/session/ses_valid/prompt" && r.Method == http.MethodPost {
+			body, _ := io.ReadAll(r.Body)
+			var parsed map[string]interface{}
+			_ = json.Unmarshal(body, &parsed)
+			if parsed["text"] != "fix tests" {
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte(`{"_tag":"InvalidRequestError","message":"Missing key\n  at [\"text\"]"}`))
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(`{"status":"ok"}`))

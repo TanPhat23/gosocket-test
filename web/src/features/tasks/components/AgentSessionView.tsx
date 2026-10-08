@@ -193,6 +193,18 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskId]);
 
+  // Adaptive auto-refresh when session is in active running state
+  useEffect(() => {
+    if (!session || session.status !== 'running') return;
+
+    const interval = setInterval(() => {
+      fetchSession(false);
+    }, 2500);
+
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.status, taskId]);
+
   const handleCopySessionId = async (idToCopy: string) => {
     try {
       await navigator.clipboard.writeText(idToCopy);

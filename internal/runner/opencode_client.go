@@ -301,10 +301,7 @@ func (c *openCodeClient) PromptSession(ctx context.Context, sessionID, prompt st
 	}
 
 	payload := map[string]interface{}{
-		"parts": []map[string]string{
-			{"type": "text", "text": prompt},
-		},
-		"prompt": prompt,
+		"text": prompt,
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -324,6 +321,11 @@ func (c *openCodeClient) PromptSession(ctx context.Context, sessionID, prompt st
 		return common.ErrServiceUnavailable
 	}
 	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		errMsg := strings.TrimSpace(string(body))
+		if errMsg != "" {
+			return fmt.Errorf("opencode server returned status %d: %s", resp.StatusCode, errMsg)
+		}
 		return fmt.Errorf("opencode server returned status %d", resp.StatusCode)
 	}
 
