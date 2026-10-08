@@ -68,7 +68,7 @@ func TestOpenCodeClient_AuthenticationAndSecretHygiene(t *testing.T) {
 		}
 		if r.URL.Path == "/api/session/ses_valid/prompt" && r.Method == http.MethodPost {
 			body, _ := io.ReadAll(r.Body)
-			var parsed map[string]interface{}
+			var parsed map[string]any
 			_ = json.Unmarshal(body, &parsed)
 			if parsed["text"] != "fix tests" {
 				w.WriteHeader(http.StatusBadRequest)

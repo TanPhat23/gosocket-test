@@ -298,7 +298,9 @@ func (c *openCodeClient) GetSessionMessages(ctx context.Context, sessionID strin
 		Data []struct {
 			ID    string `json:"id"`
 			Type  string `json:"type"`
+			Role  string `json:"role"`
 			Agent string `json:"agent"`
+			Text  string `json:"text"`
 			Time  struct {
 				Created int64 `json:"created"`
 			} `json:"time"`
@@ -314,14 +316,31 @@ func (c *openCodeClient) GetSessionMessages(ctx context.Context, sessionID strin
 				t := time.UnixMilli(m.Time.Created)
 				createdAt = &t
 			}
-			var contentObj interface{}
+			var contentObj any
 			if len(m.Content) > 0 {
 				_ = json.Unmarshal(m.Content, &contentObj)
+			}
+			textVal := m.Text
+			if strings.HasPrefix(textVal, "\"") && strings.HasSuffix(textVal, "\"") && len(textVal) >= 2 {
+				var unquoted string
+				if err := json.Unmarshal([]byte(textVal), &unquoted); err == nil {
+					textVal = unquoted
+				}
+			}
+			roleVal := m.Role
+			if roleVal == "" {
+				if m.Type == "user" {
+					roleVal = "user"
+				} else if m.Type == "assistant" {
+					roleVal = "assistant"
+				}
 			}
 			messages[i] = OpenCodeMessageDTO{
 				ID:        m.ID,
 				Type:      m.Type,
+				Role:      roleVal,
 				Agent:     m.Agent,
+				Text:      textVal,
 				Content:   contentObj,
 				CreatedAt: createdAt,
 			}
@@ -342,7 +361,7 @@ func (c *openCodeClient) PromptSession(ctx context.Context, sessionID, prompt st
 		return err
 	}
 
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"text": prompt,
 	}
 	payloadBytes, err := json.Marshal(payload)

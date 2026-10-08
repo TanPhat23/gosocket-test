@@ -200,7 +200,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
     if (!isRunning) return;
 
     let pollCount = 0;
-    const maxPolls = 40; // 40 * 1.5s = 60s max
+    const maxPolls = 60; // 60 * 800ms = 48s max
     const interval = setInterval(async () => {
       pollCount++;
       await fetchSession(false);
@@ -213,7 +213,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
       if (pollCount >= maxPolls) {
         setIsSteeringActive(false);
       }
-    }, 1500);
+    }, 800);
 
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -234,12 +234,34 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
     const trimmed = steerPrompt.trim();
     if (!trimmed || isSubmittingPrompt) return;
 
+    const userPromptText = trimmed;
     setIsSubmittingPrompt(true);
     setSteerError(null);
+    setSteerPrompt('');
+    setIsSteeringActive(true);
+
+    // Optimistically inject user prompt so it displays immediately
+    const optimisticMsg: SessionMessage = {
+      id: `opt-user-${Date.now()}`,
+      type: 'user',
+      role: 'user',
+      text: userPromptText,
+      created_at: new Date().toISOString(),
+    };
+    setSession((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        messages: [...(prev.messages || []), optimisticMsg],
+      };
+    });
+
+    setTimeout(() => {
+      transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, 50);
+
     try {
-      await taskApi.promptTaskSession(taskId, trimmed);
-      setSteerPrompt('');
-      setIsSteeringActive(true);
+      await taskApi.promptTaskSession(taskId, userPromptText);
       // Immediately refresh transcript
       await fetchSession(false);
       setTimeout(() => {
@@ -248,6 +270,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
     } catch (err: unknown) {
       const apiErr = err as { message?: string };
       setSteerError(apiErr?.message || 'Failed to deliver steer prompt.');
+      setIsSteeringActive(false);
     } finally {
       setIsSubmittingPrompt(false);
     }
@@ -525,6 +548,24 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
               }
 
               if (isUser) {
+                // Ensure text is extracted even if in msg.text, msg.content, or JSON formatted
+                let rawUserText = textContent || (typeof msg.text === 'string' ? msg.text : '') || (typeof msg.content === 'string' ? msg.content : '');
+                if (!rawUserText && typeof msg.content === 'object' && msg.content !== null) {
+                  const cObj = msg.content as Record<string, unknown>;
+                  if (typeof cObj.text === 'string') rawUserText = cObj.text;
+                }
+                let cleanUserText = rawUserText.trim();
+                if (cleanUserText.startsWith('"') && cleanUserText.endsWith('"') && cleanUserText.length >= 2) {
+                  try {
+                    cleanUserText = JSON.parse(cleanUserText);
+                  } catch {
+                    cleanUserText = cleanUserText.slice(1, -1);
+                  }
+                }
+                if (!cleanUserText) {
+                  cleanUserText = '(User Prompt)';
+                }
+
                 return (
                   <div
                     key={msg.id || `user-${msgIdx}`}
@@ -538,7 +579,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                         </span>
                         {timeString && <span className="font-mono">{timeString}</span>}
                       </div>
-                      <p className="whitespace-pre-wrap leading-relaxed font-sans">{textContent}</p>
+                      <p className="whitespace-pre-wrap leading-relaxed font-sans">{cleanUserText}</p>
                     </div>
                   </div>
                 );
@@ -690,6 +731,29 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                 </div>
               );
             })}
+            {isSteeringActive && (
+              <div
+                className="flex justify-start animate-fade-in"
+                data-testid="steering-live-indicator"
+              >
+                <div className="max-w-[90%] w-full rounded-lg p-3 bg-muted/40 border border-primary/30 text-xs space-y-2 shadow-sm">
+                  <div className="flex items-center justify-between text-[11px] font-mono text-primary">
+                    <span className="flex items-center gap-1.5 font-semibold">
+                      <Bot className="size-3.5 animate-pulse" /> Agent Streaming &amp; Reasoning...
+                    </span>
+                    <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                      <RefreshCw className="size-2.5 animate-spin text-primary" /> Live
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <span className="size-1.5 rounded-full bg-primary animate-ping" />
+                    <span className="text-[11px] font-mono">
+                      Generating tool calls and response...
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
             <div ref={transcriptEndRef} />
           </div>
         )}

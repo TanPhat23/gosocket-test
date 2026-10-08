@@ -104,8 +104,10 @@ type TaskSessionPromptRequest struct {
 type OpenCodeMessageDTO struct {
 	ID        string      `json:"id"`
 	Type      string      `json:"type,omitempty"`
+	Role      string      `json:"role,omitempty"`
 	Agent     string      `json:"agent,omitempty"`
-	Content   interface{} `json:"content,omitempty"`
+	Text      string      `json:"text,omitempty"`
+	Content   any `json:"content,omitempty"`
 	CreatedAt *time.Time  `json:"created_at,omitempty"`
 }
 
