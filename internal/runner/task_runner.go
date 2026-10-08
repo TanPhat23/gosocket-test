@@ -896,7 +896,7 @@ func (r *AgentTaskRunner) streamPipe(ctx context.Context, taskID, attemptID stri
 
 func (r *AgentTaskRunner) broadcastLog(ctx context.Context, taskID, attemptID, content string) {
 	if r.hub != nil {
-		r.hub.BroadcastToTask(taskID, []byte(content))
+		_ = r.hub.BroadcastTaskLog(taskID, content)
 	}
 	if r.logRepo != nil {
 		_ = r.logRepo.Append(ctx, &models.TaskLog{

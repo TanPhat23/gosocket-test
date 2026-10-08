@@ -175,6 +175,7 @@ func main() {
 		hub,
 		service.WithTaskGitHubIntegration(integrationRepo, credRepo, cipher, ghProvider),
 		service.WithTaskSessionDependencies(openCodeClient, projectRepo, teamRepo),
+		service.WithTaskLogRepository(logRepo),
 	)
 	logService := service.NewLogService(logRepo, hub)
 	integrationService := service.NewIntegrationService(integrationRepo, projectRepo, credRepo)

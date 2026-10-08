@@ -302,7 +302,8 @@ func (c *openCodeClient) GetSessionMessages(ctx context.Context, sessionID strin
 			Agent string `json:"agent"`
 			Text  string `json:"text"`
 			Time  struct {
-				Created int64 `json:"created"`
+				Created   int64 `json:"created"`
+				Completed int64 `json:"completed"`
 			} `json:"time"`
 			Content json.RawMessage `json:"content"`
 		} `json:"data"`
@@ -315,6 +316,11 @@ func (c *openCodeClient) GetSessionMessages(ctx context.Context, sessionID strin
 			if m.Time.Created > 0 {
 				t := time.UnixMilli(m.Time.Created)
 				createdAt = &t
+			}
+			var completedAt *time.Time
+			if m.Time.Completed > 0 {
+				t := time.UnixMilli(m.Time.Completed)
+				completedAt = &t
 			}
 			var contentObj any
 			if len(m.Content) > 0 {
@@ -336,13 +342,14 @@ func (c *openCodeClient) GetSessionMessages(ctx context.Context, sessionID strin
 				}
 			}
 			messages[i] = OpenCodeMessageDTO{
-				ID:        m.ID,
-				Type:      m.Type,
-				Role:      roleVal,
-				Agent:     m.Agent,
-				Text:      textVal,
-				Content:   contentObj,
-				CreatedAt: createdAt,
+				ID:          m.ID,
+				Type:        m.Type,
+				Role:        roleVal,
+				Agent:       m.Agent,
+				Text:        textVal,
+				Content:     contentObj,
+				CreatedAt:   createdAt,
+				CompletedAt: completedAt,
 			}
 		}
 		return messages, nil

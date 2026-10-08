@@ -190,6 +190,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ taskId }) => {
           // Fallback if raw text or direct ANSI chunk
           term.write(rawData);
         }
+        term.scrollToBottom();
       };
 
       socket.onerror = () => {

@@ -55,10 +55,18 @@ type taskService struct {
 	projectRepo     repository.ProjectRepository
 	teamRepo        repository.TeamRepository
 	openCodeClient  runner.OpenCodeClient
+	logRepo         repository.LogRepository
 }
 
 // TaskServiceOption allows configuring optional dependencies for TaskService.
 type TaskServiceOption func(*taskService)
+
+// WithTaskLogRepository configures the log repository for task log persistence.
+func WithTaskLogRepository(logRepo repository.LogRepository) TaskServiceOption {
+	return func(s *taskService) {
+		s.logRepo = logRepo
+	}
+}
 
 // WithTaskGitHubIntegration configures GitHub PR dependencies.
 func WithTaskGitHubIntegration(
@@ -460,6 +468,20 @@ func (s *taskService) GetTaskSession(ctx context.Context, taskID, userID string)
 	return res, nil
 }
 
+// broadcastTaskLog broadcasts a log chunk to subscribers and saves it to task_logs repository if available.
+func (s *taskService) broadcastTaskLog(ctx context.Context, taskID, chunk string) {
+	if s.hub != nil {
+		_ = s.hub.BroadcastTaskLog(taskID, chunk)
+	}
+	if s.logRepo != nil {
+		_ = s.logRepo.Append(ctx, &models.TaskLog{
+			TaskID:    taskID,
+			LogChunk:  chunk,
+			Timestamp: time.Now().UTC(),
+		})
+	}
+}
+
 // PromptTaskSession sends a targeted prompt into the task's existing OpenCode session.
 // AC-SEC-02: Requires RoleMember or higher.
 func (s *taskService) PromptTaskSession(ctx context.Context, taskID, userID string, req *dto.TaskSessionPromptRequest) error {
@@ -490,7 +512,10 @@ func (s *taskService) PromptTaskSession(ctx context.Context, taskID, userID stri
 		_ = s.UpdateStatus(ctx, task.ID, models.TaskStatusInProgress)
 	}
 
-	// Start background watcher to capture git snapshot, commit, push, and return to review when turn finishes
+	// Announce prompt and engagement in terminal log stream
+	s.broadcastTaskLog(ctx, task.ID, fmt.Sprintf("\r\n\x1b[36m➜ [User Steer Prompt]\x1b[0m %s\r\n\x1b[90mEngaging OpenCode agent session...\x1b[0m\r\n", req.Prompt))
+
+	// Start background watcher to stream tools and commits when turn finishes
 	if task.WorktreePath != nil && *task.WorktreePath != "" {
 		go s.watchSteeringTurn(task.ID, *task.SessionID, *task.WorktreePath, promptTime)
 	}
@@ -498,49 +523,145 @@ func (s *taskService) PromptTaskSession(ctx context.Context, taskID, userID stri
 	return nil
 }
 
-// watchSteeringTurn monitors an OpenCode session after steering, capturing and committing changes when the turn completes.
+// watchSteeringTurn monitors an OpenCode session after steering, streaming execution progress and capturing commits when the turn completes.
 func (s *taskService) watchSteeringTurn(taskID, sessionID, worktreePath string, promptTime time.Time) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
-
-	// Initial delay to allow OpenCode to begin processing
-	time.Sleep(2 * time.Second)
 
 	ticker := time.NewTicker(1500 * time.Millisecond)
 	defer ticker.Stop()
+
+	seenParts := make(map[string]bool)
+	minTurnDuration := 3 * time.Second
+	startTime := time.Now()
 
 	for {
 		select {
 		case <-ctx.Done():
 			log.Printf("warning: steering completion watcher timed out for task %s", taskID)
+			s.broadcastTaskLog(context.Background(), taskID, "\r\n\x1b[31m✖ Steering turn timed out.\x1b[0m\r\n")
 			return
 		case <-ticker.C:
-			// Check if session status is completed or idle
-			sessDTO, err := s.openCodeClient.GetSession(ctx, sessionID)
-			if err != nil {
-				continue
-			}
+			// Fetch current messages to stream progress
+			msgs, msgErr := s.openCodeClient.GetSessionMessages(ctx, sessionID)
+			hasActiveOrRecentTurn := false
+			latestTurnCompleted := false
 
-			// Check if session status has completed its active turn
-			isFinished := sessDTO.Status == "succeeded" || sessDTO.Status == "idle" || sessDTO.Status == "failed"
+			if msgErr == nil && len(msgs) > 0 {
+				for i := 0; i < len(msgs); i++ {
+					msg := msgs[i]
+					if msg.CreatedAt == nil || msg.CreatedAt.Before(promptTime.Add(-2*time.Second)) {
+						continue
+					}
 
-			// Double check if messages contain a recent completed turn
-			if !isFinished {
-				msgs, msgErr := s.openCodeClient.GetSessionMessages(ctx, sessionID)
-				if msgErr == nil && len(msgs) > 0 {
-					for i := len(msgs) - 1; i >= 0; i-- {
-						msg := msgs[i]
-						if msg.CreatedAt != nil && msg.CreatedAt.After(promptTime.Add(-2*time.Second)) {
-							if msg.Type == "idle" || (msg.Type == "assistant" && msg.Text != "") {
-								isFinished = true
-								break
+					if msg.Role == "assistant" || msg.Type == "assistant" {
+						hasActiveOrRecentTurn = true
+						if msg.CompletedAt != nil {
+							latestTurnCompleted = true
+						} else {
+							latestTurnCompleted = false
+						}
+
+						if contentList, ok := msg.Content.([]any); ok {
+							for partIdx, item := range contentList {
+								itemMap, ok := item.(map[string]any)
+								if !ok {
+									continue
+								}
+								partType, _ := itemMap["type"].(string)
+								partID := fmt.Sprintf("%s_%d", msg.ID, partIdx)
+
+								if partType == "tool" {
+									toolName, _ := itemMap["name"].(string)
+									toolCallID, _ := itemMap["id"].(string)
+									if toolCallID != "" {
+										partID = toolCallID
+									}
+
+									state, _ := itemMap["state"].(map[string]any)
+									status := ""
+									if state != nil {
+										status, _ = state["status"].(string)
+									}
+
+									startKey := partID + "_start"
+									if !seenParts[startKey] {
+										seenParts[startKey] = true
+										cmdSummary := ""
+										if state != nil {
+											if input, ok := state["input"].(map[string]any); ok {
+												if cmd, ok := input["command"].(string); ok {
+													cmdSummary = cmd
+												} else if p, ok := input["path"].(string); ok {
+													cmdSummary = p
+												}
+											}
+										}
+										if cmdSummary != "" {
+											if len(cmdSummary) > 80 {
+												cmdSummary = cmdSummary[:77] + "..."
+											}
+											s.broadcastTaskLog(context.Background(), taskID, fmt.Sprintf("\x1b[33m→ [%s]\x1b[0m \x1b[90m%s\x1b[0m\r\n", toolName, cmdSummary))
+										} else {
+											s.broadcastTaskLog(context.Background(), taskID, fmt.Sprintf("\x1b[33m→ [%s]\x1b[0m\r\n", toolName))
+										}
+									}
+
+									doneKey := partID + "_done"
+									if (status == "completed" || status == "failed") && !seenParts[doneKey] {
+										seenParts[doneKey] = true
+										if state != nil {
+											if contents, ok := state["content"].([]any); ok {
+												for _, c := range contents {
+													if cMap, ok := c.(map[string]any); ok {
+														if txt, ok := cMap["text"].(string); ok && txt != "" {
+															lines := strings.Split(strings.TrimSpace(txt), "\n")
+															maxLines := 4
+															if len(lines) < maxLines {
+																maxLines = len(lines)
+															}
+															for lIdx := 0; lIdx < maxLines; lIdx++ {
+																s.broadcastTaskLog(context.Background(), taskID, fmt.Sprintf("  \x1b[90m%s\x1b[0m\r\n", lines[lIdx]))
+															}
+															if len(lines) > 4 {
+																s.broadcastTaskLog(context.Background(), taskID, fmt.Sprintf("  \x1b[90m... (%d lines)\x1b[0m\r\n", len(lines)))
+															}
+														}
+													}
+												}
+											}
+										}
+										if status == "completed" {
+											s.broadcastTaskLog(context.Background(), taskID, fmt.Sprintf("\x1b[32m✔ Completed tool: %s\x1b[0m\r\n", toolName))
+										} else {
+											s.broadcastTaskLog(context.Background(), taskID, fmt.Sprintf("\x1b[31m✖ Tool failed: %s\x1b[0m\r\n", toolName))
+										}
+									}
+								} else if partType == "text" {
+									textKey := partID + "_text"
+									if !seenParts[textKey] {
+										if textVal, ok := itemMap["text"].(string); ok && textVal != "" {
+											seenParts[textKey] = true
+											agentName := msg.Agent
+											if agentName == "" {
+												agentName = "agent"
+											}
+											s.broadcastTaskLog(context.Background(), taskID, fmt.Sprintf("\r\n\x1b[36m> %s\x1b[0m\r\n%s\r\n", agentName, textVal))
+										}
+									}
+								}
 							}
 						}
 					}
 				}
 			}
 
-			if isFinished {
+			// Also check session status directly in case tool completed without message completed timestamp
+			sessDTO, err := s.openCodeClient.GetSession(ctx, sessionID)
+			sessIdle := err == nil && (sessDTO.Status == "succeeded" || sessDTO.Status == "idle")
+
+			if time.Since(startTime) > minTurnDuration && hasActiveOrRecentTurn && (latestTurnCompleted || sessIdle) {
+				s.broadcastTaskLog(context.Background(), taskID, "\r\n\x1b[32m✔ Agent response completed.\x1b[0m\r\n")
 				s.finalizeSteeringTurn(ctx, taskID, worktreePath)
 				return
 			}
@@ -555,10 +676,10 @@ func (s *taskService) finalizeSteeringTurn(ctx context.Context, taskID, worktree
 	if diffErr == nil && diffRes != nil {
 		if s.hub != nil {
 			_ = s.hub.BroadcastTaskDiff(taskID, diffRes.RawDiff)
-			if len(diffRes.Files) > 0 {
-				_ = s.hub.BroadcastTaskLog(taskID, fmt.Sprintf("\r\n\x1b[32m✔ Steered changes committed: %d files changed (+%d/-%d)\x1b[0m\r\n",
-					len(diffRes.Files), diffRes.TotalAdditions, diffRes.TotalDeletions))
-			}
+		}
+		if len(diffRes.Files) > 0 {
+			s.broadcastTaskLog(ctx, taskID, fmt.Sprintf("\r\n\x1b[32m✔ Steered changes committed: %d files changed (+%d/-%d)\x1b[0m\r\n",
+				len(diffRes.Files), diffRes.TotalAdditions, diffRes.TotalDeletions))
 		}
 	} else if diffErr != nil {
 		log.Printf("warning: failed to capture git snapshot for steered task %s: %v", taskID, diffErr)
@@ -572,9 +693,7 @@ func (s *taskService) finalizeSteeringTurn(ctx context.Context, taskID, worktree
 
 	// 3. Move task back to review
 	_ = s.UpdateStatus(ctx, taskID, models.TaskStatusReview)
-	if s.hub != nil {
-		_ = s.hub.BroadcastTaskLog(taskID, "\x1b[32m✔ Steering turn finished. Ready for review.\x1b[0m\r\n")
-	}
+	s.broadcastTaskLog(ctx, taskID, "\x1b[32m✔ Steering turn finished. Ready for review.\x1b[0m\r\n")
 }
 
 // maybePushBranchForSteering pushes the updated branch to remote git repository if GitHub integration is enabled.
@@ -619,9 +738,7 @@ func (s *taskService) maybePushBranchForSteering(ctx context.Context, task *mode
 	}
 
 	if pushErr := git.PushBranch(ctx, worktreePath, remoteURL, token, branchName); pushErr == nil {
-		if s.hub != nil {
-			_ = s.hub.BroadcastTaskLog(task.ID, fmt.Sprintf("\x1b[32m✔ Steered changes pushed to branch %s\x1b[0m\r\n", branchName))
-		}
+		s.broadcastTaskLog(ctx, task.ID, fmt.Sprintf("\x1b[32m✔ Steered changes pushed to branch %s\x1b[0m\r\n", branchName))
 	} else {
 		log.Printf("warning: failed to push steered branch for task %s: %v", task.ID, pushErr)
 	}

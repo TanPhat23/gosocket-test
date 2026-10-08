@@ -102,13 +102,14 @@ type TaskSessionPromptRequest struct {
 
 // OpenCodeMessageDTO represents an individual message returned from OpenCode session history.
 type OpenCodeMessageDTO struct {
-	ID        string      `json:"id"`
-	Type      string      `json:"type,omitempty"`
-	Role      string      `json:"role,omitempty"`
-	Agent     string      `json:"agent,omitempty"`
-	Text      string      `json:"text,omitempty"`
-	Content   any `json:"content,omitempty"`
-	CreatedAt *time.Time  `json:"created_at,omitempty"`
+	ID          string     `json:"id"`
+	Type        string     `json:"type,omitempty"`
+	Role        string     `json:"role,omitempty"`
+	Agent       string     `json:"agent,omitempty"`
+	Text        string     `json:"text,omitempty"`
+	Content     any        `json:"content,omitempty"`
+	CreatedAt   *time.Time `json:"created_at,omitempty"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
 }
 
 // SessionTokensDTO represents token usage metrics for an agent session.
