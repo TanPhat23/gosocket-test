@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os/exec"
 	"strings"
 	"time"
@@ -479,6 +480,7 @@ func (s *taskService) PromptTaskSession(ctx context.Context, taskID, userID stri
 		return errors.New("task has no associated session")
 	}
 
+	promptTime := time.Now()
 	if err := s.openCodeClient.PromptSession(ctx, *task.SessionID, req.Prompt); err != nil {
 		return err
 	}
@@ -488,7 +490,141 @@ func (s *taskService) PromptTaskSession(ctx context.Context, taskID, userID stri
 		_ = s.UpdateStatus(ctx, task.ID, models.TaskStatusInProgress)
 	}
 
+	// Start background watcher to capture git snapshot, commit, push, and return to review when turn finishes
+	if task.WorktreePath != nil && *task.WorktreePath != "" {
+		go s.watchSteeringTurn(task.ID, *task.SessionID, *task.WorktreePath, promptTime)
+	}
+
 	return nil
+}
+
+// watchSteeringTurn monitors an OpenCode session after steering, capturing and committing changes when the turn completes.
+func (s *taskService) watchSteeringTurn(taskID, sessionID, worktreePath string, promptTime time.Time) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	// Initial delay to allow OpenCode to begin processing
+	time.Sleep(2 * time.Second)
+
+	ticker := time.NewTicker(1500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("warning: steering completion watcher timed out for task %s", taskID)
+			return
+		case <-ticker.C:
+			// Check if session status is completed or idle
+			sessDTO, err := s.openCodeClient.GetSession(ctx, sessionID)
+			if err != nil {
+				continue
+			}
+
+			// Check if session status has completed its active turn
+			isFinished := sessDTO.Status == "succeeded" || sessDTO.Status == "idle" || sessDTO.Status == "failed"
+
+			// Double check if messages contain a recent completed turn
+			if !isFinished {
+				msgs, msgErr := s.openCodeClient.GetSessionMessages(ctx, sessionID)
+				if msgErr == nil && len(msgs) > 0 {
+					for i := len(msgs) - 1; i >= 0; i-- {
+						msg := msgs[i]
+						if msg.CreatedAt != nil && msg.CreatedAt.After(promptTime.Add(-2*time.Second)) {
+							if msg.Type == "idle" || (msg.Type == "assistant" && msg.Text != "") {
+								isFinished = true
+								break
+							}
+						}
+					}
+				}
+			}
+
+			if isFinished {
+				s.finalizeSteeringTurn(ctx, taskID, worktreePath)
+				return
+			}
+		}
+	}
+}
+
+// finalizeSteeringTurn creates a local commit for uncommitted changes, broadcasts diff, pushes branch, and moves task back to review.
+func (s *taskService) finalizeSteeringTurn(ctx context.Context, taskID, worktreePath string) {
+	// 1. Capture snapshot (stages changes, creates commit, computes diff)
+	diffRes, diffErr := git.CaptureSnapshot(ctx, worktreePath, "main")
+	if diffErr == nil && diffRes != nil {
+		if s.hub != nil {
+			_ = s.hub.BroadcastTaskDiff(taskID, diffRes.RawDiff)
+			if len(diffRes.Files) > 0 {
+				_ = s.hub.BroadcastTaskLog(taskID, fmt.Sprintf("\r\n\x1b[32m✔ Steered changes committed: %d files changed (+%d/-%d)\x1b[0m\r\n",
+					len(diffRes.Files), diffRes.TotalAdditions, diffRes.TotalDeletions))
+			}
+		}
+	} else if diffErr != nil {
+		log.Printf("warning: failed to capture git snapshot for steered task %s: %v", taskID, diffErr)
+	}
+
+	// 2. Push branch if PR or remote integration exists
+	task, err := s.taskRepo.GetByID(ctx, taskID)
+	if err == nil && task != nil {
+		s.maybePushBranchForSteering(ctx, task, worktreePath)
+	}
+
+	// 3. Move task back to review
+	_ = s.UpdateStatus(ctx, taskID, models.TaskStatusReview)
+	if s.hub != nil {
+		_ = s.hub.BroadcastTaskLog(taskID, "\x1b[32m✔ Steering turn finished. Ready for review.\x1b[0m\r\n")
+	}
+}
+
+// maybePushBranchForSteering pushes the updated branch to remote git repository if GitHub integration is enabled.
+func (s *taskService) maybePushBranchForSteering(ctx context.Context, task *models.Task, worktreePath string) {
+	if s.integRepo == nil || s.credRepo == nil || s.cipher == nil {
+		return
+	}
+
+	integrationsList, err := s.integRepo.ListByProjectID(ctx, task.ProjectID)
+	if err != nil || len(integrationsList) == 0 {
+		return
+	}
+
+	var ghInteg *models.ProjectIntegration
+	for i := range integrationsList {
+		if integrationsList[i].Provider == models.IntegrationGitHub && integrationsList[i].Enabled {
+			ghInteg = &integrationsList[i]
+			break
+		}
+	}
+	if ghInteg == nil {
+		return
+	}
+
+	cred, err := s.credRepo.GetByID(ctx, ghInteg.CredentialID)
+	if err != nil {
+		return
+	}
+
+	token, err := s.cipher.Decrypt(cred.EncryptedData)
+	if err != nil {
+		return
+	}
+
+	branchName := fmt.Sprintf("task/%s", task.ID)
+	if task.BranchName != nil && *task.BranchName != "" {
+		branchName = *task.BranchName
+	}
+	remoteURL := fmt.Sprintf("https://github.com/%s.git", ghInteg.ExternalID)
+	if strings.HasPrefix(ghInteg.ExternalID, "http://") || strings.HasPrefix(ghInteg.ExternalID, "https://") || strings.HasPrefix(ghInteg.ExternalID, "file://") {
+		remoteURL = ghInteg.ExternalID
+	}
+
+	if pushErr := git.PushBranch(ctx, worktreePath, remoteURL, token, branchName); pushErr == nil {
+		if s.hub != nil {
+			_ = s.hub.BroadcastTaskLog(task.ID, fmt.Sprintf("\x1b[32m✔ Steered changes pushed to branch %s\x1b[0m\r\n", branchName))
+		}
+	} else {
+		log.Printf("warning: failed to push steered branch for task %s: %v", task.ID, pushErr)
+	}
 }
 
 // CompactTaskSession triggers context compaction on the task's OpenCode session.
