@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { taskApi } from '../api/taskApi';
+import { useTaskStore } from '../store/useTaskStore';
 import type { TaskSessionResponse, SessionMessage, SessionToolCall } from '../schemas/taskSchemas';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -255,6 +256,9 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
         messages: [...(prev.messages || []), optimisticMsg],
       };
     });
+
+    // Move task to in_progress so it appears in working lane immediately
+    useTaskStore.getState().updateTaskStatus(taskId, 'in_progress');
 
     setTimeout(() => {
       transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });

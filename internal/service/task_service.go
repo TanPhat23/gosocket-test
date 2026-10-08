@@ -479,7 +479,16 @@ func (s *taskService) PromptTaskSession(ctx context.Context, taskID, userID stri
 		return errors.New("task has no associated session")
 	}
 
-	return s.openCodeClient.PromptSession(ctx, *task.SessionID, req.Prompt)
+	if err := s.openCodeClient.PromptSession(ctx, *task.SessionID, req.Prompt); err != nil {
+		return err
+	}
+
+	// Move task back to working (in_progress) when steered
+	if task.Status != models.TaskStatusInProgress {
+		_ = s.UpdateStatus(ctx, task.ID, models.TaskStatusInProgress)
+	}
+
+	return nil
 }
 
 // CompactTaskSession triggers context compaction on the task's OpenCode session.

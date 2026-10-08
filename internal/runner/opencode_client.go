@@ -399,7 +399,8 @@ func (c *openCodeClient) CompactSession(ctx context.Context, sessionID string) e
 		return err
 	}
 
-	resp, err := c.doRequest(ctx, http.MethodPost, "/api/session/"+escapedID+"/compact", nil)
+	body := bytes.NewReader([]byte("{}"))
+	resp, err := c.doRequest(ctx, http.MethodPost, "/api/session/"+escapedID+"/compact", body)
 	if err != nil {
 		return err
 	}

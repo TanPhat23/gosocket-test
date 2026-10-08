@@ -14,11 +14,12 @@ describe('KanbanBoard', () => {
     });
   });
 
-  it('renders all 4 columns: Backlog, Queued & In Progress, Review, Done', () => {
+  it('renders all 5 columns: Backlog, Queued, In Progress, Review, Done', () => {
     render(<KanbanBoard />);
 
     expect(screen.getByRole('heading', { name: /^Backlog$/i })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: /^Queued & In Progress$/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /^Queued$/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /^In Progress$/i })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /^Review$/i })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /^Done$/i })).toBeInTheDocument();
   });

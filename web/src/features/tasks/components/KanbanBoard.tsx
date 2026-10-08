@@ -3,7 +3,7 @@ import { useTaskStore } from '../store/useTaskStore';
 import { useShallow } from 'zustand/react/shallow';
 import { TaskCard } from './TaskCard';
 import { Badge } from '@/components/ui/badge';
-import { Inbox, PlayCircle, Eye, CheckCircle2 } from 'lucide-react';
+import { Inbox, Clock, PlayCircle, Eye, CheckCircle2 } from 'lucide-react';
 
 interface ColumnDef {
   id: string;
@@ -20,10 +20,16 @@ const COLUMNS: ColumnDef[] = [
     statuses: ['backlog'],
   },
   {
-    id: 'queued_in_progress',
-    title: 'Queued & In Progress',
+    id: 'queued',
+    title: 'Queued',
+    icon: Clock,
+    statuses: ['queued'],
+  },
+  {
+    id: 'in_progress',
+    title: 'In Progress',
     icon: PlayCircle,
-    statuses: ['queued', 'in_progress'],
+    statuses: ['in_progress'],
   },
   {
     id: 'review',
@@ -91,7 +97,7 @@ const KanbanLane: React.FC<KanbanLaneProps> = ({ column }) => {
 
 export const KanbanBoard: React.FC = () => {
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 w-full">
+    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-4 w-full">
       {COLUMNS.map((column) => (
         <KanbanLane key={column.id} column={column} />
       ))}
