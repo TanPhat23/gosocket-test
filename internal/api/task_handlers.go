@@ -61,9 +61,6 @@ func (h *TaskHandlers) List(c fiber.Ctx) error {
 	for i := range tasks {
 		responses[i] = dto.ToTaskResponse(&tasks[i])
 	}
-	if responses == nil {
-		responses = []dto.TaskResponse{}
-	}
 
 	return c.JSON(responses)
 }

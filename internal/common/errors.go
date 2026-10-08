@@ -9,7 +9,7 @@ import (
 var (
 	ErrForbidden          = errors.New("insufficient permissions")
 	ErrNotFound           = errors.New("resource not found")
-	ErrServiceUnavailable = errors.New("Agent execution service unavailable")
+	ErrServiceUnavailable = errors.New("agent execution service unavailable")
 )
 
 // AppError represents a typed application error carrying an HTTP status code and safe message.

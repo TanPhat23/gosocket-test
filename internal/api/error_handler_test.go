@@ -79,7 +79,7 @@ func TestCentralErrorHandler(t *testing.T) {
 			name:           "sentinel ErrServiceUnavailable 503",
 			handlerErr:     common.ErrServiceUnavailable,
 			expectedStatus: fiber.StatusServiceUnavailable,
-			expectedBody:   `{"error":"Agent execution service unavailable"}`,
+			expectedBody:   `{"error":"agent execution service unavailable"}`,
 		},
 		{
 			name:           "unknown internal error 500 masks internal detail",

@@ -123,12 +123,9 @@ func (m *WorktreeManager) RemoveWorktree(ctx context.Context, repoPath, taskID s
 	var removeStderr bytes.Buffer
 	cmdRemove.Stderr = &removeStderr
 	if err := cmdRemove.Run(); err != nil {
-		// Log or retain error, but don't fail immediately if directory can still be cleaned or if worktree was already removed
-		removeErrStr := strings.TrimSpace(removeStderr.String())
-		// If it's not a known worktree or already removed, proceed to prune & os.RemoveAll
-		if !strings.Contains(removeErrStr, "is not a working tree") && !strings.Contains(removeErrStr, "No such file or directory") {
-			// Try pruning first before returning error
-		}
+		// Log or retain error, but don't fail immediately if directory can still be cleaned or if worktree was already removed.
+		// Proceed to git worktree prune and filesystem cleanup below.
+		_ = strings.TrimSpace(removeStderr.String())
 	}
 
 	// git worktree prune

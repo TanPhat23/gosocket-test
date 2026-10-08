@@ -242,7 +242,6 @@ type mockDockerClientForRunner struct {
 	createdConfigs []*container.Config
 	waitStatusCh   chan container.WaitResponse
 	waitErrCh      chan error
-	logsReader     io.ReadCloser
 }
 
 func (m *mockDockerClientForRunner) ContainerCreate(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *ocispec.Platform, containerName string) (container.CreateResponse, error) {
@@ -713,12 +712,9 @@ func TestAgentTaskRunner_Watch_Success(t *testing.T) {
 	}()
 
 	select {
-	case err, ok := <-doneCh:
+	case err := <-doneCh:
 		if err != nil {
 			t.Errorf("expected nil error on success, got: %v", err)
-		}
-		if !ok {
-			// Channel was closed, which is also valid completion
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatalf("timed out waiting for task done channel")

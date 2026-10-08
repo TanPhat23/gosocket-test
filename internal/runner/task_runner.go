@@ -499,7 +499,7 @@ func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attemp
 		selectedModel = *task.Model
 	}
 
-	r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[36m[Agent Control Plane]\x1b[0m Starting autonomous task execution...\r\n"))
+	r.broadcastLog(ctx, task.ID, attempt.ID, "\x1b[36m[Agent Control Plane]\x1b[0m Starting autonomous task execution...\r\n")
 	r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[36m[Agent Control Plane]\x1b[0m Model: %s\r\n", selectedModel))
 	r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[36m[Agent Control Plane]\x1b[0m Worktree: %s\r\n\r\n", hostWorktreePath))
 
@@ -535,7 +535,7 @@ func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attemp
 
 		// Run pre-flight verification if a test suite is present
 		if verifyCmd == "" {
-			r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[36m[Agent Control Plane]\x1b[0m No test suite detected. Skipping pre-flight verification.\r\n"))
+			r.broadcastLog(ctx, task.ID, attempt.ID, "\x1b[36m[Agent Control Plane]\x1b[0m No test suite detected. Skipping pre-flight verification.\r\n")
 			break
 		}
 
@@ -581,7 +581,7 @@ func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attemp
 		log.Printf("warning: failed to capture snapshot diff: %v", diffErr)
 	}
 
-	r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[32m✔ Autonomous task run finished. Ready for review.\x1b[0m\r\n"))
+	r.broadcastLog(ctx, task.ID, attempt.ID, "\x1b[32m✔ Autonomous task run finished. Ready for review.\x1b[0m\r\n")
 
 	// Auto-PR Creation
 	r.maybeAutoCreatePR(ctx, task, attempt, localWorktreePath, diffRes)
@@ -651,7 +651,7 @@ func (r *AgentTaskRunner) maybeAutoCreatePR(
 		r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[31m[Agent Control Plane] Git push failed: %v\x1b[0m\r\n", err))
 		return
 	}
-	r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[32m✔ Branch pushed successfully to remote.\x1b[0m\r\n"))
+	r.broadcastLog(ctx, task.ID, attempt.ID, "\x1b[32m✔ Branch pushed successfully to remote.\x1b[0m\r\n")
 
 	// Construct PR title & body
 	prTitle := task.Title
@@ -676,7 +676,7 @@ func (r *AgentTaskRunner) maybeAutoCreatePR(
 		prBody.WriteString(fmt.Sprintf("Resolves #%s\n", *task.ExternalID))
 	}
 
-	r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[36m[Agent Control Plane]\x1b[0m Creating GitHub Pull Request...\r\n"))
+	r.broadcastLog(ctx, task.ID, attempt.ID, "\x1b[36m[Agent Control Plane]\x1b[0m Creating GitHub Pull Request...\r\n")
 	prURL, err := r.ghProvider.CreatePullRequest(ctx, ghInteg, token, branchName, prTitle, prBody.String())
 	if err != nil {
 		r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[31m[Agent Control Plane] Failed to create Pull Request: %v\x1b[0m\r\n", err))

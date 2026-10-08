@@ -3,7 +3,6 @@ package common_test
 import (
 	"testing"
 	"time"
-	"uuid"
 
 	"agent-task-manager/internal/common"
 )
@@ -35,7 +34,7 @@ func TestUUIDv7GenerationAndValidation(t *testing.T) {
 	}
 
 	// Verify standard library uuid type
-	var u uuid.UUID = parsed
+	u := parsed
 	if u.String() != id1 {
 		t.Errorf("expected standard library uuid compatibility")
 	}
