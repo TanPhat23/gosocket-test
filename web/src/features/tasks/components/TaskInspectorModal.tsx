@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { useSelectedTask, useTaskStore } from '../store/useTaskStore';
 import {
   Dialog,
@@ -95,6 +95,7 @@ export const TaskInspectorModal: React.FC = () => {
   const [taskDiff, setTaskDiff] = useState<string>('');
   const [loadingDiff, setLoadingDiff] = useState(false);
   const [isSyncingPR, setIsSyncingPR] = useState(false);
+  const syncedTasksRef = useRef<Set<string>>(new Set());
 
   const handleSyncPR = React.useCallback(async () => {
     if (!task) return;
@@ -116,13 +117,19 @@ export const TaskInspectorModal: React.FC = () => {
     } finally {
       setIsSyncingPR(false);
     }
-  }, [task, updateTask]);
+  }, [task?.id, updateTask]);
 
   React.useEffect(() => {
-    if (task && task.status === 'review' && (task.pull_request_url || task.pr_url)) {
+    if (
+      task &&
+      task.status === 'review' &&
+      (task.pull_request_url || task.pr_url) &&
+      !syncedTasksRef.current.has(task.id)
+    ) {
+      syncedTasksRef.current.add(task.id);
       handleSyncPR();
     }
-  }, [task?.id, task?.status, handleSyncPR]);
+  }, [task?.id, task?.status, task?.pull_request_url, task?.pr_url, handleSyncPR]);
 
   React.useEffect(() => {
     if (!task) {

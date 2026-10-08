@@ -29,6 +29,118 @@ interface AgentSessionViewProps {
   defaultSessionId?: string | null;
 }
 
+export interface ParsedMessageData {
+  text: string;
+  thoughts?: string;
+  toolCalls: SessionToolCall[];
+}
+
+export function parseSessionMessageContent(msg: SessionMessage): ParsedMessageData {
+  const toolCalls: SessionToolCall[] = [...(msg.tool_calls || [])];
+  const textParts: string[] = [];
+  const thoughtParts: string[] = [];
+
+  let raw: unknown = msg.content;
+  if (!raw && msg.text) {
+    raw = msg.text;
+  }
+
+  // If raw is a string, check if it's JSON encoded
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (
+      (trimmed.startsWith('[') && trimmed.endsWith(']')) ||
+      (trimmed.startsWith('{') && trimmed.endsWith('}'))
+    ) {
+      try {
+        raw = JSON.parse(trimmed);
+      } catch {
+        // Not valid JSON, keep as raw string
+      }
+    }
+  }
+
+  const processItem = (item: unknown) => {
+    if (typeof item === 'string') {
+      const trimmed = item.trim();
+      if (trimmed) textParts.push(trimmed);
+      return;
+    }
+    if (typeof item === 'object' && item !== null) {
+      const part = item as Record<string, unknown>;
+
+      // Check text content
+      if (typeof part.text === 'string' && part.text.trim()) {
+        textParts.push(part.text.trim());
+      } else if (typeof part.content === 'string' && part.content.trim()) {
+        textParts.push(part.content.trim());
+      }
+
+      // Check thought / reasoning
+      if (typeof part.thought === 'string' && part.thought.trim()) {
+        thoughtParts.push(part.thought.trim());
+      } else if (typeof part.reasoning === 'string' && part.reasoning.trim()) {
+        thoughtParts.push(part.reasoning.trim());
+      }
+
+      // Check embedded tool calls
+      const isTool =
+        part.type === 'tool_use' ||
+        part.type === 'tool_call' ||
+        part.type === 'tool' ||
+        typeof part.call === 'string';
+
+      if (isTool) {
+        const name = String(part.name || part.call || part.tool || 'tool');
+        const input = (part.input || part.arguments || part.params) as
+          | string
+          | Record<string, unknown>
+          | undefined;
+        const output = (part.output || part.result) as
+          | string
+          | Record<string, unknown>
+          | undefined;
+
+        toolCalls.push({
+          name,
+          input,
+          output,
+          status: typeof part.status === 'string' ? part.status : 'completed',
+          exit_code: typeof part.exit_code === 'number' ? part.exit_code : 0,
+        });
+      }
+    }
+  };
+
+  if (typeof raw === 'string') {
+    textParts.push(raw);
+  } else if (Array.isArray(raw)) {
+    for (const item of raw) {
+      processItem(item);
+    }
+  } else if (typeof raw === 'object' && raw !== null) {
+    const obj = raw as Record<string, unknown>;
+    if (Array.isArray(obj.parts)) {
+      for (const p of obj.parts) {
+        processItem(p);
+      }
+    } else {
+      processItem(obj);
+    }
+  }
+
+  // Fallback to msg.text if nothing was found
+  if (textParts.length === 0 && msg.text && msg.text.trim()) {
+    textParts.push(msg.text.trim());
+  }
+
+  return {
+    text: textParts.join('\n\n'),
+    thoughts: thoughtParts.join('\n\n') || undefined,
+    toolCalls,
+  };
+}
+
 export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defaultSessionId }) => {
   const [session, setSession] = useState<TaskSessionResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -377,16 +489,14 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
           >
             {session.messages.map((msg: SessionMessage, msgIdx: number) => {
               const isUser = msg.role === 'user' || msg.type === 'user';
-              const textContent =
-                msg.text ||
-                (typeof msg.content === 'string'
-                  ? msg.content
-                  : typeof msg.content === 'object' && msg.content !== null
-                  ? JSON.stringify(msg.content, null, 2)
-                  : '');
-
-              const toolCalls = msg.tool_calls || [];
+              const parsed = parseSessionMessageContent(msg);
+              const { text: textContent, thoughts, toolCalls } = parsed;
               const timeString = formatTimestamp(msg.created_at);
+
+              // Skip rendering empty assistant bubbles with no text, thoughts, or tools
+              if (!isUser && !textContent && !thoughts && toolCalls.length === 0) {
+                return null;
+              }
 
               if (isUser) {
                 return (
@@ -429,6 +539,19 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                       </div>
                       {timeString && <span className="font-mono">{timeString}</span>}
                     </div>
+
+                    {/* Agent Reasoning / Thoughts (if present) */}
+                    {thoughts && (
+                      <details className="text-[11px] text-muted-foreground bg-muted/50 rounded p-2 border border-border/40 group">
+                        <summary className="cursor-pointer font-medium flex items-center gap-1.5 select-none text-muted-foreground hover:text-foreground">
+                          <Sparkles className="size-3 text-purple-500" />
+                          <span>Agent Reasoning</span>
+                        </summary>
+                        <div className="mt-2 whitespace-pre-wrap font-mono text-[10.5px] leading-relaxed opacity-90 pl-3 border-l-2 border-purple-500/30">
+                          {thoughts}
+                        </div>
+                      </details>
+                    )}
 
                     {/* Text reply */}
                     {textContent && (
