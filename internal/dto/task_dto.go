@@ -109,10 +109,23 @@ type OpenCodeMessageDTO struct {
 	CreatedAt *time.Time  `json:"created_at,omitempty"`
 }
 
+// SessionTokensDTO represents token usage metrics for an agent session.
+type SessionTokensDTO struct {
+	Input      int64 `json:"input"`
+	Output     int64 `json:"output"`
+	Reasoning  int64 `json:"reasoning,omitempty"`
+	CacheRead  int64 `json:"cache_read,omitempty"`
+	CacheWrite int64 `json:"cache_write,omitempty"`
+}
+
 // TaskSessionResponseDTO represents the aggregated session information and history.
 type TaskSessionResponseDTO struct {
 	SessionID string               `json:"session_id"`
 	TaskID    string               `json:"task_id"`
+	Status    string               `json:"status,omitempty"`
+	Model     string               `json:"model,omitempty"`
+	Cost      float64              `json:"cost,omitempty"`
+	Tokens    *SessionTokensDTO    `json:"tokens,omitempty"`
 	Title     string               `json:"title,omitempty"`
 	Directory string               `json:"directory,omitempty"`
 	CreatedAt *time.Time           `json:"created_at,omitempty"`

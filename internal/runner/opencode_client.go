@@ -23,13 +23,17 @@ var sessionIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // OpenCodeSessionDTO represents session details returned from the OpenCode daemon.
 type OpenCodeSessionDTO struct {
-	ID        string     `json:"id"`
-	ParentID  string     `json:"parentID,omitempty"`
-	ProjectID string     `json:"projectID,omitempty"`
-	Title     string     `json:"title,omitempty"`
-	Directory string     `json:"directory,omitempty"`
-	CreatedAt *time.Time `json:"created_at,omitempty"`
-	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+	ID        string                `json:"id"`
+	ParentID  string                `json:"parentID,omitempty"`
+	ProjectID string                `json:"projectID,omitempty"`
+	Title     string                `json:"title,omitempty"`
+	Directory string                `json:"directory,omitempty"`
+	Status    string                `json:"status,omitempty"`
+	Model     string                `json:"model,omitempty"`
+	Cost      float64               `json:"cost,omitempty"`
+	Tokens    *dto.SessionTokensDTO `json:"tokens,omitempty"`
+	CreatedAt *time.Time            `json:"created_at,omitempty"`
+	UpdatedAt *time.Time            `json:"updated_at,omitempty"`
 }
 
 // OpenCodeMessageDTO aliases dto.OpenCodeMessageDTO for runner consumers.
@@ -181,11 +185,26 @@ func (c *openCodeClient) GetSession(ctx context.Context, sessionID string) (*Ope
 	// OpenCode returns {"data": {...}} or direct object
 	var wrapper struct {
 		Data struct {
-			ID        string `json:"id"`
-			ParentID  string `json:"parentID"`
-			ProjectID string `json:"projectID"`
-			Title     string `json:"title"`
-			Time      struct {
+			ID        string  `json:"id"`
+			ParentID  string  `json:"parentID"`
+			ProjectID string  `json:"projectID"`
+			Title     string  `json:"title"`
+			Outcome   string  `json:"outcome"`
+			Cost      float64 `json:"cost"`
+			Model     struct {
+				ID         string `json:"id"`
+				ProviderID string `json:"providerID"`
+			} `json:"model"`
+			Tokens struct {
+				Input     int64 `json:"input"`
+				Output    int64 `json:"output"`
+				Reasoning int64 `json:"reasoning"`
+				Cache     struct {
+					Read  int64 `json:"read"`
+					Write int64 `json:"write"`
+				} `json:"cache"`
+			} `json:"tokens"`
+			Time struct {
 				Created int64 `json:"created"`
 				Updated int64 `json:"updated"`
 			} `json:"time"`
@@ -205,12 +224,35 @@ func (c *openCodeClient) GetSession(ctx context.Context, sessionID string) (*Ope
 			t := time.UnixMilli(wrapper.Data.Time.Updated)
 			updatedAt = &t
 		}
+
+		status := wrapper.Data.Outcome
+		if status == "" {
+			status = "idle"
+		}
+
+		modelName := wrapper.Data.Model.ID
+		if modelName == "" && wrapper.Data.Model.ProviderID != "" {
+			modelName = wrapper.Data.Model.ProviderID
+		}
+
+		tokens := &dto.SessionTokensDTO{
+			Input:      wrapper.Data.Tokens.Input,
+			Output:     wrapper.Data.Tokens.Output,
+			Reasoning:  wrapper.Data.Tokens.Reasoning,
+			CacheRead:  wrapper.Data.Tokens.Cache.Read,
+			CacheWrite: wrapper.Data.Tokens.Cache.Write,
+		}
+
 		return &OpenCodeSessionDTO{
 			ID:        wrapper.Data.ID,
 			ParentID:  wrapper.Data.ParentID,
 			ProjectID: wrapper.Data.ProjectID,
 			Title:     wrapper.Data.Title,
 			Directory: wrapper.Data.Location.Directory,
+			Status:    status,
+			Model:     modelName,
+			Cost:      wrapper.Data.Cost,
+			Tokens:    tokens,
 			CreatedAt: createdAt,
 			UpdatedAt: updatedAt,
 		}, nil

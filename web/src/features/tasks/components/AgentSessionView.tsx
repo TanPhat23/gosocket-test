@@ -151,6 +151,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
   // Steer prompt state
   const [steerPrompt, setSteerPrompt] = useState<string>('');
   const [isSubmittingPrompt, setIsSubmittingPrompt] = useState<boolean>(false);
+  const [isSteeringActive, setIsSteeringActive] = useState<boolean>(false);
   const [steerError, setSteerError] = useState<string | null>(null);
 
   // Compact state
@@ -193,17 +194,30 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskId]);
 
-  // Adaptive auto-refresh when session is in active running state
+  // Adaptive auto-refresh when session is in active running state or user is steering
   useEffect(() => {
-    if (!session || session.status !== 'running') return;
+    const isRunning = session?.status === 'running' || isSteeringActive;
+    if (!isRunning) return;
 
-    const interval = setInterval(() => {
-      fetchSession(false);
-    }, 2500);
+    let pollCount = 0;
+    const maxPolls = 40; // 40 * 1.5s = 60s max
+    const interval = setInterval(async () => {
+      pollCount++;
+      await fetchSession(false);
+      transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+
+      // Stop active steering mode if session outcome is not running after a few checks
+      if (session?.status && session.status !== 'running' && pollCount > 4) {
+        setIsSteeringActive(false);
+      }
+      if (pollCount >= maxPolls) {
+        setIsSteeringActive(false);
+      }
+    }, 1500);
 
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.status, taskId]);
+  }, [session?.status, isSteeringActive, taskId]);
 
   const handleCopySessionId = async (idToCopy: string) => {
     try {
@@ -225,9 +239,9 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
     try {
       await taskApi.promptTaskSession(taskId, trimmed);
       setSteerPrompt('');
-      // Refresh transcript
+      setIsSteeringActive(true);
+      // Immediately refresh transcript
       await fetchSession(false);
-      // Scroll down
       setTimeout(() => {
         transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
       }, 100);
@@ -691,6 +705,12 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
           <label htmlFor="steer-prompt-input" className="text-xs font-semibold text-foreground flex items-center gap-1.5">
             <Sparkles className="size-3.5 text-primary" />
             Agent Steering &amp; Intervention
+            {(isSteeringActive || session?.status === 'running') && (
+              <Badge variant="outline" className="font-mono text-[10px] bg-primary/10 text-primary border-primary/20 animate-pulse ml-2">
+                <RefreshCw className="size-2.5 mr-1 animate-spin" />
+                Live Streaming...
+              </Badge>
+            )}
           </label>
           <span className="text-[10px] text-muted-foreground font-mono">
             Directly injects prompt into persistent session

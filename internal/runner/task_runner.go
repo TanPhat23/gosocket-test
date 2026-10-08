@@ -312,16 +312,6 @@ func (r *AgentTaskRunner) Watch(taskID string) <-chan error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.doneChans == nil {
-		r.doneChans = make(map[string][]chan error)
-	}
-	if r.running == nil {
-		r.running = make(map[string]bool)
-	}
-	if r.completed == nil {
-		r.completed = make(map[string]error)
-	}
-
 	ch := make(chan error, 1)
 
 	// 1. If already completed, deliver cached completion error and close immediately
@@ -898,6 +888,9 @@ func (r *AgentTaskRunner) streamPipe(ctx context.Context, taskID, attemptID stri
 	for scanner.Scan() {
 		line := scanner.Text() + "\r\n"
 		r.broadcastLog(ctx, taskID, attemptID, line)
+	}
+	if scanner.Err() != nil {
+		log.Printf("error reading %s stream for task %s: %v", stream, taskID, scanner.Err())
 	}
 }
 

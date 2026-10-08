@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"strings"
 
 	"agent-task-manager/internal/models"
 	"gorm.io/gorm"
@@ -27,6 +28,9 @@ func (r *logRepo) Append(ctx context.Context, log *models.TaskLog) error {
 }
 
 func (r *logRepo) ListByTaskID(ctx context.Context, taskID string) ([]models.TaskLog, error) {
+	if taskID == "" || strings.Contains(taskID, "/") {
+		return []models.TaskLog{}, nil
+	}
 	return gorm.G[models.TaskLog](r.db).
 		Where("task_id = ?", taskID).
 		Order("timestamp ASC, id ASC").

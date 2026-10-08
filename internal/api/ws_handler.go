@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"strings"
 
 	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/service"
@@ -74,7 +75,7 @@ func (h *WSHandler) HandleEventsWS(c fiber.Ctx) error {
 func WebSocketLogsHandler(hub *ws.Hub, taskSvc service.TaskService, logSvc service.LogService) fiber.Handler {
 	return func(c fiber.Ctx) error {
 		taskID := c.Params("task_id")
-		if taskID == "" {
+		if taskID == "" || strings.Contains(taskID, "/") {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "task_id is required"})
 		}
 

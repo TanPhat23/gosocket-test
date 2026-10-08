@@ -445,6 +445,10 @@ func (s *taskService) GetTaskSession(ctx context.Context, taskID, userID string)
 	res := &dto.TaskSessionResponseDTO{
 		SessionID: sessionID,
 		TaskID:    task.ID,
+		Status:    sessDTO.Status,
+		Model:     sessDTO.Model,
+		Cost:      sessDTO.Cost,
+		Tokens:    sessDTO.Tokens,
 		Title:     sessDTO.Title,
 		Directory: sessDTO.Directory,
 		CreatedAt: sessDTO.CreatedAt,
