@@ -1,8 +1,6 @@
 package api
 
 import (
-	"errors"
-
 	"agent-task-manager/internal/dto"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/service"
@@ -41,17 +39,7 @@ func (h *WebhookHandlers) HandleWebhook(c fiber.Ctx) error {
 		signature := c.Get("X-Hub-Signature-256")
 		res, err := h.webhookService.HandleGitHubWebhook(c.Context(), payload, deliveryID, signature)
 		if err != nil {
-			switch {
-			case errors.Is(err, service.ErrInvalidWebhookPayload):
-				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
-			case errors.Is(err, service.ErrMissingDeliveryID):
-				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
-			case errors.Is(err, service.ErrIntegrationNotFound) || errors.Is(err, service.ErrInvalidSignature):
-				// Security Fix 5: Return uniform 401 Unauthorized on signature/integration lookup failures to avoid enumeration oracles
-				return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
-			default:
-				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
-			}
+			return h.handleError(c, err)
 		}
 		return c.Status(fiber.StatusOK).JSON(res)
 
@@ -59,10 +47,7 @@ func (h *WebhookHandlers) HandleWebhook(c fiber.Ctx) error {
 		eventID := c.Get("X-Atlassian-Webhook-Identifier")
 		res, err := h.webhookService.HandleJiraWebhook(c.Context(), payload, eventID)
 		if err != nil {
-			if errors.Is(err, service.ErrInvalidWebhookPayload) {
-				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
-			}
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return h.handleError(c, err)
 		}
 		return c.Status(fiber.StatusOK).JSON(res)
 
@@ -70,10 +55,7 @@ func (h *WebhookHandlers) HandleWebhook(c fiber.Ctx) error {
 		isHead := c.Method() == fiber.MethodHead
 		res, err := h.webhookService.HandleTrelloWebhook(c.Context(), payload, isHead)
 		if err != nil {
-			if errors.Is(err, service.ErrInvalidWebhookPayload) {
-				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
-			}
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return h.handleError(c, err)
 		}
 		if isHead {
 			return c.SendStatus(fiber.StatusOK)
@@ -84,4 +66,8 @@ func (h *WebhookHandlers) HandleWebhook(c fiber.Ctx) error {
 	default:
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "unsupported provider"})
 	}
+}
+
+func (h *WebhookHandlers) handleError(c fiber.Ctx, err error) error {
+	return CentralErrorHandler(c, err)
 }

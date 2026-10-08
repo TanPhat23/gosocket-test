@@ -92,6 +92,7 @@ func NewServer(
 ) *Server {
 	app := fiber.New(fiber.Config{
 		StructValidator: NewStructValidator(),
+		ErrorHandler:    CentralErrorHandler,
 	})
 
 	server := &Server{
