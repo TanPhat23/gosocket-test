@@ -1,8 +1,6 @@
 package api
 
 import (
-	"errors"
-
 	"agent-task-manager/internal/dto"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/service"
@@ -48,7 +46,7 @@ func (h *CredentialHandlers) List(c fiber.Ctx) error {
 
 	credentials, err := h.credService.List(c.Context(), params.TeamID)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to list credentials"})
+		return CentralErrorHandler(c, err)
 	}
 
 	return c.JSON(fiber.Map{"credentials": credentials})
@@ -68,7 +66,7 @@ func (h *CredentialHandlers) Create(c fiber.Ctx) error {
 
 	credDTO, err := h.credService.Create(c.Context(), params.TeamID, req)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to save credential"})
+		return CentralErrorHandler(c, err)
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
@@ -84,10 +82,7 @@ func (h *CredentialHandlers) Delete(c fiber.Ctx) error {
 	}
 
 	if err := h.credService.Delete(c.Context(), params.TeamID, params.CredentialID); err != nil {
-		if errors.Is(err, service.ErrCredentialNotFound) {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Credential not found"})
-		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to delete credential"})
+		return CentralErrorHandler(c, err)
 	}
 
 	return c.JSON(fiber.Map{"status": "deleted"})
@@ -102,19 +97,7 @@ func (h *CredentialHandlers) ListGitHubRepositories(c fiber.Ctx) error {
 
 	repos, err := h.credService.ListGitHubRepositories(c.Context(), params.TeamID, params.CredentialID)
 	if err != nil {
-		if errors.Is(err, service.ErrCredentialNotFound) {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Credential not found"})
-		}
-		if errors.Is(err, service.ErrInvalidProvider) {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
-		}
-		if err.Error() == "invalid or expired github token" {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": err.Error()})
-		}
-		if err.Error() == "github api rate limit exceeded" {
-			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{"error": err.Error()})
-		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to list GitHub repositories"})
+		return CentralErrorHandler(c, err)
 	}
 
 	return c.JSON(fiber.Map{"repositories": repos})

@@ -52,10 +52,10 @@ func TestCentralErrorHandler(t *testing.T) {
 			expectedBody:   `{"error":"unauthorized"}`,
 		},
 		{
-			name:           "sentinel ErrIntegrationNotFound 401",
+			name:           "sentinel ErrIntegrationNotFound 404",
 			handlerErr:     service.ErrIntegrationNotFound,
-			expectedStatus: fiber.StatusUnauthorized,
-			expectedBody:   `{"error":"unauthorized"}`,
+			expectedStatus: fiber.StatusNotFound,
+			expectedBody:   `{"error":"active integration not found"}`,
 		},
 		{
 			name:           "sentinel ErrForbidden 403",

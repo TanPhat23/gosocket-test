@@ -54,7 +54,7 @@ func (h *TaskHandlers) List(c fiber.Ctx) error {
 	}
 
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to list tasks"})
+		return CentralErrorHandler(c, err)
 	}
 
 	responses := make([]dto.TaskResponse, len(tasks))
@@ -77,10 +77,7 @@ func (h *TaskHandlers) Get(c fiber.Ctx) error {
 
 	task, err := h.taskService.GetTask(c.Context(), taskID)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Task not found"})
-		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to get task"})
+		return CentralErrorHandler(c, err)
 	}
 
 	// If task is in review and has a PR, check if PR status changed on GitHub
@@ -107,7 +104,7 @@ func (h *TaskHandlers) Create(c fiber.Ctx) error {
 
 	task, err := h.taskService.CreateTask(c.Context(), &req)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to create task"})
+		return CentralErrorHandler(c, err)
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(dto.ToTaskResponse(task))
@@ -121,10 +118,7 @@ func (h *TaskHandlers) Cancel(c fiber.Ctx) error {
 	}
 
 	if err := h.taskService.CancelTask(c.Context(), taskID); err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Task not found"})
-		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to cancel task"})
+		return CentralErrorHandler(c, err)
 	}
 
 	return c.JSON(fiber.Map{"status": "cancelled"})
@@ -139,8 +133,8 @@ func (h *TaskHandlers) CreatePR(c fiber.Ctx) error {
 
 	task, err := h.taskService.CreatePullRequestForTask(c.Context(), taskID)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Task not found"})
+		if errors.Is(err, common.ErrNotFound) || errors.Is(err, gorm.ErrRecordNotFound) {
+			return CentralErrorHandler(c, err)
 		}
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -171,8 +165,8 @@ func (h *TaskHandlers) SyncPR(c fiber.Ctx) error {
 
 	task, err := h.taskService.SyncTaskPRStatus(c.Context(), taskID, userID)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Task not found"})
+		if errors.Is(err, common.ErrNotFound) || errors.Is(err, gorm.ErrRecordNotFound) {
+			return CentralErrorHandler(c, err)
 		}
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -196,16 +190,7 @@ func (h *TaskHandlers) GetSession(c fiber.Ctx) error {
 
 	sessionDTO, err := h.taskService.GetTaskSession(c.Context(), taskID, userID)
 	if err != nil {
-		if errors.Is(err, common.ErrForbidden) {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Forbidden: insufficient permissions"})
-		}
-		if errors.Is(err, common.ErrNotFound) || errors.Is(err, gorm.ErrRecordNotFound) {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Task or session not found"})
-		}
-		if errors.Is(err, common.ErrServiceUnavailable) {
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": common.ErrServiceUnavailable.Error()})
-		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return CentralErrorHandler(c, err)
 	}
 
 	return c.JSON(sessionDTO)
@@ -231,16 +216,7 @@ func (h *TaskHandlers) PromptSession(c fiber.Ctx) error {
 	}
 
 	if err := h.taskService.PromptTaskSession(c.Context(), taskID, userID, &req); err != nil {
-		if errors.Is(err, common.ErrForbidden) {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Forbidden: insufficient permissions"})
-		}
-		if errors.Is(err, common.ErrNotFound) || errors.Is(err, gorm.ErrRecordNotFound) {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Task or session not found"})
-		}
-		if errors.Is(err, common.ErrServiceUnavailable) {
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": common.ErrServiceUnavailable.Error()})
-		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return CentralErrorHandler(c, err)
 	}
 
 	return c.JSON(fiber.Map{"status": "ok"})
@@ -261,16 +237,7 @@ func (h *TaskHandlers) CompactSession(c fiber.Ctx) error {
 	}
 
 	if err := h.taskService.CompactTaskSession(c.Context(), taskID, userID); err != nil {
-		if errors.Is(err, common.ErrForbidden) {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Forbidden: insufficient permissions"})
-		}
-		if errors.Is(err, common.ErrNotFound) || errors.Is(err, gorm.ErrRecordNotFound) {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Task or session not found"})
-		}
-		if errors.Is(err, common.ErrServiceUnavailable) {
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": common.ErrServiceUnavailable.Error()})
-		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return CentralErrorHandler(c, err)
 	}
 
 	return c.JSON(fiber.Map{"status": "compacted"})
@@ -294,13 +261,7 @@ func (h *TaskHandlers) GetDiff(c fiber.Ctx) error {
 
 	diff, err := h.taskService.GetTaskDiff(c.Context(), taskID, userID)
 	if err != nil {
-		if errors.Is(err, common.ErrForbidden) {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Forbidden: insufficient permissions"})
-		}
-		if errors.Is(err, common.ErrNotFound) || errors.Is(err, gorm.ErrRecordNotFound) {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Task not found"})
-		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return CentralErrorHandler(c, err)
 	}
 
 	return c.JSON(fiber.Map{"diff": diff})

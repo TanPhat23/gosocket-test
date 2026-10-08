@@ -1,7 +1,6 @@
 package api
 
 import (
-	"errors"
 	"strings"
 	"time"
 
@@ -37,14 +36,7 @@ func (h *AuthHandlers) isSecure(c fiber.Ctx) bool {
 func (h *AuthHandlers) Login(c fiber.Ctx) error {
 	authURL, signedState, state, err := h.authService.GenerateLoginURL()
 	if err != nil {
-		if errors.Is(err, service.ErrOIDCNotConfigured) {
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-				"error": "OIDC authentication is not configured",
-			})
-		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to generate authorization state",
-		})
+		return CentralErrorHandler(c, err)
 	}
 
 	c.Cookie(&fiber.Cookie{
@@ -73,16 +65,12 @@ func (h *AuthHandlers) LoginWithCredentials(c fiber.Ctx) error {
 
 	user, err := h.authService.LoginWithCredentials(c.Context(), req.Email, req.Password)
 	if err != nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-			"error": "Invalid email or password",
-		})
+		return CentralErrorHandler(c, err)
 	}
 
 	_, err = h.sessionManager.CreateSessionFiber(c, user.ID, user.Issuer, user.Subject)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to create session",
-		})
+		return CentralErrorHandler(c, err)
 	}
 
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
@@ -130,48 +118,13 @@ func (h *AuthHandlers) Callback(c fiber.Ctx) error {
 
 	user, err := h.authService.HandleCallback(c.Context(), stateCookie, stateParam, code)
 	if err != nil {
-		switch {
-		case errors.Is(err, service.ErrOIDCNotConfigured):
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-				"error": "OIDC authentication is not configured",
-			})
-		case errors.Is(err, service.ErrInvalidState):
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "Invalid or expired authorization state",
-			})
-		case errors.Is(err, service.ErrStateMismatch):
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "Mismatched authorization state",
-			})
-		case errors.Is(err, service.ErrTokenExchange):
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"error": "Failed to exchange authorization code",
-			})
-		case errors.Is(err, service.ErrMissingIDToken):
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"error": "Missing id_token in token response",
-			})
-		case errors.Is(err, service.ErrVerifyIDToken):
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"error": "Failed to verify ID token",
-			})
-		case errors.Is(err, service.ErrNonceMismatch):
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"error": "Nonce mismatch",
-			})
-		default:
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "Authentication failed",
-			})
-		}
+		return CentralErrorHandler(c, err)
 	}
 
 	// Create session
 	_, err = h.sessionManager.CreateSessionFiber(c, user.ID, user.Issuer, user.Subject)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to create session",
-		})
+		return CentralErrorHandler(c, err)
 	}
 
 	if strings.Contains(c.Get("Accept"), "text/html") {

@@ -1,6 +1,8 @@
 package api
 
 import (
+	"errors"
+
 	"agent-task-manager/internal/dto"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/service"
@@ -69,5 +71,10 @@ func (h *WebhookHandlers) HandleWebhook(c fiber.Ctx) error {
 }
 
 func (h *WebhookHandlers) handleError(c fiber.Ctx, err error) error {
-	return CentralErrorHandler(c, err)
+	switch {
+	case errors.Is(err, service.ErrIntegrationNotFound), errors.Is(err, service.ErrInvalidSignature):
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	default:
+		return CentralErrorHandler(c, err)
+	}
 }

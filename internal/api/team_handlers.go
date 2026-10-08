@@ -25,7 +25,7 @@ func NewTeamHandlers(teamRepo repository.TeamRepository, projectRepo repository.
 func (h *TeamHandlers) ListTeams(c fiber.Ctx) error {
 	teams, err := h.teamRepo.List(c.Context())
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to list teams"})
+		return CentralErrorHandler(c, err)
 	}
 
 	if teams == nil {
@@ -40,7 +40,7 @@ func (h *TeamHandlers) ListProjects(c fiber.Ctx) error {
 	teamID := c.Query("team_id")
 	projects, err := h.projectRepo.List(c.Context(), teamID)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to list projects"})
+		return CentralErrorHandler(c, err)
 	}
 	if projects == nil {
 		projects = []models.Project{}
