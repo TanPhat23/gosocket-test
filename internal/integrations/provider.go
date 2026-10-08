@@ -24,7 +24,17 @@ type SyncProvider interface {
 	AddComment(ctx context.Context, integration *models.ProjectIntegration, plainSecret string, externalID string, comment string) error
 }
 
-// PullRequestProvider defines the interface for creating pull requests in external systems.
+// PullRequestStatus represents the status of a pull request in an external system.
+type PullRequestStatus struct {
+	Number   int    `json:"number"`
+	State    string `json:"state"` // "open" or "closed"
+	Merged   bool   `json:"merged"`
+	MergedAt string `json:"merged_at,omitempty"`
+	HTMLURL  string `json:"html_url"`
+}
+
+// PullRequestProvider defines the interface for creating and inspecting pull requests in external systems.
 type PullRequestProvider interface {
 	CreatePullRequest(ctx context.Context, integration *models.ProjectIntegration, plainSecret string, branch, title, body string) (string, error)
+	GetPullRequestStatus(ctx context.Context, integration *models.ProjectIntegration, plainSecret string, prNumberOrURL string) (*PullRequestStatus, error)
 }

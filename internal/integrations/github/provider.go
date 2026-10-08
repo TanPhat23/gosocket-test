@@ -315,6 +315,66 @@ func (p *Provider) CreatePullRequest(ctx context.Context, integration *models.Pr
 	return prResp.HTMLURL, nil
 }
 
+func parsePRNumber(prNumberOrURL string) (int, error) {
+	s := strings.TrimSpace(prNumberOrURL)
+	s = strings.TrimRight(s, "/")
+	if idx := strings.LastIndex(s, "/"); idx != -1 {
+		s = s[idx+1:]
+	}
+	var num int
+	_, err := fmt.Sscanf(s, "%d", &num)
+	if err != nil || num <= 0 {
+		return 0, fmt.Errorf("invalid pull request number or URL: %q", prNumberOrURL)
+	}
+	return num, nil
+}
+
+type ghPRDetailResponse struct {
+	Number   int    `json:"number"`
+	State    string `json:"state"`
+	Merged   bool   `json:"merged"`
+	MergedAt string `json:"merged_at"`
+	HTMLURL  string `json:"html_url"`
+}
+
+// GetPullRequestStatus queries GitHub for the status of a pull request.
+func (p *Provider) GetPullRequestStatus(ctx context.Context, integration *models.ProjectIntegration, plainSecret string, prNumberOrURL string) (*integrations.PullRequestStatus, error) {
+	repo, err := parseRepo(integration)
+	if err != nil {
+		return nil, err
+	}
+
+	prNum, err := parsePRNumber(prNumberOrURL)
+	if err != nil {
+		return nil, err
+	}
+
+	endpoint := fmt.Sprintf("/repos/%s/pulls/%d", repo, prNum)
+	resp, err := p.doRequest(ctx, http.MethodGet, endpoint, plainSecret, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("github get pull request returned %d: %s", resp.StatusCode, string(b))
+	}
+
+	var detail ghPRDetailResponse
+	if err := json.NewDecoder(resp.Body).Decode(&detail); err != nil {
+		return nil, fmt.Errorf("failed to decode pull request details: %w", err)
+	}
+
+	return &integrations.PullRequestStatus{
+		Number:   detail.Number,
+		State:    detail.State,
+		Merged:   detail.Merged,
+		MergedAt: detail.MergedAt,
+		HTMLURL:  detail.HTMLURL,
+	}, nil
+}
+
 type ghRepoResponse struct {
 	ID            int64  `json:"id"`
 	Name          string `json:"name"`

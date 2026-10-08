@@ -33,9 +33,12 @@ import {
   Copy,
   Check,
   Bot,
+  GitMerge,
+  RefreshCw,
 } from 'lucide-react';
 import { taskApi } from '../api/taskApi';
 import type { TaskStatus } from '../schemas/taskSchemas';
+import { cn } from '@/lib/utils';
 
 const getStatusBadge = (status: TaskStatus) => {
   switch (status) {
@@ -91,6 +94,35 @@ export const TaskInspectorModal: React.FC = () => {
   const [copiedSessionId, setCopiedSessionId] = useState(false);
   const [taskDiff, setTaskDiff] = useState<string>('');
   const [loadingDiff, setLoadingDiff] = useState(false);
+  const [isSyncingPR, setIsSyncingPR] = useState(false);
+
+  const handleSyncPR = React.useCallback(async () => {
+    if (!task) return;
+    setIsSyncingPR(true);
+    try {
+      const updated = await taskApi.syncTaskPR(task.id);
+      if (updated) {
+        updateTask(updated);
+        if (updated.status === 'done') {
+          setPrToast({
+            message: 'Pull request merged! Task marked as completed.',
+            url: updated.pull_request_url || updated.pr_url || undefined,
+          });
+          setTimeout(() => setPrToast(null), 5000);
+        }
+      }
+    } catch {
+      // ignore silently if offline or unmerged
+    } finally {
+      setIsSyncingPR(false);
+    }
+  }, [task, updateTask]);
+
+  React.useEffect(() => {
+    if (task && task.status === 'review' && (task.pull_request_url || task.pr_url)) {
+      handleSyncPR();
+    }
+  }, [task?.id, task?.status, handleSyncPR]);
 
   React.useEffect(() => {
     if (!task) {
@@ -308,18 +340,47 @@ export const TaskInspectorModal: React.FC = () => {
               </Button>
             )}
 
-            {prLink && (
+            {prLink && task.status === 'done' && (
               <a
                 href={prLink}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 h-7 px-3 text-xs font-mono rounded-md bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 transition-colors font-medium"
+                className="inline-flex items-center gap-1.5 h-7 px-3 text-xs font-mono rounded-md bg-purple-500/15 text-purple-600 dark:text-purple-400 border border-purple-500/30 hover:bg-purple-500/25 transition-colors font-medium"
                 data-testid="view-pr-btn"
               >
-                <GitPullRequest className="size-3" />
-                View PR ({prLink.split('/').slice(-2).join('/') || 'Link'})
+                <GitMerge className="size-3" />
+                PR Merged ({prLink.split('/').slice(-2).join('/') || 'Link'})
                 <ExternalLink className="size-2.5" />
               </a>
+            )}
+
+            {prLink && task.status !== 'done' && (
+              <>
+                <a
+                  href={prLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 h-7 px-3 text-xs font-mono rounded-md bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 transition-colors font-medium"
+                  data-testid="view-pr-btn"
+                >
+                  <GitPullRequest className="size-3" />
+                  View PR ({prLink.split('/').slice(-2).join('/') || 'Link'})
+                  <ExternalLink className="size-2.5" />
+                </a>
+
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleSyncPR}
+                  disabled={isSyncingPR}
+                  className="h-7 text-xs gap-1.5 font-medium border-border hover:bg-muted"
+                  title="Check if PR has been merged on GitHub"
+                  data-testid="sync-pr-btn"
+                >
+                  <RefreshCw className={cn('size-3', isSyncingPR && 'animate-spin')} />
+                  {isSyncingPR ? 'Checking...' : 'Sync PR Status'}
+                </Button>
+              </>
             )}
           </div>
         </div>

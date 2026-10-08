@@ -161,8 +161,12 @@ func main() {
 	// Services
 	authService := service.NewAuthService(userRepo, teamRepo, tokenRepo, authenticator)
 	credService := service.NewCredentialService(credRepo, cipher)
-	webhookService := service.NewWebhookService(integrationRepo, credRepo, taskRepo, idempotencyStore, cipher, queueClient)
 	ghProvider := github.NewProvider()
+	webhookService := service.NewWebhookService(
+		integrationRepo, credRepo, taskRepo, idempotencyStore, cipher, queueClient,
+		service.WithWebhookHub(hub),
+		service.WithWebhookSyncProvider(ghProvider),
+	)
 	openCodeClient := runner.NewOpenCodeClient(cfg.OpenCodeServerURL, cfg.OpenCodePassword, nil)
 	taskService := service.NewTaskService(
 		taskRepo,
@@ -210,6 +214,22 @@ func main() {
 
 	// WebSocket handler
 	wsHandler := api.NewWSHandler(hub, api.WithWSServices(taskService, logService))
+
+	// Background PR status reconciler (checks tasks in review every 30 seconds)
+	prReconcileCtx, prReconcileCancel := context.WithCancel(context.Background())
+	defer prReconcileCancel()
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-prReconcileCtx.Done():
+				return
+			case <-ticker.C:
+				_ = taskService.ReconcileActivePRs(prReconcileCtx)
+			}
+		}
+	}()
 
 	// Fiber Server
 	server := api.NewServer(

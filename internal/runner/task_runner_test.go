@@ -14,6 +14,7 @@ import (
 	"agent-task-manager/internal/config"
 	"agent-task-manager/internal/crypto"
 	"agent-task-manager/internal/git"
+	"agent-task-manager/internal/integrations"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/runner"
 	"agent-task-manager/internal/sandbox"
@@ -1035,6 +1036,15 @@ type mockGHProviderForRunner struct {
 func (m *mockGHProviderForRunner) CreatePullRequest(ctx context.Context, integ *models.ProjectIntegration, token, headBranch, title, body string) (string, error) {
 	m.prCreated = true
 	return m.prURL, nil
+}
+
+func (m *mockGHProviderForRunner) GetPullRequestStatus(ctx context.Context, integ *models.ProjectIntegration, token, prNumberOrURL string) (*integrations.PullRequestStatus, error) {
+	return &integrations.PullRequestStatus{
+		Number:  1,
+		State:   "open",
+		Merged:  false,
+		HTMLURL: m.prURL,
+	}, nil
 }
 
 func TestRunTask_GitHubIntegrationSyncAndPushBranch(t *testing.T) {

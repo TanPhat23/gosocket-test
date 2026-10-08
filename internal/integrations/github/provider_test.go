@@ -297,3 +297,49 @@ func TestGitHubProvider_ListRepositories(t *testing.T) {
 		}
 	})
 }
+
+func TestGetPullRequestStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/owner/repo/pulls/42" && r.Method == http.MethodGet {
+			if r.Header.Get("Authorization") != "Bearer test-pat" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{
+				"number": 42,
+				"state": "closed",
+				"merged": true,
+				"merged_at": "2026-10-08T02:59:59Z",
+				"html_url": "https://github.com/owner/repo/pull/42"
+			}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	provider := github.NewProvider(github.WithBaseURL(server.URL), github.WithHTTPClient(server.Client()))
+	integ := &models.ProjectIntegration{
+		ExternalID: "owner/repo",
+	}
+
+	// 1. By PR URL
+	status, err := provider.GetPullRequestStatus(context.Background(), integ, "test-pat", "https://github.com/owner/repo/pull/42")
+	if err != nil {
+		t.Fatalf("GetPullRequestStatus failed: %v", err)
+	}
+	if status.Number != 42 || !status.Merged || status.State != "closed" {
+		t.Errorf("unexpected PR status: %+v", status)
+	}
+
+	// 2. By PR number string
+	status2, err := provider.GetPullRequestStatus(context.Background(), integ, "test-pat", "42")
+	if err != nil {
+		t.Fatalf("GetPullRequestStatus with number failed: %v", err)
+	}
+	if status2.Number != 42 || !status2.Merged {
+		t.Errorf("unexpected PR status 2: %+v", status2)
+	}
+}

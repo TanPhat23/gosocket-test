@@ -15,6 +15,7 @@ import (
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/queue"
 	"agent-task-manager/internal/repository"
+	"agent-task-manager/internal/ws"
 	"github.com/google/uuid"
 )
 
@@ -39,6 +40,25 @@ type webhookService struct {
 	idempotencyStore integrations.IdempotencyStore
 	cipher           *crypto.SecretCipher
 	queueClient      queue.Client
+	hub              *ws.Hub
+	ghProvider       integrations.SyncProvider
+}
+
+// WebhookOption configures optional WebhookService dependencies.
+type WebhookOption func(*webhookService)
+
+// WithWebhookHub configures WebSocket hub broadcasting for task updates.
+func WithWebhookHub(hub *ws.Hub) WebhookOption {
+	return func(s *webhookService) {
+		s.hub = hub
+	}
+}
+
+// WithWebhookSyncProvider configures external sync provider for updating issues on webhook events.
+func WithWebhookSyncProvider(ghProvider integrations.SyncProvider) WebhookOption {
+	return func(s *webhookService) {
+		s.ghProvider = ghProvider
+	}
 }
 
 // NewWebhookService creates a new WebhookService implementation.
@@ -49,8 +69,9 @@ func NewWebhookService(
 	idempotencyStore integrations.IdempotencyStore,
 	cipher *crypto.SecretCipher,
 	queueClient queue.Client,
+	opts ...WebhookOption,
 ) WebhookService {
-	return &webhookService{
+	s := &webhookService{
 		integrationRepo:  integrationRepo,
 		credRepo:         credRepo,
 		taskRepo:         taskRepo,
@@ -58,6 +79,10 @@ func NewWebhookService(
 		cipher:           cipher,
 		queueClient:      queueClient,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 type ghWebhookPayload struct {
@@ -97,6 +122,17 @@ type ghWebhookPayload struct {
 		HeadSHA    string `json:"head_sha"`
 		HTMLURL    string `json:"html_url"`
 	} `json:"workflow_run"`
+	PullRequest *struct {
+		Number   int    `json:"number"`
+		Title    string `json:"title"`
+		State    string `json:"state"`
+		Merged   bool   `json:"merged"`
+		MergedAt string `json:"merged_at"`
+		HTMLURL  string `json:"html_url"`
+		Head     struct {
+			Ref string `json:"ref"`
+		} `json:"head"`
+	} `json:"pull_request"`
 }
 
 type jiraWebhookPayload struct {
@@ -342,6 +378,39 @@ func (s *webhookService) HandleGitHubWebhook(ctx context.Context, payload []byte
 		}
 	}
 
+	// 4. Handle GitHub Pull Request merge event
+	if ghPayload.PullRequest != nil {
+		pr := ghPayload.PullRequest
+		if (ghPayload.Action == "closed" || ghPayload.Action == "merged") && pr.Merged {
+			task := s.findTaskByBranch(ctx, integration.ProjectID, pr.Head.Ref)
+			if task == nil && pr.HTMLURL != "" {
+				task = s.findTaskByPRURL(ctx, integration.ProjectID, pr.HTMLURL)
+			}
+			if task != nil {
+				task.Status = models.TaskStatusDone
+				task.UpdatedAt = time.Now().UTC()
+				_ = s.taskRepo.Update(ctx, task)
+
+				if s.hub != nil {
+					_ = s.hub.BroadcastTaskStatus(task.ID, models.TaskStatusDone)
+				}
+				taskIDCreated = task.ID
+
+				// If linked to an issue, close issue on GitHub and post completion comment
+				if task.ExternalID != nil && *task.ExternalID != "" && s.ghProvider != nil && s.cipher != nil {
+					cred, _ := s.credRepo.GetByID(ctx, integration.CredentialID)
+					if cred != nil {
+						token, _ := s.cipher.Decrypt(cred.EncryptedData)
+						if token != "" {
+							_ = s.ghProvider.UpdateIssueStatus(ctx, integration, token, *task.ExternalID, "closed")
+							_ = s.ghProvider.AddComment(ctx, integration, token, *task.ExternalID, fmt.Sprintf("Pull Request %s was merged. Task marked as completed.", pr.HTMLURL))
+						}
+					}
+				}
+			}
+		}
+	}
+
 	if s.idempotencyStore != nil {
 		_ = s.idempotencyStore.MarkProcessed(ctx, string(models.IntegrationGitHub), integration.ProjectID, deliveryID)
 	}
@@ -378,6 +447,21 @@ func (s *webhookService) findTaskByBranch(ctx context.Context, projectID, branch
 		}
 	}
 
+	return nil
+}
+
+func (s *webhookService) findTaskByPRURL(ctx context.Context, projectID, prURL string) *models.Task {
+	if prURL == "" {
+		return nil
+	}
+	tasks, err := s.taskRepo.List(ctx, projectID)
+	if err == nil {
+		for i := range tasks {
+			if tasks[i].PRURL != nil && *tasks[i].PRURL == prURL {
+				return &tasks[i]
+			}
+		}
+	}
 	return nil
 }
 

@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"agent-task-manager/internal/common"
+	"agent-task-manager/internal/crypto"
 	"agent-task-manager/internal/dto"
+	"agent-task-manager/internal/integrations"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/repository"
 	"agent-task-manager/internal/runner"
@@ -711,5 +713,99 @@ func TestGetTaskDiff(t *testing.T) {
 	}
 	if diff != "" {
 		t.Errorf("expected empty diff on fresh dir, got: %s", diff)
+	}
+}
+
+type mockTestPRProvider struct {
+	merged bool
+}
+
+func (m *mockTestPRProvider) CreatePullRequest(ctx context.Context, integration *models.ProjectIntegration, plainSecret string, branch, title, body string) (string, error) {
+	return "https://github.com/owner/repo/pull/1", nil
+}
+
+func (m *mockTestPRProvider) GetPullRequestStatus(ctx context.Context, integration *models.ProjectIntegration, plainSecret string, prNumberOrURL string) (*integrations.PullRequestStatus, error) {
+	return &integrations.PullRequestStatus{
+		Number:  1,
+		State:   "closed",
+		Merged:  m.merged,
+		HTMLURL: "https://github.com/owner/repo/pull/1",
+	}, nil
+}
+
+func TestSyncTaskPRStatus(t *testing.T) {
+	db := setupTestDB(t)
+	taskRepo := repository.NewTaskRepository(db)
+	attemptRepo := repository.NewAttemptRepository(db)
+	projectRepo := repository.NewProjectRepository(db)
+	teamRepo := repository.NewTeamRepository(db)
+	integRepo := repository.NewIntegrationRepository(db)
+	credRepo := repository.NewCredentialRepository(db)
+	cipher, _ := crypto.NewSecretCipher([]byte("01234567890123456789012345678901"))
+
+	ctx := context.Background()
+	ownerUser := &models.User{ID: common.NewID(), Email: "pr-owner@test.com", DisplayName: "Owner", Subject: "sub-pr-owner", Issuer: "test"}
+	db.Create(ownerUser)
+
+	team := &models.Team{ID: common.NewID(), Name: "PR Team"}
+	db.Create(team)
+	db.Create(&models.TeamMembership{TeamID: team.ID, UserID: ownerUser.ID, Role: models.RoleOwner})
+
+	project := &models.Project{ID: common.NewID(), TeamID: team.ID, Name: "PR Project"}
+	db.Create(project)
+
+	credEnc, _ := cipher.Encrypt("pat-test")
+	cred := &models.Credential{
+		ID:            common.NewID(),
+		TeamID:        team.ID,
+		Provider:      models.ProviderGitHub,
+		Label:         "PAT",
+		EncryptedData: credEnc,
+	}
+	db.Create(cred)
+
+	integ := &models.ProjectIntegration{
+		ID:           common.NewID(),
+		ProjectID:    project.ID,
+		CredentialID: cred.ID,
+		Provider:     models.IntegrationGitHub,
+		ExternalID:   "owner/repo",
+		Enabled:      true,
+	}
+	db.Create(integ)
+
+	prURL := "https://github.com/owner/repo/pull/1"
+	task := &models.Task{
+		ID:        common.NewID(),
+		ProjectID: project.ID,
+		Title:     "PR Sync Task",
+		Prompt:    "Implement feature",
+		PRURL:     &prURL,
+		Status:    models.TaskStatusReview,
+	}
+	db.Create(task)
+
+	mockPR := &mockTestPRProvider{merged: true}
+	taskSvc := service.NewTaskService(
+		taskRepo,
+		attemptRepo,
+		&mockQueueClient{},
+		nil,
+		service.WithTaskSessionDependencies(nil, projectRepo, teamRepo),
+		service.WithTaskGitHubIntegration(integRepo, credRepo, cipher, mockPR),
+	)
+
+	syncedTask, err := taskSvc.SyncTaskPRStatus(ctx, task.ID, ownerUser.ID)
+	if err != nil {
+		t.Fatalf("SyncTaskPRStatus failed: %v", err)
+	}
+	if syncedTask.Status != models.TaskStatusDone {
+		t.Fatalf("expected task status %s, got %s", models.TaskStatusDone, syncedTask.Status)
+	}
+
+	// Verify persistence in DB
+	reloaded, _ := taskRepo.GetByID(ctx, task.ID)
+	if reloaded.Status != models.TaskStatusDone {
+		t.Fatalf("expected persisted task status %s, got %s", models.TaskStatusDone, reloaded.Status)
 	}
 }

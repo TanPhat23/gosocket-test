@@ -445,3 +445,114 @@ func TestHandleGitHubWebhook_CheckRun_TenantIsolation(t *testing.T) {
 		t.Errorf("tenant isolation violated: status was changed to %s", taskBCheck.Status)
 	}
 }
+
+func TestHandleGitHubWebhook_PullRequestMerged(t *testing.T) {
+	db := setupTestDB(t)
+	cipher, _ := crypto.NewSecretCipher([]byte("01234567890123456789012345678901"))
+	integRepo := repository.NewIntegrationRepository(db)
+	credRepo := repository.NewCredentialRepository(db)
+	taskRepo := repository.NewTaskRepository(db)
+	idempotencyStore := integrations.NewMemoryIdempotencyStore()
+
+	webhookSvc := service.NewWebhookService(integRepo, credRepo, taskRepo, idempotencyStore, cipher, nil)
+	ctx := context.Background()
+
+	credEnc, _ := cipher.Encrypt("pat-token")
+	_ = credRepo.Create(ctx, &models.Credential{
+		ID:            "cred-pr-1",
+		TeamID:        "team-1",
+		Provider:      models.ProviderGitHub,
+		Label:         "PAT",
+		EncryptedData: credEnc,
+	})
+
+	webhookSecret := "pr-wh-secret"
+	integ := models.ProjectIntegration{
+		ID:           "integ-pr-1",
+		ProjectID:    "proj-pr-1",
+		CredentialID: "cred-pr-1",
+		Provider:     models.IntegrationGitHub,
+		ExternalID:   "owner/pr-repo",
+		Enabled:      true,
+		Config: models.JSONMap{
+			"webhook_secret": webhookSecret,
+		},
+	}
+	_ = integRepo.Create(ctx, &integ)
+
+	prURL := "https://github.com/owner/pr-repo/pull/12"
+	branch := "task/task-pr-merge-1"
+	task := models.Task{
+		ID:         "task-pr-merge-1",
+		ProjectID:  "proj-pr-1",
+		Title:      "PR Merge Task",
+		Prompt:     "Implement feature",
+		BranchName: &branch,
+		PRURL:      &prURL,
+		Status:     models.TaskStatusReview,
+	}
+	_ = taskRepo.Create(ctx, &task)
+
+	// 1. Inbound webhook for closed PR but NOT merged
+	notMergedPayload := []byte(`{
+		"action": "closed",
+		"repository": { "full_name": "owner/pr-repo" },
+		"pull_request": {
+			"number": 12,
+			"state": "closed",
+			"merged": false,
+			"html_url": "https://github.com/owner/pr-repo/pull/12",
+			"head": {
+				"ref": "task/task-pr-merge-1"
+			}
+		}
+	}`)
+	mac := hmac.New(sha256.New, []byte(webhookSecret))
+	mac.Write(notMergedPayload)
+	sigNotMerged := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+
+	res1, err := webhookSvc.HandleGitHubWebhook(ctx, notMergedPayload, "del-pr-not-merged", sigNotMerged)
+	if err != nil {
+		t.Fatalf("unexpected error for unmerged PR webhook: %v", err)
+	}
+	if res1.TaskID != "" {
+		t.Errorf("unmerged PR should not mark task done")
+	}
+
+	taskCheck1, _ := taskRepo.GetByID(ctx, "task-pr-merge-1")
+	if taskCheck1.Status != models.TaskStatusReview {
+		t.Errorf("expected task to remain in review, got %s", taskCheck1.Status)
+	}
+
+	// 2. Inbound webhook for closed PR WITH merged = true
+	mergedPayload := []byte(`{
+		"action": "closed",
+		"repository": { "owner": "owner", "full_name": "owner/pr-repo" },
+		"pull_request": {
+			"number": 12,
+			"state": "closed",
+			"merged": true,
+			"merged_at": "2026-10-08T03:00:00Z",
+			"html_url": "https://github.com/owner/pr-repo/pull/12",
+			"head": {
+				"ref": "task/task-pr-merge-1"
+			}
+		}
+	}`)
+	mac2 := hmac.New(sha256.New, []byte(webhookSecret))
+	mac2.Write(mergedPayload)
+	sigMerged := "sha256=" + hex.EncodeToString(mac2.Sum(nil))
+
+	res2, err := webhookSvc.HandleGitHubWebhook(ctx, mergedPayload, "del-pr-merged", sigMerged)
+	if err != nil {
+		t.Fatalf("unexpected error for merged PR webhook: %v", err)
+	}
+	if res2.TaskID != "task-pr-merge-1" {
+		t.Errorf("expected task-pr-merge-1 to be marked done, got %s", res2.TaskID)
+	}
+
+	taskCheck2, _ := taskRepo.GetByID(ctx, "task-pr-merge-1")
+	if taskCheck2.Status != models.TaskStatusDone {
+		t.Fatalf("expected task status to be %s, got %s", models.TaskStatusDone, taskCheck2.Status)
+	}
+}

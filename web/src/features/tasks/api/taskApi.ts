@@ -59,4 +59,9 @@ export const taskApi = {
     const res = await axiosClient.get<{ diff?: string }>(`/tasks/${encodeURIComponent(taskId)}/diff`);
     return res.data?.diff ?? '';
   },
+
+  async syncTaskPR(taskId: string): Promise<TaskDTO> {
+    const res = await axiosClient.post<TaskDTO>(`/tasks/${encodeURIComponent(taskId)}/sync-pr`);
+    return res.data;
+  },
 };

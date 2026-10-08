@@ -50,6 +50,15 @@ func (m *mockPRProvider) CreatePullRequest(ctx context.Context, integration *mod
 	return "https://example.com/pr/1", nil
 }
 
+func (m *mockPRProvider) GetPullRequestStatus(ctx context.Context, integration *models.ProjectIntegration, plainSecret string, prNumberOrURL string) (*integrations.PullRequestStatus, error) {
+	return &integrations.PullRequestStatus{
+		Number:  1,
+		State:   "closed",
+		Merged:  true,
+		HTMLURL: "https://example.com/pr/1",
+	}, nil
+}
+
 func TestEventDeduplication(t *testing.T) {
 	store := integrations.NewMemoryIdempotencyStore()
 	ctx := context.Background()

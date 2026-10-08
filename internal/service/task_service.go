@@ -38,6 +38,8 @@ type TaskService interface {
 	PromptTaskSession(ctx context.Context, taskID, userID string, req *dto.TaskSessionPromptRequest) error
 	CompactTaskSession(ctx context.Context, taskID, userID string) error
 	GetTaskDiff(ctx context.Context, taskID, userID string) (string, error)
+	SyncTaskPRStatus(ctx context.Context, taskID, userID string) (*models.Task, error)
+	ReconcileActivePRs(ctx context.Context) error
 }
 
 type taskService struct {
@@ -120,15 +122,18 @@ func (s *taskService) ListSubtasks(ctx context.Context, parentTaskID string) ([]
 	return s.taskRepo.ListByParentID(ctx, parentTaskID)
 }
 
-// CreateTask validates input, creates a new task in DB, enqueues to Asynq queue if queued, and broadcasts status via WebSocket.
+// CreateTask validates input via models.Validate, creates a new task in DB, enqueues to Asynq queue if queued, and broadcasts status via WebSocket.
 func (s *taskService) CreateTask(ctx context.Context, req *dto.CreateTaskRequest) (*models.Task, error) {
 	if req == nil {
 		return nil, errors.New("request cannot be nil")
 	}
 
-	priority := models.TaskPriority(req.Priority)
-	if !priority.IsValid() {
-		priority = models.PriorityNormal
+	if req.Priority == 0 {
+		req.Priority = int(models.PriorityNormal)
+	}
+
+	if err := models.Validate.Struct(req); err != nil {
+		return nil, fmt.Errorf("invalid create task request: %w", err)
 	}
 
 	taskID := common.NewID()
@@ -142,12 +147,16 @@ func (s *taskService) CreateTask(ctx context.Context, req *dto.CreateTaskRequest
 		Prompt:       req.Prompt,
 		AssigneeID:   req.AssigneeID,
 		AssigneeType: req.AssigneeType,
-		Priority:     priority,
+		Priority:     models.TaskPriority(req.Priority),
 		Model:        req.Model,
 		Skills:       models.StringArray(req.Skills),
 		MCPServers:   models.StringArray(req.MCPServers),
 		SessionID:    &sessionID,
 		Status:       models.TaskStatusQueued,
+	}
+
+	if err := models.Validate.Struct(task); err != nil {
+		return nil, fmt.Errorf("invalid task entity: %w", err)
 	}
 
 	if err := s.taskRepo.Create(ctx, task); err != nil {
@@ -532,6 +541,103 @@ func (s *taskService) GetTaskDiff(ctx context.Context, taskID, userID string) (s
 	}
 
 	return "", nil
+}
+
+// SyncTaskPRStatus checks the external PR status on GitHub and marks the task as done if merged.
+func (s *taskService) SyncTaskPRStatus(ctx context.Context, taskID, userID string) (*models.Task, error) {
+	var task *models.Task
+	var err error
+	if userID != "" {
+		task, err = s.authorizeUserForTask(ctx, taskID, userID, models.RoleViewer)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		task, err = s.taskRepo.GetByID(ctx, taskID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if task.PRURL == nil || *task.PRURL == "" {
+		return task, nil
+	}
+
+	if task.Status == models.TaskStatusDone {
+		return task, nil
+	}
+
+	if s.integRepo == nil || s.credRepo == nil || s.cipher == nil || s.ghProvider == nil {
+		return task, nil
+	}
+
+	integrationsList, err := s.integRepo.ListByProjectID(ctx, task.ProjectID)
+	if err != nil || len(integrationsList) == 0 {
+		return task, nil
+	}
+
+	var ghInteg *models.ProjectIntegration
+	for i := range integrationsList {
+		if integrationsList[i].Provider == models.IntegrationGitHub && integrationsList[i].Enabled {
+			ghInteg = &integrationsList[i]
+			break
+		}
+	}
+	if ghInteg == nil {
+		return task, nil
+	}
+
+	cred, err := s.credRepo.GetByID(ctx, ghInteg.CredentialID)
+	if err != nil {
+		return task, nil
+	}
+
+	token, err := s.cipher.Decrypt(cred.EncryptedData)
+	if err != nil {
+		return task, nil
+	}
+
+	prStatus, err := s.ghProvider.GetPullRequestStatus(ctx, ghInteg, token, *task.PRURL)
+	if err != nil {
+		return task, fmt.Errorf("failed to check PR status: %w", err)
+	}
+
+	if prStatus != nil && prStatus.Merged {
+		task.Status = models.TaskStatusDone
+		task.UpdatedAt = time.Now().UTC()
+		if err := s.taskRepo.Update(ctx, task); err != nil {
+			return nil, fmt.Errorf("failed to update task status: %w", err)
+		}
+
+		if s.hub != nil {
+			_ = s.hub.BroadcastTaskStatus(task.ID, models.TaskStatusDone)
+		}
+
+		// Close linked issue if present
+		if task.ExternalID != nil && *task.ExternalID != "" {
+			if syncProv, ok := s.ghProvider.(integrations.SyncProvider); ok {
+				_ = syncProv.UpdateIssueStatus(ctx, ghInteg, token, *task.ExternalID, "closed")
+				_ = syncProv.AddComment(ctx, ghInteg, token, *task.ExternalID, fmt.Sprintf("Pull Request %s was merged. Task marked as completed.", *task.PRURL))
+			}
+		}
+	}
+
+	return task, nil
+}
+
+// ReconcileActivePRs inspects tasks in review status with a PR URL and marks them done if merged.
+func (s *taskService) ReconcileActivePRs(ctx context.Context) error {
+	tasks, err := s.taskRepo.List(ctx, "")
+	if err != nil {
+		return err
+	}
+
+	for i := range tasks {
+		if tasks[i].Status == models.TaskStatusReview && tasks[i].PRURL != nil && *tasks[i].PRURL != "" {
+			_, _ = s.SyncTaskPRStatus(ctx, tasks[i].ID, "")
+		}
+	}
+	return nil
 }
 
 // LogService defines the business operations for appending and streaming task logs.
