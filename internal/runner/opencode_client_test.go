@@ -1,6 +1,7 @@
 package runner_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -222,5 +224,45 @@ func TestOpenCodeClient_EnsureSessionAtLocation(t *testing.T) {
 	}
 	if !moved {
 		t.Errorf("expected session move to be called on fallback")
+	}
+}
+
+func BenchmarkResponseBodyReader_IOReadAll(b *testing.B) {
+	data := strings.Repeat(`{"id":"msg_123","type":"assistant","text":"sample response text chunk"}`+"\n", 1000) // ~75 KB
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		r := io.NopCloser(strings.NewReader(data))
+		body, err := io.ReadAll(r)
+		if err != nil {
+			b.Fatal(err)
+		}
+		_ = body
+	}
+}
+
+func BenchmarkResponseBodyReader_PooledBuffer(b *testing.B) {
+	data := strings.Repeat(`{"id":"msg_123","type":"assistant","text":"sample response text chunk"}`+"\n", 1000) // ~75 KB
+	pool := sync.Pool{
+		New: func() any {
+			return bytes.NewBuffer(make([]byte, 0, 128*1024))
+		},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		r := io.NopCloser(strings.NewReader(data))
+		buf := pool.Get().(*bytes.Buffer)
+		buf.Reset()
+		_, err := buf.ReadFrom(r)
+		if err != nil {
+			b.Fatal(err)
+		}
+		_ = buf.Bytes()
+		if buf.Cap() <= 512*1024 {
+			pool.Put(buf)
+		}
 	}
 }

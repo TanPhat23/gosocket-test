@@ -114,3 +114,86 @@ func TestHubBroadcastTaskLogAndStatus(t *testing.T) {
 		t.Fatalf("timed out waiting for agent_event message")
 	}
 }
+
+type discardedClient struct {
+	id     string
+	taskID string
+}
+
+func (d *discardedClient) ID() string         { return d.id }
+func (d *discardedClient) TaskID() string     { return d.taskID }
+func (d *discardedClient) Send([]byte) error  { return nil }
+func (d *discardedClient) Close() error       { return nil }
+
+func BenchmarkHub_BroadcastTaskLog_Unpooled(b *testing.B) {
+	client := &discardedClient{id: "c1", taskID: "task-bench"}
+	hub := ws.NewHub()
+	go hub.Run()
+	defer hub.Stop()
+	hub.Register(client)
+	time.Sleep(10 * time.Millisecond)
+
+	chunk := "[subagent: frontend] → [shell] npm run build\n"
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		msg := ws.NewLogMessage("task-bench", chunk)
+		data, err := json.Marshal(msg)
+		if err != nil {
+			b.Fatal(err)
+		}
+		hub.BroadcastToTask("task-bench", data)
+	}
+}
+
+func BenchmarkHub_BroadcastTaskLog_WithSubscribers(b *testing.B) {
+	client := &discardedClient{id: "c1", taskID: "task-bench"}
+	hub := ws.NewHub()
+	go hub.Run()
+	defer hub.Stop()
+	hub.Register(client)
+	time.Sleep(10 * time.Millisecond)
+
+	chunk := "[subagent: frontend] → [shell] npm run build\n"
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		if err := hub.BroadcastTaskLog("task-bench", chunk); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkHub_BroadcastTaskLog_NoSubscribers(b *testing.B) {
+	hub := ws.NewHub()
+	chunk := "[subagent: frontend] → [shell] npm run build\n"
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		if err := hub.BroadcastTaskLog("no-subscribers-task", chunk); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkHub_BroadcastTaskLog_Parallel_WithSubscribers(b *testing.B) {
+	client := &discardedClient{id: "c1", taskID: "task-bench"}
+	hub := ws.NewHub()
+	go hub.Run()
+	defer hub.Stop()
+	hub.Register(client)
+	time.Sleep(10 * time.Millisecond)
+
+	chunk := "[subagent: frontend] → [shell] npm run build\n"
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_ = hub.BroadcastTaskLog("task-bench", chunk)
+		}
+	})
+}

@@ -14,11 +14,44 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/dto"
 )
+
+const httpMaxPooledBufferBytes = 1024 * 1024 // 1 MiB
+
+var httpBufferPool = sync.Pool{
+	New: func() any {
+		return bytes.NewBuffer(make([]byte, 0, 128*1024))
+	},
+}
+
+func readResponseBody(r io.Reader) (*bytes.Buffer, error) {
+	buf := httpBufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	_, err := buf.ReadFrom(r)
+	if err != nil {
+		if buf.Cap() <= httpMaxPooledBufferBytes {
+			buf.Reset()
+			httpBufferPool.Put(buf)
+		}
+		return nil, err
+	}
+	return buf, nil
+}
+
+func releaseResponseBody(buf *bytes.Buffer) {
+	if buf == nil {
+		return
+	}
+	if buf.Cap() <= httpMaxPooledBufferBytes {
+		buf.Reset()
+		httpBufferPool.Put(buf)
+	}
+}
 
 var sessionIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
@@ -179,10 +212,12 @@ func (c *openCodeClient) GetSession(ctx context.Context, sessionID string) (*Ope
 		return nil, fmt.Errorf("opencode server returned status %d", resp.StatusCode)
 	}
 
-	respBody, err := io.ReadAll(resp.Body)
+	buf, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil, common.ErrServiceUnavailable
 	}
+	defer releaseResponseBody(buf)
+	respBody := buf.Bytes()
 
 	// OpenCode returns {"data": {...}} or direct object
 	var wrapper struct {
@@ -290,10 +325,12 @@ func (c *openCodeClient) GetSessionMessages(ctx context.Context, sessionID strin
 		return nil, fmt.Errorf("opencode server returned status %d", resp.StatusCode)
 	}
 
-	respBody, err := io.ReadAll(resp.Body)
+	buf, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil, common.ErrServiceUnavailable
 	}
+	defer releaseResponseBody(buf)
+	respBody := buf.Bytes()
 
 	// OpenCode returns {"data": [...]} or [...]
 	var wrapper struct {
@@ -404,10 +441,12 @@ func (c *openCodeClient) ListChildSessions(ctx context.Context, parentID string)
 		return nil, fmt.Errorf("opencode server returned status %d", resp.StatusCode)
 	}
 
-	respBody, err := io.ReadAll(resp.Body)
+	buf, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil, err
 	}
+	defer releaseResponseBody(buf)
+	respBody := buf.Bytes()
 
 	var wrapper struct {
 		Data []struct {
@@ -466,8 +505,12 @@ func (c *openCodeClient) PromptSession(ctx context.Context, sessionID, prompt st
 		return common.ErrServiceUnavailable
 	}
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		errMsg := strings.TrimSpace(string(body))
+		buf, _ := readResponseBody(resp.Body)
+		defer releaseResponseBody(buf)
+		errMsg := ""
+		if buf != nil {
+			errMsg = strings.TrimSpace(buf.String())
+		}
 		if errMsg != "" {
 			return fmt.Errorf("opencode server returned status %d: %s", resp.StatusCode, errMsg)
 		}

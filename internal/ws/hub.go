@@ -88,6 +88,20 @@ func (h *Hub) removeClient(client Client) {
 	}
 }
 
+// HasSubscribers checks if a task room has any active connected clients.
+func (h *Hub) HasSubscribers(taskID string) bool {
+	room, ok := h.rooms.Load(taskID)
+	if !ok {
+		return false
+	}
+	hasAny := false
+	room.Range(func(string, Client) bool {
+		hasAny = true
+		return false
+	})
+	return hasAny
+}
+
 // BroadcastToTask sends raw byte payload to all clients subscribed to taskID.
 func (h *Hub) BroadcastToTask(taskID string, data []byte) {
 	room, ok := h.rooms.Load(taskID)
@@ -106,6 +120,9 @@ func (h *Hub) BroadcastToTask(taskID string, data []byte) {
 
 // BroadcastTaskLog marshals and broadcasts a log chunk message to subscribers of taskID.
 func (h *Hub) BroadcastTaskLog(taskID string, chunk string) error {
+	if !h.HasSubscribers(taskID) {
+		return nil
+	}
 	msg := NewLogMessage(taskID, chunk)
 	data, err := common.Marshal(msg)
 	if err != nil {
@@ -122,18 +139,31 @@ func (h *Hub) BroadcastGlobal(data []byte) {
 
 // BroadcastTaskStatus marshals and broadcasts a status update message to subscribers of taskID and global event listeners.
 func (h *Hub) BroadcastTaskStatus(taskID string, status models.TaskStatus) error {
+	hasTask := h.HasSubscribers(taskID)
+	hasGlobal := h.HasSubscribers("global")
+	if !hasTask && !hasGlobal {
+		return nil
+	}
+
 	msg := NewStatusMessage(taskID, status)
 	data, err := common.Marshal(msg)
 	if err != nil {
 		return err
 	}
-	h.BroadcastToTask(taskID, data)
-	h.BroadcastToTask("global", data)
+	if hasTask {
+		h.BroadcastToTask(taskID, data)
+	}
+	if hasGlobal {
+		h.BroadcastToTask("global", data)
+	}
 	return nil
 }
 
 // BroadcastTaskDiff marshals and broadcasts a diff message to subscribers of taskID.
 func (h *Hub) BroadcastTaskDiff(taskID string, diff string) error {
+	if !h.HasSubscribers(taskID) {
+		return nil
+	}
 	msg := NewDiffMessage(taskID, diff)
 	data, err := common.Marshal(msg)
 	if err != nil {
@@ -145,6 +175,9 @@ func (h *Hub) BroadcastTaskDiff(taskID string, diff string) error {
 
 // BroadcastTaskEvent marshals and broadcasts a structured agent event to subscribers of taskID.
 func (h *Hub) BroadcastTaskEvent(taskID string, event any) error {
+	if !h.HasSubscribers(taskID) {
+		return nil
+	}
 	msg := NewAgentEventMessage(taskID, event)
 	data, err := common.Marshal(msg)
 	if err != nil {
