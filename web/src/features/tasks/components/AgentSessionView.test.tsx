@@ -144,6 +144,40 @@ describe('parseSessionMessageContent', () => {
     expect(inputObj.questions).toHaveLength(1);
   });
 
+  it('extracts structured questionnaire from markdown text (Image 2 coordinator clarification turn)', () => {
+    const markdownMessage = `
+### Classification: Bounded Task
+
+The project is a standard Next.js (App Router, Tailwind CSS v4, React 19) template application. We want to add a hero banner section to the UI.
+
+Before proceeding, let's clarify your preferences:
+
+1. **Placement & Scope:**
+- **Option A (Recommended):** Create a dedicated, clean hero banner section on \`src/app/page.tsx\` (headline, subheading/tagline, primary and secondary call-to-action buttons, badge/pill), replacing or integrating cleanly with the default Next.js starter layout.
+- **Option B:** Add a reusable \`src/components/HeroBanner.tsx\` component and mount it at the top of \`src/app/page.tsx\`.
+
+2. **Copy & Purpose:**
+- What is the app's topic or brand name, or would you like a modern tech/product placeholder (e.g. "Build faster with Agent Task Manager")?
+
+Which direction do you prefer?
+`;
+
+    const msg: SessionMessage = {
+      id: 'msg_clarify',
+      role: 'assistant',
+      text: markdownMessage,
+    };
+
+    const parsed = parseSessionMessageContent(msg);
+
+    expect(parsed.extractedQuestions).toBeDefined();
+    expect(parsed.extractedQuestions).toHaveLength(2);
+    expect(parsed.extractedQuestions?.[0].header).toBe('1. Placement & Scope');
+    expect(parsed.extractedQuestions?.[0].options).toHaveLength(2);
+    expect(parsed.extractedQuestions?.[0].options?.[0].label).toBe('Option A (Recommended)');
+    expect(parsed.extractedQuestions?.[1].header).toBe('2. Copy & Purpose');
+  });
+
   it('handles plain text and user messages cleanly', () => {
     const msg: SessionMessage = {
       id: 'msg_5',

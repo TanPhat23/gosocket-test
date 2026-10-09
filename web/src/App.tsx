@@ -35,7 +35,7 @@ export const WorkspaceView: React.FC = () => {
         <Header />
 
         {/* Main Workspace */}
-        <main className="flex-1 max-w-7xl w-full mx-2 p-6 flex flex-col gap-6">
+        <main className="flex-1 w-full px-6 py-6 flex flex-col gap-6">
           {/* Top Control Bar with Metrics and New Task */}
           <div className="flex flex-col gap-4">
             <div className="flex items-center justify-between">

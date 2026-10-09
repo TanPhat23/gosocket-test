@@ -127,7 +127,7 @@ export function AgentQuestionnaire({
 
   const questionnaireItems = items.map((q, idx) => ({
     name: `question_${idx}`,
-    required: true,
+    required: false,
     disabled: isCompleted || isSubmitting,
     choices: (q.options || []).map((opt) => ({
       value: opt.value || opt.label,
@@ -146,6 +146,10 @@ export function AgentQuestionnaire({
     items.forEach((q, idx) => {
       const name = `question_${idx}`;
       const selected = formData.getAll(name).map(String).filter(Boolean);
+      const customVal = formData.get(`${name}_custom`)?.toString().trim();
+      if (customVal) {
+        selected.push(customVal);
+      }
 
       const resolvedAnswers = selected.map((val) => {
         const found = q.options?.find((opt) => (opt.value || opt.label) === val);
@@ -258,7 +262,7 @@ export function AgentQuestionnaire({
                 key={name}
                 name={name}
                 multiple={q.multiple}
-                required={true}
+                required={false}
                 disabled={isCompleted || isSubmitting}
                 className="gap-3"
                 data-testid={`question-item-${idx}`}

@@ -25,7 +25,9 @@ import {
   Database,
   Cpu,
 } from 'lucide-react';
-import { AgentQuestionnaire } from './AgentQuestionnaire';
+import { AgentQuestionnaire, type QuestionItemData } from './AgentQuestionnaire';
+import { extractQuestionsFromText } from '../utils/questionParser';
+import { Markdown } from '@/components/ui/markdown';
 
 interface AgentSessionViewProps {
   taskId: string;
@@ -36,6 +38,7 @@ export interface ParsedMessageData {
   text: string;
   thoughts?: string;
   toolCalls: SessionToolCall[];
+  extractedQuestions?: QuestionItemData[];
 }
 
 export function parseSessionMessageContent(msg: SessionMessage): ParsedMessageData {
@@ -185,10 +188,14 @@ export function parseSessionMessageContent(msg: SessionMessage): ParsedMessageDa
     textParts.push(msg.text.trim());
   }
 
+  const fullText = textParts.join('\n\n');
+  const extractedQuestions = extractQuestionsFromText(fullText);
+
   return {
-    text: textParts.join('\n\n'),
+    text: fullText,
     thoughts: thoughtParts.join('\n\n') || undefined,
     toolCalls,
+    extractedQuestions: extractedQuestions.length > 0 ? extractedQuestions : undefined,
   };
 }
 
@@ -631,11 +638,15 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                 const tB = b.created_at ? new Date(b.created_at).getTime() : 0;
                 return tA - tB;
               })
-              .map((msg: SessionMessage, msgIdx: number) => {
+              .map((msg: SessionMessage, msgIdx: number, allMsgs: SessionMessage[]) => {
               const isUser = msg.role === 'user' || msg.type === 'user';
               const parsed = parseSessionMessageContent(msg);
-              const { text: textContent, thoughts, toolCalls } = parsed;
+              const { text: textContent, thoughts, toolCalls, extractedQuestions } = parsed;
               const timeString = formatTimestamp(msg.created_at);
+              const hasQuestionTool = toolCalls.some((tc) => tc.name === 'question');
+              const hasSubsequentUserMessage = allMsgs
+                .slice(msgIdx + 1)
+                .some((m) => m.role === 'user' || m.type === 'user');
 
               // Skip rendering empty assistant bubbles with no text, thoughts, or tools
               if (!isUser && !textContent && !thoughts && toolCalls.length === 0) {
@@ -715,10 +726,24 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                       </details>
                     )}
 
-                    {/* Text reply */}
+                    {/* Text reply rendered with Markdown */}
                     {textContent && (
-                      <div className="whitespace-pre-wrap leading-relaxed text-foreground font-sans text-xs">
-                        {textContent}
+                      <div className="leading-relaxed text-foreground font-sans text-xs">
+                        <Markdown content={textContent} />
+                      </div>
+                    )}
+
+                    {/* Extracted Questionnaire from message text (if no explicit question tool call) */}
+                    {!hasQuestionTool && extractedQuestions && extractedQuestions.length > 0 && (
+                      <div className="pt-2">
+                        <AgentQuestionnaire
+                          questions={extractedQuestions}
+                          status={hasSubsequentUserMessage ? 'completed' : 'pending'}
+                          onSubmitAnswer={async (answerText) => {
+                            await handleSendPrompt(undefined, answerText);
+                          }}
+                          isSubmitting={isSubmittingPrompt}
+                        />
                       </div>
                     )}
 
