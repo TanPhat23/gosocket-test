@@ -112,3 +112,67 @@ func TestAgentStreamScanner_BufferReuse(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func BenchmarkAgentStreamScanner_Unpooled(b *testing.B) {
+	payload := strings.Repeat("{\"type\":\"text\",\"text\":\"streaming chunk data\"}\n", 10)
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		r := strings.NewReader(payload)
+		s := bufio.NewScanner(r)
+		s.Buffer(make([]byte, 0, AgentStreamInitialBufferBytes), AgentStreamMaxLineBytes)
+		for s.Scan() {
+			_ = s.Bytes()
+		}
+	}
+}
+
+func BenchmarkAgentStreamScanner_Pooled(b *testing.B) {
+	payload := strings.Repeat("{\"type\":\"text\",\"text\":\"streaming chunk data\"}\n", 10)
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		r := strings.NewReader(payload)
+		s := NewAgentStreamScanner(r)
+		for s.Scan() {
+			_ = s.Bytes()
+		}
+		s.Close()
+	}
+}
+
+func BenchmarkAgentStreamScanner_Parallel_Unpooled(b *testing.B) {
+	payload := strings.Repeat("{\"type\":\"text\",\"text\":\"streaming chunk data\"}\n", 10)
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			r := strings.NewReader(payload)
+			s := bufio.NewScanner(r)
+			s.Buffer(make([]byte, 0, AgentStreamInitialBufferBytes), AgentStreamMaxLineBytes)
+			for s.Scan() {
+				_ = s.Bytes()
+			}
+		}
+	})
+}
+
+func BenchmarkAgentStreamScanner_Parallel_Pooled(b *testing.B) {
+	payload := strings.Repeat("{\"type\":\"text\",\"text\":\"streaming chunk data\"}\n", 10)
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			r := strings.NewReader(payload)
+			s := NewAgentStreamScanner(r)
+			for s.Scan() {
+				_ = s.Bytes()
+			}
+			s.Close()
+		}
+	})
+}
