@@ -10,14 +10,15 @@ import (
 type MessageType string
 
 const (
-	MessageTypeLog    MessageType = "log"
-	MessageTypeStatus MessageType = "status"
-	MessageTypeDiff   MessageType = "diff"
+	MessageTypeLog        MessageType = "log"
+	MessageTypeStatus     MessageType = "status"
+	MessageTypeDiff       MessageType = "diff"
+	MessageTypeAgentEvent MessageType = "agent_event"
 )
 
 func (t MessageType) IsValid() bool {
 	switch t {
-	case MessageTypeLog, MessageTypeStatus, MessageTypeDiff:
+	case MessageTypeLog, MessageTypeStatus, MessageTypeDiff, MessageTypeAgentEvent:
 		return true
 	}
 	return false
@@ -61,6 +62,16 @@ func NewDiffMessage(taskID string, diff string) Message[string] {
 		TaskID:    taskID,
 		Type:      MessageTypeDiff,
 		Payload:   diff,
+		Timestamp: time.Now().UTC(),
+	}
+}
+
+// NewAgentEventMessage creates a new structured agent event message envelope.
+func NewAgentEventMessage[T any](taskID string, event T) Message[T] {
+	return Message[T]{
+		TaskID:    taskID,
+		Type:      MessageTypeAgentEvent,
+		Payload:   event,
 		Timestamp: time.Now().UTC(),
 	}
 }

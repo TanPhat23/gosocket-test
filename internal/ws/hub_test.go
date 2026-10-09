@@ -90,4 +90,27 @@ func TestHubBroadcastTaskLogAndStatus(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 		t.Fatalf("timed out waiting for status message")
 	}
+
+	// Broadcast Agent Event
+	eventPayload := map[string]any{"eventType": "tool_use", "tool": "shell"}
+	err = hub.BroadcastTaskEvent("task-99", eventPayload)
+	if err != nil {
+		t.Fatalf("BroadcastTaskEvent failed: %v", err)
+	}
+
+	select {
+	case msg := <-client.Messages():
+		var envelope ws.Message[map[string]any]
+		if err := json.Unmarshal(msg, &envelope); err != nil {
+			t.Fatalf("failed to unmarshal agent_event message envelope: %v", err)
+		}
+		if envelope.Type != "agent_event" || envelope.TaskID != "task-99" {
+			t.Fatalf("unexpected envelope type: %+v", envelope)
+		}
+		if envelope.Payload["tool"] != "shell" {
+			t.Fatalf("unexpected payload tool: %+v", envelope.Payload)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("timed out waiting for agent_event message")
+	}
 }

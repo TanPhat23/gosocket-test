@@ -143,6 +143,17 @@ func (h *Hub) BroadcastTaskDiff(taskID string, diff string) error {
 	return nil
 }
 
+// BroadcastTaskEvent marshals and broadcasts a structured agent event to subscribers of taskID.
+func (h *Hub) BroadcastTaskEvent(taskID string, event any) error {
+	msg := NewAgentEventMessage(taskID, event)
+	data, err := common.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	h.BroadcastToTask(taskID, data)
+	return nil
+}
+
 // MockClient is a helper implementation of Client for testing and decoupling.
 type MockClient struct {
 	id       string
