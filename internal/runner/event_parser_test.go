@@ -37,3 +37,26 @@ func TestParseOpenCodeWireEvent_AllEventTypes(t *testing.T) {
 		t.Fatalf("failed to parse step_finish: %v", err)
 	}
 }
+
+func BenchmarkFormatWireEventANSI_ToolUse(b *testing.B) {
+	evt := &OpenCodeWireEvent{
+		Type: "tool_use",
+		Part: OpenCodeWirePart{
+			Tool: "shell",
+			State: &OpenCodeToolState{
+				Status: "completed",
+				Input: map[string]any{
+					"command": "npm run test",
+				},
+				Output: "PASS src/app.test.ts\nPASS src/utils.test.ts\nTest Suites: 2 passed, 2 total\nTests: 15 passed, 15 total\n",
+			},
+		},
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, _ = FormatWireEventANSI(evt)
+	}
+}

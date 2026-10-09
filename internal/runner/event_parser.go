@@ -1,10 +1,20 @@
 package runner
 
 import (
+	"bytes"
 	"encoding/json"
-	"fmt"
+	"strconv"
 	"strings"
+	"sync"
 )
+
+const ansiMaxPooledBufferBytes = 16 * 1024 // 16 KiB
+
+var ansiBufferPool = sync.Pool{
+	New: func() any {
+		return bytes.NewBuffer(make([]byte, 0, 512))
+	},
+}
 
 // OpenCodeWireEvent models the JSON events emitted by OpenCode CLI when run with --format json.
 type OpenCodeWireEvent struct {
@@ -77,36 +87,98 @@ func FormatWireEventANSI(evt *OpenCodeWireEvent) (string, bool) {
 				cmd = pathVal
 			}
 
+			buf := ansiBufferPool.Get().(*bytes.Buffer)
+			buf.Reset()
+			defer func() {
+				if buf.Cap() <= ansiMaxPooledBufferBytes {
+					ansiBufferPool.Put(buf)
+				}
+			}()
+
 			if evt.Part.State.Status == "completed" {
-				var b strings.Builder
 				if cmd != "" {
-					b.WriteString(fmt.Sprintf("\x1b[33m→ [%s]\x1b[0m \x1b[90m%s\x1b[0m\r\n", toolName, cmd))
+					buf.WriteString("\x1b[33m→ [")
+					buf.WriteString(toolName)
+					buf.WriteString("]\x1b[0m \x1b[90m")
+					buf.WriteString(cmd)
+					buf.WriteString("\x1b[0m\r\n")
 				}
 				if evt.Part.State.Output != "" {
-					lines := strings.Split(strings.TrimSpace(evt.Part.State.Output), "\n")
-					limit := 4
-					if len(lines) < limit {
-						limit = len(lines)
+					trimmedOutput := strings.TrimSpace(evt.Part.State.Output)
+					rem := trimmedOutput
+					linesPrinted := 0
+					totalLines := strings.Count(trimmedOutput, "\n") + 1
+
+					for len(rem) > 0 && linesPrinted < 4 {
+						idx := strings.IndexByte(rem, '\n')
+						var line string
+						if idx >= 0 {
+							line = rem[:idx]
+							rem = rem[idx+1:]
+						} else {
+							line = rem
+							rem = ""
+						}
+						buf.WriteString("  \x1b[90m")
+						buf.WriteString(line)
+						buf.WriteString("\x1b[0m\r\n")
+						linesPrinted++
 					}
-					for i := 0; i < limit; i++ {
-						b.WriteString(fmt.Sprintf("  \x1b[90m%s\x1b[0m\r\n", lines[i]))
-					}
-					if len(lines) > 4 {
-						b.WriteString(fmt.Sprintf("  \x1b[90m... (%d lines)\x1b[0m\r\n", len(lines)))
+					if totalLines > 4 {
+						buf.WriteString("  \x1b[90m... (")
+						buf.WriteString(strconv.Itoa(totalLines))
+						buf.WriteString(" lines)\x1b[0m\r\n")
 					}
 				}
-				b.WriteString(fmt.Sprintf("\x1b[32m✔ Completed tool: %s\x1b[0m\r\n", toolName))
-				return b.String(), true
+				buf.WriteString("\x1b[32m✔ Completed tool: ")
+				buf.WriteString(toolName)
+				buf.WriteString("\x1b[0m\r\n")
+				return buf.String(), true
 			} else if evt.Part.State.Status == "failed" {
-				return fmt.Sprintf("\x1b[31m✖ Tool failed: %s\x1b[0m\r\n", toolName), true
+				buf.WriteString("\x1b[31m✖ Tool failed: ")
+				buf.WriteString(toolName)
+				buf.WriteString("\x1b[0m\r\n")
+				return buf.String(), true
 			}
-			return fmt.Sprintf("\x1b[33m→ [%s]\x1b[0m \x1b[90m%s\x1b[0m\r\n", toolName, cmd), true
+
+			buf.WriteString("\x1b[33m→ [")
+			buf.WriteString(toolName)
+			buf.WriteString("]\x1b[0m")
+			if cmd != "" {
+				buf.WriteString(" \x1b[90m")
+				buf.WriteString(cmd)
+				buf.WriteString("\x1b[0m")
+			}
+			buf.WriteString("\r\n")
+			return buf.String(), true
 		}
-		return fmt.Sprintf("\x1b[33m→ [%s]\x1b[0m\r\n", toolName), true
+
+		buf := ansiBufferPool.Get().(*bytes.Buffer)
+		buf.Reset()
+		defer func() {
+			if buf.Cap() <= ansiMaxPooledBufferBytes {
+				ansiBufferPool.Put(buf)
+			}
+		}()
+		buf.WriteString("\x1b[33m→ [")
+		buf.WriteString(toolName)
+		buf.WriteString("]\x1b[0m\r\n")
+		return buf.String(), true
 
 	case "text":
-		if strings.TrimSpace(evt.Part.Text) != "" {
-			return fmt.Sprintf("\r\n\x1b[36m> agent\x1b[0m\r\n%s\r\n", evt.Part.Text), true
+		trimmed := strings.TrimSpace(evt.Part.Text)
+		if trimmed != "" {
+			buf := ansiBufferPool.Get().(*bytes.Buffer)
+			buf.Reset()
+			defer func() {
+				if buf.Cap() <= ansiMaxPooledBufferBytes {
+					ansiBufferPool.Put(buf)
+				}
+			}()
+			buf.WriteString("\r\n\x1b[36m> agent\x1b[0m\r\n")
+			buf.WriteString(evt.Part.Text)
+			buf.WriteString("\r\n")
+			return buf.String(), true
 		}
 
 	case "error":
@@ -114,7 +186,17 @@ func FormatWireEventANSI(evt *OpenCodeWireEvent) (string, bool) {
 		if errMsg == "" {
 			errMsg = evt.Message
 		}
-		return fmt.Sprintf("\r\n\x1b[31m✖ Agent error: %s\x1b[0m\r\n", errMsg), true
+		buf := ansiBufferPool.Get().(*bytes.Buffer)
+		buf.Reset()
+		defer func() {
+			if buf.Cap() <= ansiMaxPooledBufferBytes {
+				ansiBufferPool.Put(buf)
+			}
+		}()
+		buf.WriteString("\r\n\x1b[31m✖ Agent error: ")
+		buf.WriteString(errMsg)
+		buf.WriteString("\x1b[0m\r\n")
+		return buf.String(), true
 	}
 
 	return "", false
