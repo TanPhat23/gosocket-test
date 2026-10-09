@@ -15,29 +15,25 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Plus, Check, Sparkles, Server, Wrench, AlertCircle, Cpu, GitBranch } from 'lucide-react';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Plus, Check, Sparkles, Server, Wrench, AlertCircle, Cpu, GitBranch, FolderGit2 } from 'lucide-react';
 import { integrationApi } from '@/features/integrations/api/integrationApi';
 import type { IntegrationDTO } from '@/features/integrations/schemas/integrationSchemas';
+import {
+  useWorkspaceSettingsStore,
+  type ModelOption,
+  DEFAULT_OPENCODE_MODELS,
+} from '../store/useWorkspaceSettingsStore';
 import { cn } from '@/lib/utils';
 
-export interface ModelOption {
-  id: string;
-  name: string;
-  provider: string;
-  active?: boolean;
-}
-
-const DEFAULT_OPENCODE_MODELS: ModelOption[] = [
-  { id: 'google/gemini-3.8-flash', name: 'Gemini 3.8 Flash (Active)', provider: 'google', active: true },
-  { id: 'google/gemini-2.5-pro', name: 'Gemini 2.5 Pro', provider: 'google' },
-  { id: 'anthropic/claude-sonnet-4-5', name: 'Claude Sonnet 4.5', provider: 'anthropic' },
-  { id: 'anthropic/claude-opus-4-6', name: 'Claude Opus 4.6', provider: 'anthropic' },
-  { id: 'openai/gpt-5.5', name: 'GPT-5.5', provider: 'openai' },
-  { id: 'openai/gpt-5.6-luna', name: 'GPT-5.6 Luna', provider: 'openai' },
-  { id: 'opencode-go/qwen3.8-max', name: 'Qwen 3.8 Max', provider: 'opencode-go' },
-  { id: 'opencode-go/deepseek-v4-pro', name: 'DeepSeek V4 Pro', provider: 'opencode-go' },
-  { id: 'opencode/big-pickle', name: 'Big Pickle', provider: 'opencode' },
-];
+export type { ModelOption };
+export { DEFAULT_OPENCODE_MODELS };
 
 const AVAILABLE_SKILLS = [
   'frontend-ui-engineering',
@@ -65,16 +61,31 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
   const projects = useProjectsList();
   const activeProjectId = useActiveProjectId();
 
-  const [availableModels, setAvailableModels] = useState<ModelOption[]>(DEFAULT_OPENCODE_MODELS);
-  const [selectedProjectId, setSelectedProjectId] = useState<string>('');
+  const defaultModel = useWorkspaceSettingsStore((state) => state.defaultModel);
+  const defaultPriority = useWorkspaceSettingsStore((state) => state.defaultPriority);
+  const workspaceModels = useWorkspaceSettingsStore((state) => state.availableModels);
+
+  const [availableModels, setAvailableModels] = useState<ModelOption[]>(
+    workspaceModels.length > 0 ? workspaceModels : DEFAULT_OPENCODE_MODELS
+  );
+  const [selectedProjectId, setSelectedProjectId] = useState<string>(activeProjectId || '');
   const [title, setTitle] = useState('');
   const [prompt, setPrompt] = useState('');
-  const [priority, setPriority] = useState<number>(50);
-  const [selectedModel, setSelectedModel] = useState<string>('google/gemini-3.8-flash');
+  const [priority, setPriority] = useState<number>(defaultPriority || 50);
+  const [selectedModel, setSelectedModel] = useState<string>(defaultModel || 'google/gemini-3.8-flash');
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [selectedMcps, setSelectedMcps] = useState<string[]>([]);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Sync with workspace settings defaults when opening
+  React.useEffect(() => {
+    if (open) {
+      if (defaultModel) setSelectedModel(defaultModel);
+      if (defaultPriority) setPriority(defaultPriority);
+      if (activeProjectId) setSelectedProjectId(activeProjectId);
+    }
+  }, [open, defaultModel, defaultPriority, activeProjectId]);
 
   // Load available models from OpenCode
   React.useEffect(() => {
@@ -143,9 +154,11 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
   const resetForm = () => {
     setTitle('');
     setPrompt('');
-    setPriority(50);
+    setPriority(defaultPriority || 50);
+    setSelectedModel(defaultModel || 'google/gemini-3.8-flash');
     setSelectedSkills([]);
     setSelectedMcps([]);
+    setSelectedIntegrationId('');
     setErrors({});
   };
 
@@ -223,22 +236,31 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
 
           {/* Project selection */}
           <div className="space-y-1.5">
-            <label htmlFor="task-project-select" className="text-xs font-semibold text-foreground">Project</label>
+            <label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+              <FolderGit2 className="size-3.5 text-primary" />
+              Project
+            </label>
             {projects.length > 0 ? (
-              <select
-                id="task-project-select"
-                aria-label="Project"
-                value={effectiveProjectId}
-                onChange={(e) => setSelectedProjectId(e.target.value)}
-                className="w-full h-8 text-xs rounded-lg border border-input bg-card px-2.5 py-1 text-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 outline-none"
+              <Select
+                value={effectiveProjectId || 'none'}
+                onValueChange={(val) => {
+                  if (typeof val === 'string') {
+                    setSelectedProjectId(val === 'none' ? '' : val);
+                  }
+                }}
               >
-                <option value="">-- No Project (Empty) --</option>
-                {projects.map((proj) => (
-                  <option key={proj.id} value={proj.id}>
-                    {proj.name}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger size="sm" className="w-full bg-card text-xs" aria-label="Project">
+                  <SelectValue placeholder="Select project..." />
+                </SelectTrigger>
+                <SelectContent align="start">
+                  <SelectItem value="none">-- No Project (Empty) --</SelectItem>
+                  {projects.map((proj) => (
+                    <SelectItem key={proj.id} value={proj.id}>
+                      {proj.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             ) : (
               <Input
                 id="task-project-input"
@@ -366,6 +388,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
             </div>
 
             {/* Model Engine */}
+            {/* Model Selection */}
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
                 <label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
@@ -373,17 +396,25 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
                   Model Engine (OpenCode)
                 </label>
               </div>
-              <select
+              <Select
                 value={selectedModel}
-                onChange={(e) => setSelectedModel(e.target.value)}
-                className="w-full h-8 text-xs rounded-lg border border-input bg-card px-2.5 py-1 text-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 outline-none font-mono"
+                onValueChange={(val) => {
+                  if (typeof val === 'string') {
+                    setSelectedModel(val);
+                  }
+                }}
               >
-                {availableModels.map((model) => (
-                  <option key={model.id} value={model.id}>
-                    {model.name} ({model.id})
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger size="sm" className="w-full bg-card text-xs font-mono" aria-label="Model Engine">
+                  <SelectValue placeholder="Select model..." />
+                </SelectTrigger>
+                <SelectContent align="start">
+                  {availableModels.map((model) => (
+                    <SelectItem key={model.id} value={model.id}>
+                      {model.name} ({model.id})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           </div>
 

@@ -7,9 +7,8 @@ import { useTaskSubscription } from '@/features/tasks/hooks/useTaskSubscription'
 import { AppSidebar } from '@/components/layout/AppSidebar';
 import { Header } from '@/components/layout/Header';
 import { Footer } from '@/components/layout/Footer';
-import { TaskMetricsGrid } from '@/features/tasks/components/TaskMetricsGrid';
+import { WorkspaceControlBar } from '@/features/tasks/components/WorkspaceControlBar';
 import { KanbanBoard } from '@/features/tasks/components/KanbanBoard';
-import { TaskModal } from '@/features/tasks/components/TaskModal';
 import { TaskInspectorModal } from '@/features/tasks/components/TaskInspectorModal';
 import { Loader2 } from 'lucide-react';
 
@@ -37,20 +36,8 @@ export const WorkspaceView: React.FC = () => {
 
         {/* Main Workspace */}
         <main className="flex-1 w-full px-6 py-6 flex flex-col gap-6">
-          {/* Top Control Bar with Metrics and New Task */}
-          <div className="flex flex-col gap-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-lg font-bold tracking-tight">Agent Control Plane</h2>
-                <p className="text-xs text-muted-foreground">
-                  Autonomous task execution, isolated worktrees, and streaming agent diagnostics.
-                </p>
-              </div>
-              <TaskModal />
-            </div>
-
-            <TaskMetricsGrid />
-          </div>
+          {/* Workspace Control Panel with Project/Model Selectors, Live Filters, and New Task */}
+          <WorkspaceControlBar />
 
           {/* 4-Lane Kanban Board */}
           <section className="flex-1 flex flex-col gap-3">

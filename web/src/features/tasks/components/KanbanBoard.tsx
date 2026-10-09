@@ -1,6 +1,7 @@
 import React from 'react';
 import { useTaskStore } from '../store/useTaskStore';
 import { useActiveProjectId } from '@/features/teams/store/useTeamStore';
+import { useWorkspaceSettingsStore } from '../store/useWorkspaceSettingsStore';
 import { useShallow } from 'zustand/react/shallow';
 import { TaskCard } from './TaskCard';
 import { Badge } from '@/components/ui/badge';
@@ -52,7 +53,10 @@ interface KanbanLaneProps {
 
 const KanbanLane: React.FC<KanbanLaneProps> = ({ column }) => {
   const activeProjectId = useActiveProjectId();
-  // Use shallow selector to subscribe only to IDs belonging to this lane and active project
+  const searchQuery = useWorkspaceSettingsStore((s) => s.searchQuery);
+  const priorityFilter = useWorkspaceSettingsStore((s) => s.priorityFilter);
+
+  // Use shallow selector to subscribe only to IDs belonging to this lane, active project, and filters
   const taskIds = useTaskStore(
     useShallow((state) =>
       state.taskIds.filter((id) => {
@@ -61,7 +65,20 @@ const KanbanLane: React.FC<KanbanLaneProps> = ({ column }) => {
         if (activeProjectId && task.project_id && task.project_id !== activeProjectId) {
           return false;
         }
-        return column.statuses.includes(task.status);
+        if (!column.statuses.includes(task.status)) {
+          return false;
+        }
+        if (priorityFilter === 'high' && task.priority < 70) return false;
+        if (priorityFilter === 'normal' && (task.priority < 40 || task.priority >= 70)) return false;
+        if (priorityFilter === 'low' && task.priority >= 40) return false;
+        if (searchQuery.trim()) {
+          const q = searchQuery.toLowerCase().trim();
+          const matchTitle = task.title?.toLowerCase().includes(q);
+          const matchPrompt = task.prompt?.toLowerCase().includes(q);
+          const matchId = task.id?.toLowerCase().includes(q);
+          if (!matchTitle && !matchPrompt && !matchId) return false;
+        }
+        return true;
       })
     )
   );
@@ -88,9 +105,13 @@ const KanbanLane: React.FC<KanbanLaneProps> = ({ column }) => {
       <div className="flex-1 flex flex-col gap-2.5 overflow-y-auto">
         {taskIds.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center p-6 text-center border border-dashed border-border/70 rounded-lg bg-background/30 text-muted-foreground">
-            <p className="text-xs font-medium">No tasks in this lane</p>
+            <p className="text-xs font-medium">
+              {searchQuery || priorityFilter !== 'all' ? 'No tasks matching filter' : 'No tasks in this lane'}
+            </p>
             <p className="text-[11px] text-muted-foreground/70 mt-0.5">
-              Tasks in {column.title.toLowerCase()} state will show here
+              {searchQuery || priorityFilter !== 'all'
+                ? 'Try adjusting your search query or priority filter'
+                : `Tasks in ${column.title.toLowerCase()} state will show here`}
             </p>
           </div>
         ) : (
