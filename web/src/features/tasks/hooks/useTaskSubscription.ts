@@ -1,8 +1,10 @@
 import { useEffect, useRef } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useTaskStore } from '../store/useTaskStore';
-import type { TaskStatus } from '../schemas/taskSchemas';
+import type { TaskDTO, TaskStatus } from '../schemas/taskSchemas';
 
 export function useTaskSubscription() {
+  const queryClient = useQueryClient();
   const fetchTasks = useTaskStore((state) => state.fetchTasks);
   const updateTaskStatus = useTaskStore((state) => state.updateTaskStatus);
   const wsRef = useRef<WebSocket | null>(null);
@@ -26,13 +28,37 @@ export function useTaskSubscription() {
         ws.onopen = () => {
           // Sync any tasks that changed during reconnection
           fetchTasks();
+          queryClient.invalidateQueries({ queryKey: ['tasks'] });
         };
 
         ws.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
-            if (data && data.task_id && data.type === 'status' && data.payload) {
-              updateTaskStatus(data.task_id, data.payload as TaskStatus);
+            const taskId = data?.task_id || data?.taskId;
+
+            // Handle task status updates
+            if (data && taskId && (data.type === 'status' || data.type === 'task_status_changed')) {
+              const newStatus = (data.payload || data.status) as TaskStatus;
+              if (newStatus) {
+                updateTaskStatus(taskId, newStatus);
+                queryClient.setQueryData<TaskDTO[]>(['tasks'], (oldTasks) => {
+                  if (!oldTasks) return oldTasks;
+                  return oldTasks.map((t) =>
+                    t.id === taskId ? { ...t, status: newStatus } : t
+                  );
+                });
+                queryClient.setQueryData<TaskDTO>(['tasks', taskId], (oldTask) => {
+                  if (!oldTask) return oldTask;
+                  return { ...oldTask, status: newStatus };
+                });
+              }
+            }
+
+            // Handle agent events
+            if (data && (data.type === 'agent_event' || data.type === 'tool_use' || data.type === 'agent_event_emitted')) {
+              if (taskId) {
+                queryClient.invalidateQueries({ queryKey: ['tasks', taskId, 'session'] });
+              }
             }
           } catch {
             // Ignore non-json frames

@@ -60,6 +60,7 @@ export class ApiClient {
 
   // Auth endpoints
   getMe = authApi.getMe;
+  getCurrentUser = authApi.getCurrentUser;
   logout = authApi.logout;
 
   // Teams & Projects

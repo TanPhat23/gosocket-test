@@ -12,6 +12,11 @@ export const authApi = {
     return AuthMeResponseSchema.parse(res.data);
   },
 
+  async getCurrentUser(): Promise<{ user: UserDTO }> {
+    const user = await this.getMe();
+    return { user };
+  },
+
   async logout(): Promise<{ status: string }> {
     const res = await axiosClient.post<{ status: string }>('/auth/logout');
     return res.data;
