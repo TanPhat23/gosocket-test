@@ -319,10 +319,32 @@ func (s *taskService) CreatePullRequestForTask(ctx context.Context, taskID strin
 	}
 
 	var ghInteg *models.ProjectIntegration
-	for i := range integrationsList {
-		if integrationsList[i].Provider == models.IntegrationGitHub && integrationsList[i].Enabled {
-			ghInteg = &integrationsList[i]
-			break
+	if task.IntegrationID != nil && *task.IntegrationID != "" {
+		for i := range integrationsList {
+			if integrationsList[i].ID == *task.IntegrationID && integrationsList[i].Enabled {
+				ghInteg = &integrationsList[i]
+				break
+			}
+		}
+	}
+	// Fallback to match by worktree git remote
+	if ghInteg == nil && task.WorktreePath != nil && *task.WorktreePath != "" {
+		if out, err := exec.CommandContext(ctx, "git", "-C", *task.WorktreePath, "remote", "get-url", "origin").Output(); err == nil {
+			remoteStr := strings.TrimSpace(string(out))
+			for i := range integrationsList {
+				if integrationsList[i].Enabled && strings.Contains(remoteStr, integrationsList[i].ExternalID) {
+					ghInteg = &integrationsList[i]
+					break
+				}
+			}
+		}
+	}
+	if ghInteg == nil {
+		for i := range integrationsList {
+			if integrationsList[i].Provider == models.IntegrationGitHub && integrationsList[i].Enabled {
+				ghInteg = &integrationsList[i]
+				break
+			}
 		}
 	}
 	if ghInteg == nil {
@@ -852,10 +874,31 @@ func (s *taskService) maybePushBranchForSteering(ctx context.Context, task *mode
 	}
 
 	var ghInteg *models.ProjectIntegration
-	for i := range integrationsList {
-		if integrationsList[i].Provider == models.IntegrationGitHub && integrationsList[i].Enabled {
-			ghInteg = &integrationsList[i]
-			break
+	if task.IntegrationID != nil && *task.IntegrationID != "" {
+		for i := range integrationsList {
+			if integrationsList[i].ID == *task.IntegrationID && integrationsList[i].Enabled {
+				ghInteg = &integrationsList[i]
+				break
+			}
+		}
+	}
+	if ghInteg == nil && worktreePath != "" {
+		if out, err := exec.CommandContext(ctx, "git", "-C", worktreePath, "remote", "get-url", "origin").Output(); err == nil {
+			remoteStr := strings.TrimSpace(string(out))
+			for i := range integrationsList {
+				if integrationsList[i].Enabled && strings.Contains(remoteStr, integrationsList[i].ExternalID) {
+					ghInteg = &integrationsList[i]
+					break
+				}
+			}
+		}
+	}
+	if ghInteg == nil {
+		for i := range integrationsList {
+			if integrationsList[i].Provider == models.IntegrationGitHub && integrationsList[i].Enabled {
+				ghInteg = &integrationsList[i]
+				break
+			}
 		}
 	}
 	if ghInteg == nil {
@@ -987,10 +1030,29 @@ func (s *taskService) SyncTaskPRStatus(ctx context.Context, taskID, userID strin
 	}
 
 	var ghInteg *models.ProjectIntegration
-	for i := range integrationsList {
-		if integrationsList[i].Provider == models.IntegrationGitHub && integrationsList[i].Enabled {
-			ghInteg = &integrationsList[i]
-			break
+	if task.IntegrationID != nil && *task.IntegrationID != "" {
+		for i := range integrationsList {
+			if integrationsList[i].ID == *task.IntegrationID && integrationsList[i].Enabled {
+				ghInteg = &integrationsList[i]
+				break
+			}
+		}
+	}
+	// Fallback to match by PR URL domain / slug if present
+	if ghInteg == nil && task.PRURL != nil && *task.PRURL != "" {
+		for i := range integrationsList {
+			if integrationsList[i].Enabled && strings.Contains(*task.PRURL, integrationsList[i].ExternalID) {
+				ghInteg = &integrationsList[i]
+				break
+			}
+		}
+	}
+	if ghInteg == nil {
+		for i := range integrationsList {
+			if integrationsList[i].Provider == models.IntegrationGitHub && integrationsList[i].Enabled {
+				ghInteg = &integrationsList[i]
+				break
+			}
 		}
 	}
 	if ghInteg == nil {

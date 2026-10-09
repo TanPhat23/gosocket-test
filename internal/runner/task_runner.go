@@ -619,10 +619,33 @@ func (r *AgentTaskRunner) maybeAutoCreatePR(
 	}
 
 	var ghInteg *models.ProjectIntegration
-	for i := range integrationsList {
-		if integrationsList[i].Provider == models.IntegrationGitHub && integrationsList[i].Enabled {
-			ghInteg = &integrationsList[i]
-			break
+	if task.IntegrationID != nil && *task.IntegrationID != "" {
+		for i := range integrationsList {
+			if integrationsList[i].ID == *task.IntegrationID && integrationsList[i].Enabled {
+				ghInteg = &integrationsList[i]
+				break
+			}
+		}
+	}
+	// If not matched, inspect worktree git remote to deduce matching repo slug
+	if ghInteg == nil && localWorktreePath != "" {
+		if out, err := exec.CommandContext(ctx, "git", "-C", localWorktreePath, "remote", "get-url", "origin").Output(); err == nil {
+			remoteStr := strings.TrimSpace(string(out))
+			for i := range integrationsList {
+				if integrationsList[i].Enabled && strings.Contains(remoteStr, integrationsList[i].ExternalID) {
+					ghInteg = &integrationsList[i]
+					break
+				}
+			}
+		}
+	}
+	// Fallback to first enabled GitHub integration
+	if ghInteg == nil {
+		for i := range integrationsList {
+			if integrationsList[i].Provider == models.IntegrationGitHub && integrationsList[i].Enabled {
+				ghInteg = &integrationsList[i]
+				break
+			}
 		}
 	}
 	if ghInteg == nil {
