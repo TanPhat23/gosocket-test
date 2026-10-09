@@ -597,6 +597,19 @@ func (s *taskService) watchSteeringTurn(taskID, sessionID, worktreePath string, 
 												}
 											}
 										}
+										if s.hub != nil {
+											var toolInput any
+											if state != nil {
+												toolInput = state["input"]
+											}
+											_ = s.hub.BroadcastTaskEvent(taskID, map[string]any{
+												"eventType":  "tool_use",
+												"sessionID":  sessionID,
+												"toolName":   toolName,
+												"toolStatus": "running",
+												"toolInput":  toolInput,
+											})
+										}
 										if cmdSummary != "" {
 											if len(cmdSummary) > 80 {
 												cmdSummary = cmdSummary[:77] + "..."
@@ -610,6 +623,19 @@ func (s *taskService) watchSteeringTurn(taskID, sessionID, worktreePath string, 
 									doneKey := partID + "_done"
 									if (status == "completed" || status == "failed") && !seenParts[doneKey] {
 										seenParts[doneKey] = true
+										if s.hub != nil {
+											var toolOutput any
+											if state != nil {
+												toolOutput = state["output"]
+											}
+											_ = s.hub.BroadcastTaskEvent(taskID, map[string]any{
+												"eventType":  "tool_use",
+												"sessionID":  sessionID,
+												"toolName":   toolName,
+												"toolStatus": status,
+												"toolOutput": toolOutput,
+											})
+										}
 										if state != nil {
 											if contents, ok := state["content"].([]any); ok {
 												for _, c := range contents {
@@ -646,6 +672,14 @@ func (s *taskService) watchSteeringTurn(taskID, sessionID, worktreePath string, 
 											if agentName == "" {
 												agentName = "agent"
 											}
+											if s.hub != nil {
+												_ = s.hub.BroadcastTaskEvent(taskID, map[string]any{
+													"eventType": "text",
+													"sessionID": sessionID,
+													"text":      textVal,
+													"agent":     agentName,
+												})
+											}
 											s.broadcastTaskLog(context.Background(), taskID, fmt.Sprintf("\r\n\x1b[36m> %s\x1b[0m\r\n%s\r\n", agentName, textVal))
 										}
 									}
@@ -661,6 +695,13 @@ func (s *taskService) watchSteeringTurn(taskID, sessionID, worktreePath string, 
 			sessIdle := err == nil && (sessDTO.Status == "succeeded" || sessDTO.Status == "idle")
 
 			if time.Since(startTime) > minTurnDuration && hasActiveOrRecentTurn && (latestTurnCompleted || sessIdle) {
+				if s.hub != nil {
+					_ = s.hub.BroadcastTaskEvent(taskID, map[string]any{
+						"eventType": "step_finish",
+						"sessionID": sessionID,
+						"reason":    "stop",
+					})
+				}
 				s.broadcastTaskLog(context.Background(), taskID, "\r\n\x1b[32m✔ Agent response completed.\x1b[0m\r\n")
 				s.finalizeSteeringTurn(ctx, taskID, worktreePath)
 				return
