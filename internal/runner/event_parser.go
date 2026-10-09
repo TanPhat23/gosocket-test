@@ -73,11 +73,37 @@ func FormatWireEventANSI(evt *OpenCodeWireEvent) (string, bool) {
 		defer b.Release()
 
 		if evt.Part.State != nil {
+			if toolName == "subagent" {
+				agentName := "subagent"
+				if a, ok := evt.Part.State.Input["agent"].(string); ok && a != "" {
+					agentName = a
+				}
+				desc := ""
+				if d, ok := evt.Part.State.Input["description"].(string); ok {
+					desc = d
+				}
+				if evt.Part.State.Status == "completed" {
+					b.SubagentSuccess(agentName)
+					return b.String(), true
+				} else if evt.Part.State.Status == "failed" {
+					b.SubagentFailure(agentName)
+					return b.String(), true
+				}
+				b.SubagentDispatch(agentName, desc)
+				return b.String(), true
+			}
+
 			cmd := ""
 			if cmdVal, ok := evt.Part.State.Input["command"].(string); ok {
 				cmd = cmdVal
 			} else if pathVal, ok := evt.Part.State.Input["path"].(string); ok {
 				cmd = pathVal
+			} else if fpVal, ok := evt.Part.State.Input["file_path"].(string); ok {
+				cmd = fpVal
+			} else if qVal, ok := evt.Part.State.Input["query"].(string); ok {
+				cmd = qVal
+			} else if idVal, ok := evt.Part.State.Input["id"].(string); ok {
+				cmd = idVal
 			}
 
 			if evt.Part.State.Status == "completed" {

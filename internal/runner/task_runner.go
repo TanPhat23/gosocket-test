@@ -531,11 +531,15 @@ func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attemp
 		}
 
 		var execErr error
+		subCtx, subCancel := context.WithCancel(ctx)
+		go r.watchChildSubagents(subCtx, task.ID, attempt.ID, sessionID)
+
 		if r.dockerRunner != nil && r.dockerCli != nil {
 			execErr = r.runInDocker(ctx, task, attempt, hostWorktreePath, selectedModel, currentPrompt)
 		} else {
 			execErr = r.runOnHost(ctx, task, attempt, localWorktreePath, selectedModel, currentPrompt)
 		}
+		subCancel()
 
 		if execErr != nil {
 			r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\r\n\x1b[31m[Agent Control Plane] Execution failed in iteration %d: %v\x1b[0m\r\n", iteration, execErr))
@@ -752,18 +756,22 @@ func (r *AgentTaskRunner) BuildProcessEnv(task *models.Task, model string, homeD
 }
 
 func (r *AgentTaskRunner) runInDocker(ctx context.Context, task *models.Task, attempt *models.TaskAttempt, hostPath, model, prompt string) error {
-	imageName := "debian:bookworm-slim"
+	imageName := "agent-sandbox:latest"
+	if override := os.Getenv("ATM_SANDBOX_IMAGE"); override != "" {
+		imageName = override
+	}
 
 	sessionID := fmt.Sprintf("ses_atm_%s", task.ID)
 	if task.SessionID != nil && *task.SessionID != "" {
 		sessionID = *task.SessionID
 	}
 
+	binPath := "/usr/local/bin/opencode"
 	cmd := []string{
-		"/root/.opencode/bin/opencode",
+		binPath,
 		"run",
+		"--standalone",
 		"--format", "json",
-		"--server", r.cfg.OpenCodeServerURL,
 		"--session", sessionID,
 		"--title", task.Title,
 		"--model", model,
@@ -777,16 +785,20 @@ func (r *AgentTaskRunner) runInDocker(ctx context.Context, task *models.Task, at
 		Image:        imageName,
 		Cmd:          cmd,
 		Env:          env,
-		WorkingDir:   hostPath,
+		WorkingDir:   "/workspace",
 		AttachStdout: true,
 		AttachStderr: true,
 	}
 
+	hostBinPath := r.cfg.OpenCodeBinPath
+	if hostBinPath == "" {
+		hostBinPath = "/home/ghug/.opencode/bin/opencode"
+	}
+
 	hostCfg := &container.HostConfig{
-		NetworkMode: container.NetworkMode("host"),
 		Binds: []string{
-			fmt.Sprintf("%s:%s:rw", hostPath, hostPath),
-			fmt.Sprintf("%s:/root/.opencode:ro", r.cfg.OpenCodeHomePath),
+			fmt.Sprintf("%s:/workspace:rw", hostPath),
+			fmt.Sprintf("%s:/usr/local/bin/opencode:ro", hostBinPath),
 			fmt.Sprintf("%s:/root/.config/opencode:ro", r.cfg.OpenCodeConfigDir),
 			fmt.Sprintf("%s:/root/.local/share/opencode:rw", r.cfg.OpenCodeDataDir),
 		},
@@ -795,7 +807,7 @@ func (r *AgentTaskRunner) runInDocker(ctx context.Context, task *models.Task, at
 
 	resp, err := r.dockerCli.ContainerCreate(ctx, containerCfg, hostCfg, nil, nil, "")
 	if err != nil {
-		log.Printf("container create failed with debian:bookworm-slim (%v), falling back to host execution", err)
+		log.Printf("container create failed with %s (%v), falling back to host execution", imageName, err)
 		return r.runOnHost(ctx, task, attempt, hostPath, model, prompt)
 	}
 
@@ -934,5 +946,154 @@ func (r *AgentTaskRunner) broadcastLog(ctx context.Context, taskID, attemptID, c
 			LogChunk:  content,
 			Timestamp: time.Now().UTC(),
 		})
+	}
+}
+
+func (r *AgentTaskRunner) watchChildSubagents(ctx context.Context, taskID, attemptID, sessionID string) {
+	if r.openCodeClient == nil {
+		return
+	}
+
+	ticker := time.NewTicker(1500 * time.Millisecond)
+	defer ticker.Stop()
+
+	seenParts := make(map[string]bool)
+
+	poll := func() {
+		childSessions, err := r.openCodeClient.ListChildSessions(ctx, sessionID)
+		if err != nil || len(childSessions) == 0 {
+			return
+		}
+
+		for _, child := range childSessions {
+			cMsgs, cErr := r.openCodeClient.GetSessionMessages(ctx, child.ID)
+			if cErr != nil || len(cMsgs) == 0 {
+				continue
+			}
+
+			agentLabel := child.Model
+			if agentLabel == "" {
+				agentLabel = "subagent"
+			}
+
+			for _, cMsg := range cMsgs {
+				cContentList, ok := cMsg.Content.([]any)
+				if !ok {
+					continue
+				}
+
+				for cPartIdx, cItem := range cContentList {
+					cItemMap, ok := cItem.(map[string]any)
+					if !ok {
+						continue
+					}
+					cPartType, _ := cItemMap["type"].(string)
+					cPartID := fmt.Sprintf("%s_%d", cMsg.ID, cPartIdx)
+
+					if cPartType == "tool" {
+						cToolName, _ := cItemMap["name"].(string)
+						if cid, ok := cItemMap["id"].(string); ok && cid != "" {
+							cPartID = cid
+						}
+						cState, _ := cItemMap["state"].(map[string]any)
+						cStatus := ""
+						if cState != nil {
+							cStatus, _ = cState["status"].(string)
+						}
+
+						cStartKey := cPartID + "_start"
+						if !seenParts[cStartKey] {
+							seenParts[cStartKey] = true
+							cCmd := ""
+							if cState != nil {
+								if input, ok := cState["input"].(map[string]any); ok {
+									if cmd, ok := input["command"].(string); ok {
+										cCmd = cmd
+									} else if p, ok := input["path"].(string); ok {
+										cCmd = p
+									}
+								}
+							}
+
+							if r.hub != nil {
+								var cInput any
+								if cState != nil {
+									cInput = cState["input"]
+								}
+								_ = r.hub.BroadcastTaskEvent(taskID, map[string]any{
+									"eventType":       "tool_use",
+									"sessionID":       child.ID,
+									"parentSessionID": sessionID,
+									"subagent":        agentLabel,
+									"toolName":        cToolName,
+									"toolStatus":      "running",
+									"toolInput":       cInput,
+								})
+							}
+
+							if cCmd != "" {
+								if len(cCmd) > 70 {
+									cCmd = cCmd[:67] + "..."
+								}
+								r.broadcastLog(context.Background(), taskID, attemptID, fmt.Sprintf("\x1b[35m[subagent: %s]\x1b[0m \x1b[33m→ [%s]\x1b[0m \x1b[90m%s\x1b[0m\r\n", agentLabel, cToolName, cCmd))
+							} else {
+								r.broadcastLog(context.Background(), taskID, attemptID, fmt.Sprintf("\x1b[35m[subagent: %s]\x1b[0m \x1b[33m→ [%s]\x1b[0m\r\n", agentLabel, cToolName))
+							}
+						}
+
+						cDoneKey := cPartID + "_done"
+						if (cStatus == "completed" || cStatus == "failed") && !seenParts[cDoneKey] {
+							seenParts[cDoneKey] = true
+							var cOutput any
+							if cState != nil {
+								cOutput = cState["output"]
+							}
+
+							if r.hub != nil {
+								_ = r.hub.BroadcastTaskEvent(taskID, map[string]any{
+									"eventType":       "tool_use",
+									"sessionID":       child.ID,
+									"parentSessionID": sessionID,
+									"subagent":        agentLabel,
+									"toolName":        cToolName,
+									"toolStatus":      cStatus,
+									"toolOutput":      cOutput,
+								})
+							}
+
+							if outStr, ok := cOutput.(string); ok && outStr != "" {
+								lines := strings.Split(strings.TrimSpace(outStr), "\n")
+								limit := 4
+								if len(lines) < limit {
+									limit = len(lines)
+								}
+								for lIdx := 0; lIdx < limit; lIdx++ {
+									r.broadcastLog(context.Background(), taskID, attemptID, fmt.Sprintf("  \x1b[90m%s\x1b[0m\r\n", lines[lIdx]))
+								}
+								if len(lines) > 4 {
+									r.broadcastLog(context.Background(), taskID, attemptID, fmt.Sprintf("  \x1b[90m... (%d lines)\x1b[0m\r\n", len(lines)))
+								}
+							}
+
+							if cStatus == "completed" {
+								r.broadcastLog(context.Background(), taskID, attemptID, fmt.Sprintf("\x1b[35m[subagent: %s]\x1b[0m \x1b[32m✔ Completed tool: %s\x1b[0m\r\n", agentLabel, cToolName))
+							} else {
+								r.broadcastLog(context.Background(), taskID, attemptID, fmt.Sprintf("\x1b[35m[subagent: %s]\x1b[0m \x1b[31m✖ Tool failed: %s\x1b[0m\r\n", agentLabel, cToolName))
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			poll()
+			return
+		case <-ticker.C:
+			poll()
+		}
 	}
 }

@@ -17,6 +17,13 @@ export function cleanUserPrompt(rawText: string): { prompt: string; systemContex
     '# Your Model',
     '## Available tools',
     '# Code Mode',
+    'The Code Mode tool catalog has changed',
+    'Current thought number',
+    'thoughtNumber: number',
+    'vibe-check-mcp',
+    'webmcp',
+    '<workspace_boundary>',
+    '<verification_feedback>',
     'Platform Adaptation',
     'Tool Mapping for OpenCode',
     'You are Antigravity',
@@ -35,12 +42,16 @@ export function cleanUserPrompt(rawText: string): { prompt: string; systemContex
   const skillsMatches = text.match(/<available_skills>[\s\S]*?<\/available_skills>/gi) || [];
   const envMatches = text.match(/<env>[\s\S]*?<\/env>/gi) || [];
   const importantMatches = text.match(/<EXTREMELY_IMPORTANT>[\s\S]*?<\/EXTREMELY_IMPORTANT>/gi) || [];
+  const boundaryMatches = text.match(/<workspace_boundary>[\s\S]*?<\/workspace_boundary>/gi) || [];
+  const feedbackMatches = text.match(/<verification_feedback>[\s\S]*?<\/verification_feedback>/gi) || [];
 
   const systemPieces: string[] = [
     ...mcpMatches,
     ...skillsMatches,
     ...envMatches,
     ...importantMatches,
+    ...boundaryMatches,
+    ...feedbackMatches,
   ];
 
   let cleanedPrompt = text;

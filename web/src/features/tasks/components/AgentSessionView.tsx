@@ -642,6 +642,11 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
               })
               .map((msg: SessionMessage, msgIdx: number, allMsgs: SessionMessage[]) => {
               const isUser = msg.role === 'user' || msg.type === 'user';
+              const isSystem = msg.role === 'system' || msg.type === 'system';
+              if (isSystem) {
+                return null;
+              }
+
               const parsed = parseSessionMessageContent(msg);
               const { text: textContent, thoughts, toolCalls, extractedQuestions } = parsed;
               const timeString = formatTimestamp(msg.created_at);
@@ -650,8 +655,16 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                 .slice(msgIdx + 1)
                 .some((m) => m.role === 'user' || m.type === 'user');
 
-              // Skip rendering empty assistant bubbles with no text, thoughts, or tools
-              if (!isUser && !textContent && !thoughts && toolCalls.length === 0) {
+              // Skip rendering empty bubbles or internal tool catalog instruction notices
+              const isInternalInstructionDump =
+                !isUser &&
+                (textContent.includes('The Code Mode tool catalog has changed') ||
+                  textContent.includes('<mcp_instructions>') ||
+                  textContent.startsWith('Current thought number')) &&
+                toolCalls.length === 0 &&
+                !thoughts;
+
+              if (!isUser && ((!textContent && !thoughts && toolCalls.length === 0) || isInternalInstructionDump)) {
                 return null;
               }
 

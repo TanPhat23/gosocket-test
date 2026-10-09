@@ -8,13 +8,14 @@ import (
 )
 
 const (
-	ansiReset  = "\x1b[0m"
-	ansiRed    = "\x1b[31m"
-	ansiGreen  = "\x1b[32m"
-	ansiYellow = "\x1b[33m"
-	ansiCyan   = "\x1b[36m"
-	ansiGray   = "\x1b[90m"
-	ansiCRLF   = "\r\n"
+	ansiReset   = "\x1b[0m"
+	ansiRed     = "\x1b[31m"
+	ansiGreen   = "\x1b[32m"
+	ansiYellow  = "\x1b[33m"
+	ansiMagenta = "\x1b[35m"
+	ansiCyan    = "\x1b[36m"
+	ansiGray    = "\x1b[90m"
+	ansiCRLF    = "\r\n"
 
 	ansiMaxPooledBufferBytes = 16 * 1024 // 16 KiB
 )
@@ -146,6 +147,65 @@ func (b *ANSIBuilder) AgentHeader(agentName string) *ANSIBuilder {
 	b.buf.WriteString(ansiCyan)
 	b.buf.WriteString("> ")
 	b.buf.WriteString(agentName)
+	b.buf.WriteString(ansiReset)
+	b.buf.WriteString(ansiCRLF)
+	return b
+}
+
+// Magenta appends magenta/purple text and resets styling.
+func (b *ANSIBuilder) Magenta(s string) *ANSIBuilder {
+	b.buf.WriteString(ansiMagenta)
+	b.buf.WriteString(s)
+	b.buf.WriteString(ansiReset)
+	return b
+}
+
+// SubagentDispatch appends "[subagent: <agent>] ⚡ Dispatched: <desc>".
+func (b *ANSIBuilder) SubagentDispatch(agent, desc string) *ANSIBuilder {
+	b.buf.WriteString(ansiMagenta)
+	b.buf.WriteString("[subagent: ")
+	b.buf.WriteString(agent)
+	b.buf.WriteString("]")
+	b.buf.WriteString(ansiReset)
+	b.buf.WriteString(" ")
+	b.buf.WriteString(ansiYellow)
+	b.buf.WriteString("⚡ Dispatched:")
+	b.buf.WriteString(ansiReset)
+	if desc != "" {
+		b.buf.WriteString(" ")
+		b.buf.WriteString(ansiGray)
+		b.buf.WriteString(desc)
+		b.buf.WriteString(ansiReset)
+	}
+	b.buf.WriteString(ansiCRLF)
+	return b
+}
+
+// SubagentSuccess appends "[subagent: <agent>] ✔ Completed task".
+func (b *ANSIBuilder) SubagentSuccess(agent string) *ANSIBuilder {
+	b.buf.WriteString(ansiMagenta)
+	b.buf.WriteString("[subagent: ")
+	b.buf.WriteString(agent)
+	b.buf.WriteString("]")
+	b.buf.WriteString(ansiReset)
+	b.buf.WriteString(" ")
+	b.buf.WriteString(ansiGreen)
+	b.buf.WriteString("✔ Completed task")
+	b.buf.WriteString(ansiReset)
+	b.buf.WriteString(ansiCRLF)
+	return b
+}
+
+// SubagentFailure appends "[subagent: <agent>] ✖ Failed".
+func (b *ANSIBuilder) SubagentFailure(agent string) *ANSIBuilder {
+	b.buf.WriteString(ansiMagenta)
+	b.buf.WriteString("[subagent: ")
+	b.buf.WriteString(agent)
+	b.buf.WriteString("]")
+	b.buf.WriteString(ansiReset)
+	b.buf.WriteString(" ")
+	b.buf.WriteString(ansiRed)
+	b.buf.WriteString("✖ Failed")
 	b.buf.WriteString(ansiReset)
 	b.buf.WriteString(ansiCRLF)
 	return b

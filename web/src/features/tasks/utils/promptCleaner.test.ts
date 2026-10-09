@@ -29,6 +29,23 @@ tools["vibe-check-mcp"].check_constitution({ sessionId: string })
     expect(result.systemContext).toContain('<mcp_instructions>');
   });
 
+  it('separates workspace_boundary and repository directives from user task prompt', () => {
+    const boundedPrompt = `
+<workspace_boundary>
+CRITICAL WORKSPACE BOUNDARY & REPOSITORY ISOLATION DIRECTIVE:
+You are assigned to work EXCLUSIVELY inside this repository worktree:
+TARGET REPOSITORY PATH: /data/worktrees/01a12165
+</workspace_boundary>
+
+Improve the current gosocket test
+`;
+
+    const result = cleanUserPrompt(boundedPrompt);
+    expect(result.prompt).toBe('Improve the current gosocket test');
+    expect(result.systemContext).toBeDefined();
+    expect(result.systemContext).toContain('<workspace_boundary>');
+  });
+
   it('handles empty or null gracefully', () => {
     expect(cleanUserPrompt('')).toEqual({ prompt: '' });
   });

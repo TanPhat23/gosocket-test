@@ -378,6 +378,8 @@ func (c *openCodeClient) GetSessionMessages(ctx context.Context, sessionID strin
 					roleVal = "user"
 				} else if m.Type == "assistant" {
 					roleVal = "assistant"
+				} else if m.Type == "system" {
+					roleVal = "system"
 				}
 			}
 			messages[i] = OpenCodeMessageDTO{
