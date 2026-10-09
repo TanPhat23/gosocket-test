@@ -94,21 +94,67 @@ export function parseSessionMessageContent(msg: SessionMessage): ParsedMessageDa
 
       if (isTool) {
         const name = String(part.name || part.call || part.tool || 'tool');
-        const input = (part.input || part.arguments || part.params) as
-          | string
-          | Record<string, unknown>
-          | undefined;
-        const output = (part.output || part.result) as
+        const stateObj =
+          typeof part.state === 'object' && part.state !== null
+            ? (part.state as Record<string, unknown>)
+            : undefined;
+
+        const input = (stateObj?.input || part.input || part.arguments || part.params) as
           | string
           | Record<string, unknown>
           | undefined;
 
+        let output = (stateObj?.output || part.output || part.result) as
+          | string
+          | Record<string, unknown>
+          | undefined;
+
+        // If output is not directly a string, check state.content
+        if (!output && stateObj && Array.isArray(stateObj.content)) {
+          const textPieces: string[] = [];
+          for (const c of stateObj.content) {
+            if (typeof c === 'object' && c !== null && typeof (c as { text?: string }).text === 'string') {
+              textPieces.push((c as { text: string }).text);
+            }
+          }
+          if (textPieces.length > 0) {
+            output = textPieces.join('\n');
+          }
+        }
+
+        // Check if there is an error
+        const errorObj = stateObj?.error || part.error;
+        let errorMessage: string | undefined;
+        if (errorObj) {
+          if (typeof errorObj === 'string') {
+            errorMessage = errorObj;
+          } else if (typeof errorObj === 'object' && errorObj !== null) {
+            const errRec = errorObj as Record<string, unknown>;
+            errorMessage = typeof errRec.message === 'string' ? errRec.message : JSON.stringify(errRec);
+          }
+        }
+
+        const status = typeof stateObj?.status === 'string'
+          ? (stateObj.status as string)
+          : typeof part.status === 'string'
+          ? (part.status as string)
+          : errorMessage
+          ? 'error'
+          : 'completed';
+
+        const metadata = (stateObj?.metadata || part.metadata) as Record<string, unknown> | undefined;
+        const exitCode = typeof metadata?.exit === 'number'
+          ? (metadata.exit as number)
+          : typeof part.exit_code === 'number'
+          ? (part.exit_code as number)
+          : (status === 'error' || errorMessage ? 1 : 0);
+
         toolCalls.push({
           name,
           input,
-          output,
-          status: typeof part.status === 'string' ? part.status : 'completed',
-          exit_code: typeof part.exit_code === 'number' ? part.exit_code : 0,
+          output: output || errorMessage,
+          status,
+          exit_code: exitCode,
         });
       }
     }
@@ -574,7 +620,13 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
             className="flex-1 overflow-y-auto p-4 space-y-4"
             data-testid="session-transcript-container"
           >
-            {session.messages.map((msg: SessionMessage, msgIdx: number) => {
+            {[...(session.messages || [])]
+              .sort((a, b) => {
+                const tA = a.created_at ? new Date(a.created_at).getTime() : 0;
+                const tB = b.created_at ? new Date(b.created_at).getTime() : 0;
+                return tA - tB;
+              })
+              .map((msg: SessionMessage, msgIdx: number) => {
               const isUser = msg.role === 'user' || msg.type === 'user';
               const parsed = parseSessionMessageContent(msg);
               const { text: textContent, thoughts, toolCalls } = parsed;
@@ -676,6 +728,16 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                             const expandKey = `${msgIdx}-${tcIdx}`;
                             const isExpanded = !!expandedTools[expandKey];
 
+                            const isSubagent = tc.name === 'subagent';
+                            const inputObj =
+                              typeof tc.input === 'object' && tc.input !== null
+                                ? (tc.input as Record<string, unknown>)
+                                : null;
+                            const subagentAgent = inputObj ? String(inputObj.agent || '') : '';
+                            const subagentDesc = inputObj
+                              ? String(inputObj.description || inputObj.prompt || '')
+                              : '';
+
                             const inputStr =
                               typeof tc.input === 'string'
                                 ? tc.input
@@ -691,7 +753,8 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                                 : '';
 
                             const exitCode = tc.exit_code;
-                            const isSuccess = exitCode === undefined || exitCode === 0;
+                            const isSuccess =
+                              tc.status !== 'error' && (exitCode === undefined || exitCode === 0);
 
                             return (
                               <div
@@ -711,52 +774,116 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                                     ) : (
                                       <ChevronRight className="size-3 text-muted-foreground shrink-0" />
                                     )}
-                                    <Badge variant="outline" className="font-mono text-[10px] px-1.5 py-0 bg-primary/10 text-primary border-primary/20">
+                                    <Badge
+                                      variant="outline"
+                                      className={`font-mono text-[10px] px-1.5 py-0 ${
+                                        isSubagent
+                                          ? 'bg-purple-500/10 text-purple-400 border-purple-500/30'
+                                          : 'bg-primary/10 text-primary border-primary/20'
+                                      }`}
+                                    >
                                       {tc.name}
                                     </Badge>
+                                    {isSubagent && subagentAgent && (
+                                      <Badge
+                                        variant="outline"
+                                        className="font-mono text-[9px] px-1 py-0 bg-primary/10 text-primary border-primary/20"
+                                      >
+                                        {subagentAgent}
+                                      </Badge>
+                                    )}
                                     <span className="truncate text-muted-foreground max-w-xs sm:max-w-md">
-                                      {inputStr.replace(/\n/g, ' ')}
+                                      {isSubagent && subagentDesc
+                                        ? subagentDesc
+                                        : inputStr.replace(/\n/g, ' ')}
                                     </span>
                                   </div>
 
                                   <div className="flex items-center gap-2 shrink-0">
-                                    {exitCode !== undefined && (
+                                    {tc.status === 'running' ? (
                                       <Badge
                                         variant="outline"
-                                        className={`font-mono text-[9px] px-1 py-0 ${
-                                          isSuccess
-                                            ? 'text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
-                                            : 'text-rose-500 border-rose-500/30'
-                                        }`}
+                                        className="font-mono text-[9px] px-1.5 py-0 text-sky-500 border-sky-500/30 flex items-center gap-1"
+                                      >
+                                        <span className="size-1.5 rounded-full bg-sky-500 animate-pulse" />
+                                        running
+                                      </Badge>
+                                    ) : !isSuccess ? (
+                                      <Badge
+                                        variant="outline"
+                                        className="font-mono text-[9px] px-1 py-0 text-rose-500 border-rose-500/30"
+                                      >
+                                        {exitCode !== undefined && exitCode !== 0
+                                          ? `exit ${exitCode}`
+                                          : 'failed'}
+                                      </Badge>
+                                    ) : exitCode !== undefined ? (
+                                      <Badge
+                                        variant="outline"
+                                        className="font-mono text-[9px] px-1 py-0 text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
                                       >
                                         exit {exitCode}
                                       </Badge>
-                                    )}
+                                    ) : null}
                                   </div>
                                 </button>
 
                                 {isExpanded && (
-                                  <div className="p-2.5 border-t border-border/60 space-y-2 bg-background">
+                                  <div className="p-2.5 border-t border-border/60 space-y-2 bg-background font-mono text-[11px]">
+                                    {isSubagent && inputObj && (
+                                      <div className="rounded p-2 bg-purple-500/5 border border-purple-500/15 space-y-1 text-xs font-sans">
+                                        <div className="flex items-center gap-2">
+                                          <span className="font-semibold text-purple-400">Subagent:</span>
+                                          <span className="font-mono text-[11px] text-foreground">
+                                            {subagentAgent ? `[${subagentAgent}] ` : ''}
+                                            {subagentDesc}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    )}
+
                                     {inputStr && (
                                       <div className="space-y-1">
                                         <div className="text-[10px] text-muted-foreground uppercase font-semibold">
-                                          Input
+                                          {isSubagent ? 'Prompt / Task Brief' : 'Input'}
                                         </div>
-                                        <pre className="p-2 rounded bg-muted/50 text-[10px] overflow-x-auto whitespace-pre-wrap text-foreground">
-                                          {inputStr}
+                                        <pre className="p-2 rounded bg-muted/50 text-[10px] overflow-x-auto whitespace-pre-wrap text-foreground max-h-48 font-mono">
+                                          {isSubagent && inputObj?.prompt
+                                            ? String(inputObj.prompt)
+                                            : inputStr}
                                         </pre>
                                       </div>
                                     )}
-                                    {outputStr && (
-                                      <div className="space-y-1">
-                                        <div className="text-[10px] text-muted-foreground uppercase font-semibold">
-                                          Output
+
+                                    <div className="space-y-1">
+                                      <div className="text-[10px] text-muted-foreground uppercase font-semibold">
+                                        {isSubagent ? 'Subagent Output / Results' : 'Output'}
+                                      </div>
+                                      {tc.status === 'running' ? (
+                                        <div className="flex items-center gap-2 p-3 rounded bg-muted/30 border border-border/50 text-xs text-primary font-mono">
+                                          <RefreshCw className="size-3.5 animate-spin text-primary" />
+                                          <span>
+                                            {isSubagent
+                                              ? 'Subagent is executing in child session...'
+                                              : 'Tool execution in progress...'}
+                                          </span>
                                         </div>
-                                        <pre className="p-2 rounded bg-muted/50 text-[10px] overflow-x-auto whitespace-pre-wrap max-h-48 text-foreground">
+                                      ) : outputStr ? (
+                                        <pre
+                                          className={`p-2 rounded text-[10px] overflow-x-auto whitespace-pre-wrap max-h-60 font-mono ${
+                                            tc.status === 'error' || !isSuccess
+                                              ? 'bg-destructive/10 text-destructive border border-destructive/20'
+                                              : 'bg-muted/50 text-foreground'
+                                          }`}
+                                        >
                                           {outputStr}
                                         </pre>
-                                      </div>
-                                    )}
+                                      ) : (
+                                        <div className="text-[10px] text-muted-foreground italic p-1">
+                                          No output recorded.
+                                        </div>
+                                      )}
+                                    </div>
                                   </div>
                                 )}
                               </div>

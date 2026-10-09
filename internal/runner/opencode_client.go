@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -43,6 +44,7 @@ type OpenCodeMessageDTO = dto.OpenCodeMessageDTO
 type OpenCodeClient interface {
 	GetSession(ctx context.Context, sessionID string) (*OpenCodeSessionDTO, error)
 	GetSessionMessages(ctx context.Context, sessionID string) ([]OpenCodeMessageDTO, error)
+	ListChildSessions(ctx context.Context, parentID string) ([]OpenCodeSessionDTO, error)
 	PromptSession(ctx context.Context, sessionID, prompt string) error
 	CompactSession(ctx context.Context, sessionID string) error
 	EnsureSessionAtLocation(ctx context.Context, sessionID, title, directory string) error
@@ -352,6 +354,18 @@ func (c *openCodeClient) GetSessionMessages(ctx context.Context, sessionID strin
 				CompletedAt: completedAt,
 			}
 		}
+		// Sort messages chronologically (oldest first, newest last)
+		slices.SortFunc(messages, func(a, b OpenCodeMessageDTO) int {
+			if a.CreatedAt == nil || b.CreatedAt == nil {
+				return 0
+			}
+			if a.CreatedAt.Before(*b.CreatedAt) {
+				return -1
+			} else if a.CreatedAt.After(*b.CreatedAt) {
+				return 1
+			}
+			return 0
+		})
 		return messages, nil
 	}
 
@@ -359,7 +373,70 @@ func (c *openCodeClient) GetSessionMessages(ctx context.Context, sessionID strin
 	if err := json.Unmarshal(respBody, &direct); err != nil {
 		return nil, fmt.Errorf("failed to parse opencode messages: %w", err)
 	}
+	slices.SortFunc(direct, func(a, b OpenCodeMessageDTO) int {
+		if a.CreatedAt == nil || b.CreatedAt == nil {
+			return 0
+		}
+		if a.CreatedAt.Before(*b.CreatedAt) {
+			return -1
+		} else if a.CreatedAt.After(*b.CreatedAt) {
+			return 1
+		}
+		return 0
+	})
 	return direct, nil
+}
+
+// ListChildSessions queries all active sessions from OpenCode daemon and filters those whose parentID matches parentID.
+func (c *openCodeClient) ListChildSessions(ctx context.Context, parentID string) ([]OpenCodeSessionDTO, error) {
+	escapedID, err := validateSessionID(parentID)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodGet, "/api/session", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("opencode server returned status %d", resp.StatusCode)
+	}
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var wrapper struct {
+		Data []struct {
+			ID       string `json:"id"`
+			ParentID string `json:"parentID"`
+			Title    string `json:"title"`
+			Agent    string `json:"agent"`
+			Outcome  string `json:"outcome"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(respBody, &wrapper); err != nil {
+		return nil, err
+	}
+
+	var childSessions []OpenCodeSessionDTO
+	for _, s := range wrapper.Data {
+		if s.ParentID == escapedID {
+			childSessions = append(childSessions, OpenCodeSessionDTO{
+				ID:       s.ID,
+				ParentID: s.ParentID,
+				Title:    s.Title,
+				Model:    s.Agent,
+				Status:   s.Outcome,
+			})
+		}
+	}
+
+	return childSessions, nil
 }
 
 func (c *openCodeClient) PromptSession(ctx context.Context, sessionID, prompt string) error {

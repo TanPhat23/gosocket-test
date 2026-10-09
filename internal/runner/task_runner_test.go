@@ -907,6 +907,9 @@ func (m *mockOpenCodeClientForRunner) GetSession(ctx context.Context, sessionID 
 func (m *mockOpenCodeClientForRunner) GetSessionMessages(ctx context.Context, sessionID string) ([]runner.OpenCodeMessageDTO, error) {
 	return nil, nil
 }
+func (m *mockOpenCodeClientForRunner) ListChildSessions(ctx context.Context, parentID string) ([]runner.OpenCodeSessionDTO, error) {
+	return nil, nil
+}
 func (m *mockOpenCodeClientForRunner) PromptSession(ctx context.Context, sessionID, prompt string) error {
 	return nil
 }

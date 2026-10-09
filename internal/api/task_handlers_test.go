@@ -830,6 +830,13 @@ func (m *mockOpenCodeClientRunner) CompactSession(ctx context.Context, sessionID
 	return nil
 }
 
+func (m *mockOpenCodeClientRunner) ListChildSessions(ctx context.Context, parentID string) ([]runner.OpenCodeSessionDTO, error) {
+	if m.failWith503 {
+		return nil, common.ErrServiceUnavailable
+	}
+	return nil, nil
+}
+
 func (m *mockOpenCodeClientRunner) EnsureSessionAtLocation(ctx context.Context, sessionID, title, directory string) error {
 	if m.failWith503 {
 		return common.ErrServiceUnavailable

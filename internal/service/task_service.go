@@ -690,6 +690,108 @@ func (s *taskService) watchSteeringTurn(taskID, sessionID, worktreePath string, 
 				}
 			}
 
+			// Also inspect child subagent sessions to stream their tool calls and output
+			if childSessions, err := s.openCodeClient.ListChildSessions(ctx, sessionID); err == nil && len(childSessions) > 0 {
+				for _, child := range childSessions {
+					cMsgs, cErr := s.openCodeClient.GetSessionMessages(ctx, child.ID)
+					if cErr != nil || len(cMsgs) == 0 {
+						continue
+					}
+					agentLabel := child.Model
+					if agentLabel == "" {
+						agentLabel = "subagent"
+					}
+
+					for _, cMsg := range cMsgs {
+						if cContentList, ok := cMsg.Content.([]any); ok {
+							for cPartIdx, cItem := range cContentList {
+								cItemMap, ok := cItem.(map[string]any)
+								if !ok {
+									continue
+								}
+								cPartType, _ := cItemMap["type"].(string)
+								cPartID := fmt.Sprintf("%s_%d", cMsg.ID, cPartIdx)
+
+								if cPartType == "tool" {
+									cToolName, _ := cItemMap["name"].(string)
+									if cid, ok := cItemMap["id"].(string); ok && cid != "" {
+										cPartID = cid
+									}
+									cState, _ := cItemMap["state"].(map[string]any)
+									cStatus := ""
+									if cState != nil {
+										cStatus, _ = cState["status"].(string)
+									}
+
+									cStartKey := cPartID + "_start"
+									if !seenParts[cStartKey] {
+										seenParts[cStartKey] = true
+										cCmd := ""
+										if cState != nil {
+											if input, ok := cState["input"].(map[string]any); ok {
+												if cmd, ok := input["command"].(string); ok {
+													cCmd = cmd
+												} else if p, ok := input["path"].(string); ok {
+													cCmd = p
+												}
+											}
+										}
+										if s.hub != nil {
+											var cInput any
+											if cState != nil {
+												cInput = cState["input"]
+											}
+											_ = s.hub.BroadcastTaskEvent(taskID, map[string]any{
+												"eventType":       "tool_use",
+												"sessionID":       child.ID,
+												"parentSessionID": sessionID,
+												"subagent":        agentLabel,
+												"toolName":        cToolName,
+												"toolStatus":      "running",
+												"toolInput":       cInput,
+											})
+										}
+										if cCmd != "" {
+											if len(cCmd) > 70 {
+												cCmd = cCmd[:67] + "..."
+											}
+											s.broadcastTaskLog(context.Background(), taskID, fmt.Sprintf("\x1b[35m[subagent: %s]\x1b[0m \x1b[33m→ [%s]\x1b[0m \x1b[90m%s\x1b[0m\r\n", agentLabel, cToolName, cCmd))
+										} else {
+											s.broadcastTaskLog(context.Background(), taskID, fmt.Sprintf("\x1b[35m[subagent: %s]\x1b[0m \x1b[33m→ [%s]\x1b[0m\r\n", agentLabel, cToolName))
+										}
+									}
+
+									cDoneKey := cPartID + "_done"
+									if (cStatus == "completed" || cStatus == "failed") && !seenParts[cDoneKey] {
+										seenParts[cDoneKey] = true
+										if s.hub != nil {
+											var cOutput any
+											if cState != nil {
+												cOutput = cState["output"]
+											}
+											_ = s.hub.BroadcastTaskEvent(taskID, map[string]any{
+												"eventType":       "tool_use",
+												"sessionID":       child.ID,
+												"parentSessionID": sessionID,
+												"subagent":        agentLabel,
+												"toolName":        cToolName,
+												"toolStatus":      cStatus,
+												"toolOutput":      cOutput,
+											})
+										}
+										if cStatus == "completed" {
+											s.broadcastTaskLog(context.Background(), taskID, fmt.Sprintf("\x1b[35m[subagent: %s]\x1b[0m \x1b[32m✔ Completed tool: %s\x1b[0m\r\n", agentLabel, cToolName))
+										} else {
+											s.broadcastTaskLog(context.Background(), taskID, fmt.Sprintf("\x1b[35m[subagent: %s]\x1b[0m \x1b[31m✖ Tool failed: %s\x1b[0m\r\n", agentLabel, cToolName))
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+
 			// Also check session status directly in case tool completed without message completed timestamp
 			sessDTO, err := s.openCodeClient.GetSession(ctx, sessionID)
 			sessIdle := err == nil && (sessDTO.Status == "succeeded" || sessDTO.Status == "idle")

@@ -510,6 +510,10 @@ func (m *mockOpenCodeClient) CompactSession(ctx context.Context, sessionID strin
 	return nil
 }
 
+func (m *mockOpenCodeClient) ListChildSessions(ctx context.Context, parentID string) ([]runner.OpenCodeSessionDTO, error) {
+	return nil, nil
+}
+
 func (m *mockOpenCodeClient) EnsureSessionAtLocation(ctx context.Context, sessionID, title, directory string) error {
 	return nil
 }
