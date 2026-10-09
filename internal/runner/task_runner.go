@@ -886,6 +886,7 @@ func (r *AgentTaskRunner) streamDemuxedLogs(ctx context.Context, taskID, attempt
 
 func (r *AgentTaskRunner) streamPipe(ctx context.Context, taskID, attemptID string, reader io.Reader, stream string) {
 	scanner := NewAgentStreamScanner(reader)
+	defer scanner.Close()
 	tracker := NewTerminalTracker()
 
 	for scanner.Scan() {
