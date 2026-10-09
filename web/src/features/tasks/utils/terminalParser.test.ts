@@ -70,4 +70,16 @@ describe('terminalParser', () => {
     expect(parseWsFrames('\x1b[32mANSI colored output\x1b[0m')).toHaveLength(0);
     expect(parseWsFrames('')).toHaveLength(0);
   });
+
+  it('parses structured agent_event frames', () => {
+    const raw = JSON.stringify({
+      task_id: 'task-1',
+      type: 'agent_event',
+      payload: { eventType: 'tool_use', toolName: 'shell', toolStatus: 'running' },
+    });
+    const frames = parseWsFrames(raw);
+    expect(frames).toHaveLength(1);
+    expect(frames[0].type).toBe('agent_event');
+    expect((frames[0].payload as { toolName: string }).toolName).toBe('shell');
+  });
 });

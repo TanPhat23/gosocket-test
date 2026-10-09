@@ -1,6 +1,6 @@
 export interface WSMessage {
   task_id?: string;
-  type?: 'log' | 'status' | 'diff' | string;
+  type?: 'log' | 'status' | 'diff' | 'agent_event' | string;
   payload?: unknown;
   timestamp?: string;
 }

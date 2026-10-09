@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { taskApi } from '../api/taskApi';
 import { useTaskStore } from '../store/useTaskStore';
+import { parseWsFrames } from '../utils/terminalParser';
 import type { TaskSessionResponse, SessionMessage, SessionToolCall } from '../schemas/taskSchemas';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -219,6 +220,39 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.status, isSteeringActive, taskId]);
+
+  // Listen for real-time agent_event frames over WebSocket for instant transcript updates
+  useEffect(() => {
+    if (!taskId) return;
+    try {
+      const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
+      const wsProtocol = isHttps ? 'wss:' : 'ws:';
+      const host = typeof window !== 'undefined' ? window.location.host : 'localhost:8080';
+      const wsUrl = `${wsProtocol}//${host}/api/v1/ws/terminal/${encodeURIComponent(taskId)}`;
+      const socket = new WebSocket(wsUrl);
+
+      socket.onmessage = (event) => {
+        const rawData = typeof event.data === 'string' ? event.data : '';
+        const frames = parseWsFrames(rawData);
+        for (const frame of frames) {
+          if (frame.type === 'agent_event') {
+            fetchSession(false);
+            const payload = frame.payload as { eventType?: string } | undefined;
+            if (payload?.eventType === 'step_finish') {
+              setIsSteeringActive(false);
+            }
+          }
+        }
+      };
+
+      return () => {
+        socket.close();
+      };
+    } catch {
+      // ignore
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskId]);
 
   const handleCopySessionId = async (idToCopy: string) => {
     try {
