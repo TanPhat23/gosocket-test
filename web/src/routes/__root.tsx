@@ -1,4 +1,4 @@
-import { createRootRouteWithContext, Outlet, ScrollRestoration, HeadContent, Scripts } from '@tanstack/react-router';
+import { createRootRouteWithContext, Outlet, ScrollRestoration } from '@tanstack/react-router';
 import type { QueryClient } from '@tanstack/react-query';
 import { ThemeProvider } from '@/components/theme/ThemeProvider';
 
@@ -17,18 +17,11 @@ export const Route = createRootRouteWithContext<{
 
 function RootComponent() {
   return (
-    <html lang="en">
-      <head>
-        <HeadContent />
-        <title>Agent Task Manager</title>
-      </head>
-      <body className="min-h-screen bg-background text-foreground font-sans antialiased">
-        <ThemeProvider>
-          <Outlet />
-        </ThemeProvider>
-        <ScrollRestoration />
-        <Scripts />
-      </body>
-    </html>
+    <ThemeProvider>
+      <div className="min-h-screen bg-background text-foreground font-sans antialiased">
+        <Outlet />
+      </div>
+      <ScrollRestoration />
+    </ThemeProvider>
   );
 }

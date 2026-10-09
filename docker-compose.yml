@@ -155,15 +155,18 @@ services:
     image: agent-web-ui:latest
     container_name: agent-web-ui
     restart: unless-stopped
+    environment:
+      INTERNAL_API_URL: http://control-plane:8080
     networks:
       - ingress
+      - backend
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=agent_ingress"
       - "traefik.http.routers.web-ui.rule=Host(`${DOMAIN:-localhost}`)"
       - "traefik.http.routers.web-ui.entrypoints=web,websecure"
       - "traefik.http.routers.web-ui.middlewares=security-headers@file"
-      - "traefik.http.services.web-ui.loadbalancer.server.port=80"
+      - "traefik.http.services.web-ui.loadbalancer.server.port=3000"
 
   opencode-bridge:
     image: alpine/socat:latest

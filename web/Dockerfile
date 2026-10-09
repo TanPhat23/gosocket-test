@@ -1,27 +1,26 @@
 # Build stage
-FROM node:22-alpine AS builder
+FROM oven/bun:1-alpine AS builder
 
 WORKDIR /app
 
-# Install dependencies
 COPY package.json package-lock.json* bun.lock* ./
-RUN npm install
+RUN bun install
 
-# Build static assets
 ARG CACHEBUST=1
 COPY . .
-RUN npm run build
+RUN bun run build
 
-# Production runtime stage
-FROM nginx:alpine
-ARG CACHEBUST=1
+# Production runtime stage using Bun
+FROM oven/bun:1-alpine AS runner
+WORKDIR /app
 
-# Copy nginx configuration
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+ENV NODE_ENV=production
+ENV PORT=3000
 
-# Copy compiled static assets from builder stage
-COPY --from=builder /app/dist /usr/share/nginx/html
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/server.ts ./server.ts
+COPY --from=builder /app/package.json ./package.json
 
-EXPOSE 80
+EXPOSE 3000
 
-CMD ["nginx", "-g", "daemon off;"]
+CMD ["bun", "run", "server.ts"]
