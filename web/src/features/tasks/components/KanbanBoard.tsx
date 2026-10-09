@@ -53,6 +53,7 @@ interface KanbanLaneProps {
 
 const KanbanLane: React.FC<KanbanLaneProps> = ({ column }) => {
   const activeProjectId = useActiveProjectId();
+  const selectedRepoId = useWorkspaceSettingsStore((s) => s.selectedRepoId);
   const searchQuery = useWorkspaceSettingsStore((s) => s.searchQuery);
   const priorityFilter = useWorkspaceSettingsStore((s) => s.priorityFilter);
 
@@ -63,6 +64,9 @@ const KanbanLane: React.FC<KanbanLaneProps> = ({ column }) => {
         const task = state.tasks[id];
         if (!task) return false;
         if (activeProjectId && task.project_id && task.project_id !== activeProjectId) {
+          return false;
+        }
+        if (selectedRepoId && selectedRepoId !== 'all' && task.integration_id !== selectedRepoId) {
           return false;
         }
         if (!column.statuses.includes(task.status)) {

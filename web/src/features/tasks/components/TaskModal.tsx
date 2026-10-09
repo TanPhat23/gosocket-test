@@ -63,6 +63,8 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
 
   const defaultModel = useWorkspaceSettingsStore((state) => state.defaultModel);
   const defaultPriority = useWorkspaceSettingsStore((state) => state.defaultPriority);
+  const selectedRepoId = useWorkspaceSettingsStore((state) => state.selectedRepoId);
+  const defaultRepoId = useWorkspaceSettingsStore((state) => state.defaultRepoId);
   const workspaceModels = useWorkspaceSettingsStore((state) => state.availableModels);
 
   const [availableModels, setAvailableModels] = useState<ModelOption[]>(
@@ -125,10 +127,16 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
         const ghIntegs = integs.filter((i) => i.provider === 'github' && i.enabled);
         setProjectIntegrations(ghIntegs);
         if (ghIntegs.length > 0) {
-          setSelectedIntegrationId((prev) => {
-            const exists = ghIntegs.some((g) => g.id === prev);
-            return exists ? prev : ghIntegs[0].id;
-          });
+          const preferredRepo = selectedRepoId !== 'all' ? selectedRepoId : defaultRepoId;
+          const matchPreferred = ghIntegs.find((g) => g.id === preferredRepo);
+          if (matchPreferred) {
+            setSelectedIntegrationId(matchPreferred.id);
+          } else {
+            setSelectedIntegrationId((prev) => {
+              const exists = ghIntegs.some((g) => g.id === prev);
+              return exists ? prev : ghIntegs[0].id;
+            });
+          }
         } else {
           setSelectedIntegrationId('');
         }

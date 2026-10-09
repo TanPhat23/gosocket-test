@@ -24,7 +24,7 @@ import {
   useActiveProjectId,
   useTeamStore,
 } from '@/features/teams/store/useTeamStore';
-import { SlidersHorizontal, Cpu, FolderGit2, Check, Shield } from 'lucide-react';
+import { SlidersHorizontal, Cpu, FolderGit2, Check, Shield, GitBranch } from 'lucide-react';
 
 export interface WorkspaceSettingsModalProps {
   trigger?: React.ReactNode;
@@ -36,6 +36,9 @@ export const WorkspaceSettingsModal: React.FC<WorkspaceSettingsModalProps> = ({ 
   const setDefaultModel = useWorkspaceSettingsStore((s) => s.setDefaultModel);
   const defaultPriority = useWorkspaceSettingsStore((s) => s.defaultPriority);
   const setDefaultPriority = useWorkspaceSettingsStore((s) => s.setDefaultPriority);
+  const defaultRepoId = useWorkspaceSettingsStore((s) => s.defaultRepoId);
+  const setDefaultRepoId = useWorkspaceSettingsStore((s) => s.setDefaultRepoId);
+  const connectedRepos = useWorkspaceSettingsStore((s) => s.connectedRepos);
   const availableModels = useWorkspaceSettingsStore((s) => s.availableModels);
 
   const projects = useProjectsList();
@@ -115,6 +118,39 @@ export const WorkspaceSettingsModal: React.FC<WorkspaceSettingsModalProps> = ({ 
               </SelectContent>
             </Select>
           </div>
+
+          {/* Default Target Repository */}
+          {connectedRepos.length > 0 && (
+            <div className="space-y-1.5">
+              <label className="font-semibold text-foreground flex items-center gap-1.5">
+                <GitBranch className="size-3.5 text-primary" />
+                Default Target Repository
+              </label>
+              <p className="text-[11px] text-muted-foreground">
+                Pre-selected when creating tasks so you never have to pick it repeatedly.
+              </p>
+              <Select
+                value={defaultRepoId || 'auto'}
+                onValueChange={(val) => {
+                  if (typeof val === 'string') {
+                    setDefaultRepoId(val === 'auto' ? '' : val);
+                  }
+                }}
+              >
+                <SelectTrigger size="sm" className="w-full bg-card text-xs font-mono" aria-label="Default Repository">
+                  <SelectValue placeholder="Auto (First connected repo)" />
+                </SelectTrigger>
+                <SelectContent align="start">
+                  <SelectItem value="auto">-- Auto (First connected repo) --</SelectItem>
+                  {connectedRepos.map((r) => (
+                    <SelectItem key={r.id} value={r.id}>
+                      {r.external_id} ({String(r.config?.base_branch || 'main')})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
 
           {/* Default Autonomous Model */}
           <div className="space-y-1.5">

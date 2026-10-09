@@ -1,10 +1,6 @@
 import React, { useEffect } from 'react';
 import { useWorkspaceSettingsStore } from '../store/useWorkspaceSettingsStore';
-import {
-  useProjectsList,
-  useActiveProjectId,
-  useTeamStore,
-} from '@/features/teams/store/useTeamStore';
+import { useActiveProjectId } from '@/features/teams/store/useTeamStore';
 import { useTaskStore } from '../store/useTaskStore';
 import { TaskModal } from './TaskModal';
 import { WorkspaceSettingsModal } from './WorkspaceSettingsModal';
@@ -20,21 +16,24 @@ import {
 } from '@/components/ui/select';
 import {
   Search,
-  FolderGit2,
+  GitBranch,
   Cpu,
   Filter,
   X,
 } from 'lucide-react';
 
 export const WorkspaceControlBar: React.FC = () => {
-  const projects = useProjectsList();
   const activeProjectId = useActiveProjectId();
-  const setActiveProjectId = useTeamStore((s) => s.setActiveProjectId);
 
   const defaultModel = useWorkspaceSettingsStore((s) => s.defaultModel);
   const setDefaultModel = useWorkspaceSettingsStore((s) => s.setDefaultModel);
   const availableModels = useWorkspaceSettingsStore((s) => s.availableModels);
   const fetchModels = useWorkspaceSettingsStore((s) => s.fetchModels);
+
+  const selectedRepoId = useWorkspaceSettingsStore((s) => s.selectedRepoId);
+  const setSelectedRepoId = useWorkspaceSettingsStore((s) => s.setSelectedRepoId);
+  const connectedRepos = useWorkspaceSettingsStore((s) => s.connectedRepos);
+  const fetchConnectedRepos = useWorkspaceSettingsStore((s) => s.fetchConnectedRepos);
 
   const searchQuery = useWorkspaceSettingsStore((s) => s.searchQuery);
   const setSearchQuery = useWorkspaceSettingsStore((s) => s.setSearchQuery);
@@ -48,11 +47,16 @@ export const WorkspaceControlBar: React.FC = () => {
     fetchModels();
   }, [fetchModels]);
 
+  useEffect(() => {
+    fetchConnectedRepos(activeProjectId || undefined);
+  }, [activeProjectId, fetchConnectedRepos]);
+
   // Calculate filtered task count
   const matchingTasksCount = taskIds.filter((id) => {
     const t = tasks[id];
     if (!t) return false;
     if (activeProjectId && t.project_id && t.project_id !== activeProjectId) return false;
+    if (selectedRepoId && selectedRepoId !== 'all' && t.integration_id !== selectedRepoId) return false;
     if (priorityFilter === 'high' && t.priority < 70) return false;
     if (priorityFilter === 'normal' && (t.priority < 40 || t.priority >= 70)) return false;
     if (priorityFilter === 'low' && t.priority >= 40) return false;
@@ -66,12 +70,19 @@ export const WorkspaceControlBar: React.FC = () => {
     return true;
   }).length;
 
-  const hasActiveFilters = Boolean(searchQuery.trim() || priorityFilter !== 'all');
+  const hasActiveFilters = Boolean(
+    searchQuery.trim() ||
+    priorityFilter !== 'all' ||
+    (selectedRepoId && selectedRepoId !== 'all')
+  );
 
   const handleResetFilters = () => {
     setSearchQuery('');
     setPriorityFilter('all');
+    setSelectedRepoId('all');
   };
+
+  const selectedRepo = connectedRepos.find((r) => r.id === selectedRepoId);
 
   return (
     <div className="flex flex-col gap-3.5 bg-card/60 backdrop-blur border border-border/80 rounded-xl p-4 shadow-xs">
@@ -97,27 +108,29 @@ export const WorkspaceControlBar: React.FC = () => {
         </div>
       </div>
 
-      {/* Filter and Switcher Control Panel */}
+      {/* Repository & Model Selector Control Panel */}
       <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5 pt-1">
-        {/* Project Selector / Filter */}
+        {/* Target Repository Selector / Filter */}
         <div className="sm:col-span-3">
           <Select
-            value={activeProjectId || 'all'}
+            value={selectedRepoId || 'all'}
             onValueChange={(val) => {
               if (typeof val === 'string') {
-                setActiveProjectId(val === 'all' ? null : val);
+                setSelectedRepoId(val);
               }
             }}
           >
-            <SelectTrigger size="sm" className="w-full bg-background/80 text-xs" aria-label="Filter by project">
-              <FolderGit2 className="size-3.5 text-muted-foreground mr-1 shrink-0" />
-              <SelectValue placeholder="All Projects" />
+            <SelectTrigger size="sm" className="w-full bg-background/80 text-xs font-mono" aria-label="Filter by repository">
+              <GitBranch className="size-3.5 text-primary mr-1 shrink-0" />
+              <SelectValue placeholder="All Repositories" />
             </SelectTrigger>
             <SelectContent align="start">
-              <SelectItem value="all">All Projects</SelectItem>
-              {projects.map((p) => (
-                <SelectItem key={p.id} value={p.id}>
-                  {p.name}
+              <SelectItem value="all">
+                All Repositories {connectedRepos.length > 0 ? `(${connectedRepos.length})` : ''}
+              </SelectItem>
+              {connectedRepos.map((r) => (
+                <SelectItem key={r.id} value={r.id}>
+                  {r.external_id} ({String(r.config?.base_branch || 'main')})
                 </SelectItem>
               ))}
             </SelectContent>
@@ -198,6 +211,12 @@ export const WorkspaceControlBar: React.FC = () => {
         <div className="flex items-center justify-between text-xs pt-1 px-1 text-muted-foreground border-t border-border/40">
           <div className="flex items-center gap-1.5 flex-wrap">
             <span className="text-[11px] font-medium text-foreground">Active Filters:</span>
+            {selectedRepo && (
+              <Badge variant="secondary" className="text-[10px] gap-1 px-1.5 py-0 font-mono">
+                Repo: {selectedRepo.external_id}
+                <X className="size-2.5 cursor-pointer hover:text-foreground" onClick={() => setSelectedRepoId('all')} />
+              </Badge>
+            )}
             {searchQuery && (
               <Badge variant="secondary" className="text-[10px] gap-1 px-1.5 py-0 font-normal">
                 Query: "{searchQuery}"

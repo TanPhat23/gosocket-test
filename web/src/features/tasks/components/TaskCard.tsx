@@ -1,9 +1,16 @@
 import React from 'react';
 import { useTask, useTaskStore } from '../store/useTaskStore';
-import { Card, CardHeader, CardContent, CardFooter } from '@/components/ui/card';
+import { useWorkspaceSettingsStore } from '../store/useWorkspaceSettingsStore';
+import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Eye, GitCompare, Ban, Cpu, Wrench, Server, CornerDownRight, GitPullRequest } from 'lucide-react';
+import {
+  Ban,
+  Cpu,
+  CornerDownRight,
+  GitPullRequest,
+  GitBranch,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export interface TaskCardProps {
@@ -14,62 +21,47 @@ export const TaskCard: React.FC<TaskCardProps> = ({ id }) => {
   const task = useTask(id);
   const selectTask = useTaskStore((state) => state.selectTask);
   const cancelTask = useTaskStore((state) => state.cancelTask);
+  const connectedRepos = useWorkspaceSettingsStore((state) => state.connectedRepos);
 
   if (!task) {
     return null;
   }
 
-  // Priority mapping
-  // Critical (> 80 or label): red/destructive
-  // High (> 60): amber
-  // Normal (> 30): blue/secondary
-  // Low (<= 30): slate/outline
+  const repo = connectedRepos.find((r) => r.id === task.integration_id);
+  const prLink = task.pull_request_url || task.pr_url;
+  const isLive = task.status === 'in_progress';
+  const isCancellable = ['backlog', 'queued', 'in_progress', 'review'].includes(task.status);
+
   const getPriorityBadge = (priority: number) => {
     if (priority >= 80) {
       return (
-        <Badge variant="destructive" className="font-mono text-[10px] uppercase font-semibold">
+        <Badge variant="destructive" className="font-mono text-[9px] uppercase font-semibold px-1.5 py-0 h-4">
           Critical
         </Badge>
       );
     }
     if (priority >= 60) {
       return (
-        <Badge
-          className="bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 font-mono text-[10px] uppercase font-semibold hover:bg-amber-500/20"
-        >
+        <Badge className="bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 font-mono text-[9px] uppercase font-semibold hover:bg-amber-500/20 px-1.5 py-0 h-4">
           High
         </Badge>
       );
     }
     if (priority >= 30) {
       return (
-        <Badge variant="secondary" className="font-mono text-[10px] uppercase font-semibold">
+        <Badge variant="secondary" className="font-mono text-[9px] uppercase font-semibold px-1.5 py-0 h-4">
           Normal
         </Badge>
       );
     }
     return (
-      <Badge variant="outline" className="font-mono text-[10px] uppercase text-muted-foreground">
+      <Badge variant="outline" className="font-mono text-[9px] uppercase text-muted-foreground px-1.5 py-0 h-4">
         Low
       </Badge>
     );
   };
 
-  const prLink = task.pull_request_url || task.pr_url;
-  const isLive = task.status === 'in_progress';
-  const isCancellable = ['backlog', 'queued', 'in_progress', 'review'].includes(task.status);
-
   const handleCardClick = () => {
-    selectTask(task.id);
-  };
-
-  const handleInspect = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    selectTask(task.id);
-  };
-
-  const handleDiff = (e: React.MouseEvent) => {
-    e.stopPropagation();
     selectTask(task.id);
   };
 
@@ -82,156 +74,112 @@ export const TaskCard: React.FC<TaskCardProps> = ({ id }) => {
     <Card
       onClick={handleCardClick}
       className={cn(
-        'group cursor-pointer border border-border/80 bg-card hover:border-primary/50 transition-all shadow-xs hover:shadow-sm overflow-hidden flex flex-col justify-between',
+        'group cursor-pointer border border-border/70 bg-card hover:border-primary/50 transition-all shadow-xs hover:shadow-sm overflow-hidden flex flex-col justify-between p-3 gap-2.5 rounded-lg',
         isLive && 'ring-1 ring-primary/40'
       )}
       data-testid={`task-card-${task.id}`}
     >
-      <CardHeader className="p-3.5 pb-2 flex flex-col gap-2">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
-            {getPriorityBadge(task.priority)}
-            {task.parent_task_id && (
-              <Badge
-                variant="outline"
-                className="font-mono text-[10px] text-muted-foreground bg-muted/30 border-dashed gap-1 px-1.5 py-0 h-4.5"
-                title={`Subtask of parent task #${task.parent_task_id.slice(0, 8)}`}
-              >
-                <CornerDownRight className="size-2.5 text-muted-foreground" />
-                Subtask
-              </Badge>
-            )}
-            <span className="text-[11px] font-mono text-muted-foreground truncate" title={task.id}>
-              #{task.id.slice(0, 8)}
+      {/* Top Header Row: Badges, Status, and ID */}
+      <div className="flex items-center justify-between gap-1.5">
+        <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+          {getPriorityBadge(task.priority)}
+
+          {task.parent_task_id && (
+            <Badge
+              variant="outline"
+              className="font-mono text-[9px] text-muted-foreground bg-muted/30 border-dashed gap-1 px-1.5 py-0 h-4"
+              title={`Subtask of parent task #${task.parent_task_id.slice(0, 8)}`}
+            >
+              <CornerDownRight className="size-2 text-muted-foreground" />
+              Subtask
+            </Badge>
+          )}
+
+          <span className="text-[11px] font-mono text-muted-foreground truncate" title={task.id}>
+            #{task.id.slice(0, 8)}
+          </span>
+
+          {/* GitHub Issue badge */}
+          {task.external_url ? (
+            <a
+              href={task.external_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="inline-flex items-center gap-1 font-mono text-[9px] text-muted-foreground bg-muted/50 hover:bg-muted hover:text-foreground border border-border/70 rounded px-1.5 py-0 h-4 transition-colors"
+              title={`GitHub Issue ${task.external_id ? `#${task.external_id}` : ''}`}
+              data-testid={`task-gh-issue-${task.id}`}
+            >
+              <span>GH #{task.external_id || 'issue'}</span>
+            </a>
+          ) : task.external_id ? (
+            <span
+              className="inline-flex items-center gap-1 font-mono text-[9px] text-muted-foreground bg-muted/50 border border-border/70 rounded px-1.5 py-0 h-4"
+              title={`GitHub Issue #${task.external_id}`}
+            >
+              <span>GH #{task.external_id}</span>
             </span>
+          ) : null}
 
-            {/* GitHub Issue badge if external_url or external_id is present */}
-            {task.external_url ? (
-              <a
-                href={task.external_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={(e) => e.stopPropagation()}
-                className="inline-flex items-center gap-1 font-mono text-[10px] text-muted-foreground bg-muted/50 hover:bg-muted hover:text-foreground border border-border/70 rounded px-1.5 py-0 h-4.5 transition-colors"
-                title={`GitHub Issue ${task.external_id ? `#${task.external_id}` : ''}`}
-                data-testid={`task-gh-issue-${task.id}`}
-              >
-                <span>GH #{task.external_id || 'issue'}</span>
-              </a>
-            ) : task.external_id ? (
-              <span
-                className="inline-flex items-center gap-1 font-mono text-[10px] text-muted-foreground bg-muted/50 border border-border/70 rounded px-1.5 py-0 h-4.5"
-                title={`GitHub Issue #${task.external_id}`}
-              >
-                <span>GH #{task.external_id}</span>
-              </span>
-            ) : null}
-
-            {/* Subtle green PR badge with GitPullRequest icon */}
-            {prLink && (
-              <a
-                href={prLink}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={(e) => e.stopPropagation()}
-                className="inline-flex items-center gap-1 font-mono text-[10px] text-emerald-600 dark:text-emerald-400 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 rounded px-1.5 py-0 h-4.5 transition-colors font-medium"
-                title={`Pull Request: ${prLink}`}
-                data-testid={`task-pr-badge-${task.id}`}
-              >
-                <GitPullRequest className="size-2.5 shrink-0" />
-                <span>PR</span>
-              </a>
-            )}
-          </div>
-
-          {/* Status badge with live pulse */}
-          <div className="flex items-center gap-1.5 shrink-0">
-            {isLive ? (
-              <span className="flex items-center gap-1.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
-                <span className="relative flex size-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                  <span className="relative inline-flex rounded-full size-2 bg-emerald-500" />
-                </span>
-                in_progress
-              </span>
-            ) : (
-              <span className="text-[11px] text-muted-foreground font-mono">
-                {task.status}
-              </span>
-            )}
-          </div>
+          {/* PR badge */}
+          {prLink && (
+            <a
+              href={prLink}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="inline-flex items-center gap-1 font-mono text-[9px] text-emerald-600 dark:text-emerald-400 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 rounded px-1.5 py-0 h-4 transition-colors font-medium"
+              title={`Pull Request: ${prLink}`}
+              data-testid={`task-pr-badge-${task.id}`}
+            >
+              <GitPullRequest className="size-2.5 shrink-0" />
+              <span>PR</span>
+            </a>
+          )}
         </div>
 
-        <h3 className="text-sm font-semibold text-foreground line-clamp-2 leading-snug group-hover:text-primary transition-colors">
-          {task.title}
-        </h3>
-      </CardHeader>
+        {/* Live indicator or status */}
+        <div className="shrink-0">
+          {isLive ? (
+            <span className="flex items-center gap-1 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 font-mono">
+              <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              live
+            </span>
+          ) : (
+            <span className="text-[10px] text-muted-foreground/70 font-mono">
+              {task.status}
+            </span>
+          )}
+        </div>
+      </div>
 
-      <CardContent className="p-3.5 pt-0 pb-2 space-y-2">
-        {/* Model info if present */}
-        {task.model && (
-          <div className="flex items-center gap-1 text-[11px] text-muted-foreground font-mono">
-            <Cpu className="size-3 text-muted-foreground shrink-0" />
-            <span className="truncate">{task.model}</span>
-          </div>
-        )}
+      {/* Task Title */}
+      <h3 className="text-xs sm:text-[13px] font-semibold text-foreground line-clamp-2 leading-snug group-hover:text-primary transition-colors">
+        {task.title}
+      </h3>
 
-        {/* Skills Chips */}
-        {task.skills && task.skills.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1">
-            <Wrench className="size-3 text-muted-foreground shrink-0" />
-            {task.skills.map((skill) => (
-              <Badge
-                key={skill}
-                variant="outline"
-                className="text-[10px] py-0 px-1.5 font-normal bg-muted/40"
-              >
-                {skill}
-              </Badge>
-            ))}
-          </div>
-        )}
+      {/* Bottom Metadata: Repo tag, Model, and Skills count */}
+      <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground pt-1 border-t border-border/40 font-mono">
+        <div className="flex items-center gap-2 min-w-0 flex-1 truncate">
+          {repo ? (
+            <span className="inline-flex items-center gap-1 text-primary truncate font-medium" title={`Repository: ${repo.external_id}`}>
+              <GitBranch className="size-2.5 shrink-0" />
+              <span className="truncate">{repo.external_id}</span>
+            </span>
+          ) : (
+            task.model && (
+              <span className="inline-flex items-center gap-1 truncate text-muted-foreground/80">
+                <Cpu className="size-2.5 shrink-0 text-muted-foreground" />
+                <span className="truncate">{task.model.split('/').pop()}</span>
+              </span>
+            )
+          )}
 
-        {/* MCP chips */}
-        {task.mcp_servers && task.mcp_servers.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1">
-            <Server className="size-3 text-muted-foreground shrink-0" />
-            {task.mcp_servers.map((mcp) => (
-              <Badge
-                key={mcp}
-                variant="secondary"
-                className="text-[10px] py-0 px-1.5 font-normal"
-              >
-                {mcp}
-              </Badge>
-            ))}
-          </div>
-        )}
-      </CardContent>
-
-      <CardFooter className="p-2.5 px-3.5 pt-2 border-t border-border/50 bg-muted/20 flex items-center justify-between gap-1">
-        <div className="flex items-center gap-1">
-          <Button
-            size="xs"
-            variant="ghost"
-            onClick={handleInspect}
-            className="h-6 text-xs text-muted-foreground hover:text-foreground"
-            title="Inspect task details and logs"
-          >
-            <Eye className="size-3 mr-1" />
-            Inspect
-          </Button>
-
-          <Button
-            size="xs"
-            variant="ghost"
-            onClick={handleDiff}
-            className="h-6 text-xs text-muted-foreground hover:text-foreground"
-            title="Inspect code diff"
-          >
-            <GitCompare className="size-3 mr-1" />
-            Diff
-          </Button>
+          {task.skills && task.skills.length > 0 && (
+            <span className="text-[9px] text-muted-foreground/60 hidden sm:inline">
+              · {task.skills.length} skills
+            </span>
+          )}
         </div>
 
         {isCancellable && (
@@ -239,14 +187,14 @@ export const TaskCard: React.FC<TaskCardProps> = ({ id }) => {
             size="xs"
             variant="ghost"
             onClick={handleCancel}
-            className="h-6 text-xs text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-            title="Cancel execution"
+            className="h-5 px-1.5 text-[10px] text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
+            title="Cancel task"
           >
-            <Ban className="size-3 mr-1" />
+            <Ban className="size-2.5 mr-1" />
             Cancel
           </Button>
         )}
-      </CardFooter>
+      </div>
     </Card>
   );
 };
