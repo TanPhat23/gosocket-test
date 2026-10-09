@@ -52,8 +52,12 @@ export const useTeamStore = create<TeamState>((set, get) => ({
   fetchProjects: async (teamId) => {
     try {
       const projects = await teamApi.getProjects(teamId);
-      const activeProjectId = projects.length > 0 ? projects[0].id : null;
-      set({ projects, activeProjectId });
+      const currentActive = get().activeProjectId;
+      let nextActive = currentActive;
+      if (!currentActive || !projects.some((p) => p.id === currentActive)) {
+        nextActive = projects.length > 0 ? projects[0].id : null;
+      }
+      set({ projects, activeProjectId: nextActive });
     } catch (err) {
       set({ error: err instanceof Error ? err.message : 'Failed to fetch projects' });
     }

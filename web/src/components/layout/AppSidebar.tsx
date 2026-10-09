@@ -173,7 +173,38 @@ export const AppSidebar: React.FC = () => {
                 No projects in {activeTeam ? activeTeam.name : 'workspace'}
               </div>
             ) : (
-              projects.map((project) => {
+              <>
+                {/* All Projects Option */}
+                <div
+                  onClick={() => setActiveProjectId(null)}
+                  data-testid="sidebar-all-projects"
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setActiveProjectId(null);
+                    }
+                  }}
+                  className={`w-full text-left px-2.5 py-1.5 rounded-md text-xs transition-colors flex items-center justify-between gap-1.5 cursor-pointer ${
+                    activeProjectId === null
+                      ? 'bg-accent text-accent-foreground font-medium shadow-xs'
+                      : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
+                  }`}
+                  aria-current={activeProjectId === null ? 'page' : undefined}
+                >
+                  <div className="flex items-center gap-1.5 truncate">
+                    <Layers className="size-3 text-muted-foreground shrink-0" />
+                    <span className="truncate">All Projects</span>
+                  </div>
+                  {activeProjectId === null && (
+                    <Badge variant="default" className="text-[9px] px-1.5 py-0 h-4 font-mono font-medium">
+                      Active
+                    </Badge>
+                  )}
+                </div>
+
+                {projects.map((project) => {
                 const isActive = project.id === activeProjectId;
                 const workingTasks = Object.values(allTasks).filter(
                   (t) => t.project_id === project.id && t.status === 'in_progress'
@@ -277,7 +308,8 @@ export const AppSidebar: React.FC = () => {
                     )}
                   </div>
                 );
-              })
+              })}
+              </>
             )}
           </nav>
         </div>

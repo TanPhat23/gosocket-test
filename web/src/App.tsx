@@ -21,9 +21,12 @@ export const WorkspaceView: React.FC = () => {
   useTaskSubscription();
 
   useEffect(() => {
-    fetchTasks(activeProjectId || undefined);
     fetchTeams();
-  }, [fetchTasks, fetchTeams, activeProjectId]);
+  }, [fetchTeams]);
+
+  useEffect(() => {
+    fetchTasks(activeProjectId || undefined);
+  }, [fetchTasks, activeProjectId]);
 
   return (
     <div className="h-screen bg-background text-foreground flex overflow-hidden font-sans">
