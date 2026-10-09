@@ -184,4 +184,28 @@ describe('TaskInspectorModal Agent Session Tab and Steering', () => {
       expect(screen.getByTestId('retry-session-btn')).toBeInTheDocument();
     });
   });
+
+  it('supports controlled taskId and onClose callback props', () => {
+    useTaskStore.setState({
+      tasks: {
+        'task-prop-1': { ...mockTask, id: 'task-prop-1', title: 'Controlled Prop Task' },
+      },
+      selectedTaskId: null,
+    });
+
+    const handleClose = vi.fn();
+    const { rerender } = render(<TaskInspectorModal taskId="task-prop-1" onClose={handleClose} />);
+
+    expect(screen.getByText('Controlled Prop Task')).toBeInTheDocument();
+
+    // Trigger dialog close via close button or openChange
+    const closeBtn = screen.getByRole('button', { name: /close/i });
+    fireEvent.click(closeBtn);
+    expect(handleClose).toHaveBeenCalledTimes(1);
+
+    // If taskId is null, dialog shouldn't render
+    rerender(<TaskInspectorModal taskId={null} onClose={handleClose} />);
+    expect(screen.queryByText('Controlled Prop Task')).not.toBeInTheDocument();
+  });
 });
+

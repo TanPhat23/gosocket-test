@@ -81,11 +81,24 @@ const getStatusBadge = (status: TaskStatus) => {
   }
 };
 
-export const TaskInspectorModal: React.FC = () => {
-  const task = useSelectedTask();
+interface TaskInspectorModalProps {
+  taskId?: string | null;
+  onClose?: () => void;
+}
+
+export const TaskInspectorModal: React.FC<TaskInspectorModalProps> = ({
+  taskId: propTaskId,
+  onClose,
+}) => {
+  const selectedTask = useSelectedTask();
   const selectTask = useTaskStore((state) => state.selectTask);
   const updateTask = useTaskStore((state) => state.updateTask);
   const tasks = useTaskStore((state) => state.tasks);
+
+  const task = propTaskId !== undefined
+    ? (propTaskId ? tasks[propTaskId] ?? null : null)
+    : selectedTask;
+
   const [activeTab, setActiveTab] = useState<string>('overview');
 
   const [isCreatingPR, setIsCreatingPR] = useState(false);
@@ -175,7 +188,11 @@ export const TaskInspectorModal: React.FC = () => {
 
   const handleOpenChange = (open: boolean) => {
     if (!open) {
-      selectTask(null);
+      if (onClose) {
+        onClose();
+      } else {
+        selectTask(null);
+      }
     }
   };
 
