@@ -35,6 +35,8 @@ repos/
 node_modules/
 web/dist/
 web/.vite/
+*.timestamp_*.js
+*.timestamp-*.js
 
 # Traefik ACME storage
 acme.json
