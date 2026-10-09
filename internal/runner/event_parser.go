@@ -1,20 +1,9 @@
 package runner
 
 import (
-	"bytes"
 	"encoding/json"
-	"strconv"
 	"strings"
-	"sync"
 )
-
-const ansiMaxPooledBufferBytes = 16 * 1024 // 16 KiB
-
-var ansiBufferPool = sync.Pool{
-	New: func() any {
-		return bytes.NewBuffer(make([]byte, 0, 512))
-	},
-}
 
 // OpenCodeWireEvent models the JSON events emitted by OpenCode CLI when run with --format json.
 type OpenCodeWireEvent struct {
@@ -79,6 +68,10 @@ func FormatWireEventANSI(evt *OpenCodeWireEvent) (string, bool) {
 		if toolName == "" {
 			toolName = "tool"
 		}
+
+		b := AcquireANSIBuilder()
+		defer b.Release()
+
 		if evt.Part.State != nil {
 			cmd := ""
 			if cmdVal, ok := evt.Part.State.Input["command"].(string); ok {
@@ -87,98 +80,35 @@ func FormatWireEventANSI(evt *OpenCodeWireEvent) (string, bool) {
 				cmd = pathVal
 			}
 
-			buf := ansiBufferPool.Get().(*bytes.Buffer)
-			buf.Reset()
-			defer func() {
-				if buf.Cap() <= ansiMaxPooledBufferBytes {
-					ansiBufferPool.Put(buf)
-				}
-			}()
-
 			if evt.Part.State.Status == "completed" {
 				if cmd != "" {
-					buf.WriteString("\x1b[33m→ [")
-					buf.WriteString(toolName)
-					buf.WriteString("]\x1b[0m \x1b[90m")
-					buf.WriteString(cmd)
-					buf.WriteString("\x1b[0m\r\n")
+					b.ToolHeader(toolName, cmd)
 				}
 				if evt.Part.State.Output != "" {
-					trimmedOutput := strings.TrimSpace(evt.Part.State.Output)
-					rem := trimmedOutput
-					linesPrinted := 0
-					totalLines := strings.Count(trimmedOutput, "\n") + 1
-
-					for len(rem) > 0 && linesPrinted < 4 {
-						idx := strings.IndexByte(rem, '\n')
-						var line string
-						if idx >= 0 {
-							line = rem[:idx]
-							rem = rem[idx+1:]
-						} else {
-							line = rem
-							rem = ""
-						}
-						buf.WriteString("  \x1b[90m")
-						buf.WriteString(line)
-						buf.WriteString("\x1b[0m\r\n")
-						linesPrinted++
-					}
-					if totalLines > 4 {
-						buf.WriteString("  \x1b[90m... (")
-						buf.WriteString(strconv.Itoa(totalLines))
-						buf.WriteString(" lines)\x1b[0m\r\n")
-					}
+					b.TruncatedLines(evt.Part.State.Output, 4)
 				}
-				buf.WriteString("\x1b[32m✔ Completed tool: ")
-				buf.WriteString(toolName)
-				buf.WriteString("\x1b[0m\r\n")
-				return buf.String(), true
+				b.ToolSuccess(toolName)
+				return b.String(), true
 			} else if evt.Part.State.Status == "failed" {
-				buf.WriteString("\x1b[31m✖ Tool failed: ")
-				buf.WriteString(toolName)
-				buf.WriteString("\x1b[0m\r\n")
-				return buf.String(), true
+				b.ToolFailure(toolName)
+				return b.String(), true
 			}
 
-			buf.WriteString("\x1b[33m→ [")
-			buf.WriteString(toolName)
-			buf.WriteString("]\x1b[0m")
-			if cmd != "" {
-				buf.WriteString(" \x1b[90m")
-				buf.WriteString(cmd)
-				buf.WriteString("\x1b[0m")
-			}
-			buf.WriteString("\r\n")
-			return buf.String(), true
+			b.ToolHeader(toolName, cmd)
+			return b.String(), true
 		}
 
-		buf := ansiBufferPool.Get().(*bytes.Buffer)
-		buf.Reset()
-		defer func() {
-			if buf.Cap() <= ansiMaxPooledBufferBytes {
-				ansiBufferPool.Put(buf)
-			}
-		}()
-		buf.WriteString("\x1b[33m→ [")
-		buf.WriteString(toolName)
-		buf.WriteString("]\x1b[0m\r\n")
-		return buf.String(), true
+		b.ToolHeader(toolName, "")
+		return b.String(), true
 
 	case "text":
 		trimmed := strings.TrimSpace(evt.Part.Text)
 		if trimmed != "" {
-			buf := ansiBufferPool.Get().(*bytes.Buffer)
-			buf.Reset()
-			defer func() {
-				if buf.Cap() <= ansiMaxPooledBufferBytes {
-					ansiBufferPool.Put(buf)
-				}
-			}()
-			buf.WriteString("\r\n\x1b[36m> agent\x1b[0m\r\n")
-			buf.WriteString(evt.Part.Text)
-			buf.WriteString("\r\n")
-			return buf.String(), true
+			b := AcquireANSIBuilder()
+			defer b.Release()
+
+			b.AgentHeader("agent").Text(evt.Part.Text).CRLF()
+			return b.String(), true
 		}
 
 	case "error":
@@ -186,17 +116,11 @@ func FormatWireEventANSI(evt *OpenCodeWireEvent) (string, bool) {
 		if errMsg == "" {
 			errMsg = evt.Message
 		}
-		buf := ansiBufferPool.Get().(*bytes.Buffer)
-		buf.Reset()
-		defer func() {
-			if buf.Cap() <= ansiMaxPooledBufferBytes {
-				ansiBufferPool.Put(buf)
-			}
-		}()
-		buf.WriteString("\r\n\x1b[31m✖ Agent error: ")
-		buf.WriteString(errMsg)
-		buf.WriteString("\x1b[0m\r\n")
-		return buf.String(), true
+		b := AcquireANSIBuilder()
+		defer b.Release()
+
+		b.AgentError(errMsg)
+		return b.String(), true
 	}
 
 	return "", false
