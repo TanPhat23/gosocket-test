@@ -8,22 +8,24 @@ import (
 
 // CreateTaskRequest defines the input payload for creating a task.
 type CreateTaskRequest struct {
-	ProjectID    string              `json:"project_id" validate:"required,uuid"`
-	Title        string              `json:"title" validate:"required,min=1,max=255"`
-	Prompt       string              `json:"prompt" validate:"required"`
-	AssigneeID   string              `json:"assignee_id" validate:"required"`
-	AssigneeType models.AssigneeType `json:"assignee_type" validate:"required,assignee_type"`
-	Priority     int                 `json:"priority" validate:"task_priority"`
-	ParentTaskID *string             `json:"parent_task_id,omitempty" validate:"omitempty,uuid"`
-	Model        *string             `json:"model,omitempty"`
-	Skills       []string            `json:"skills,omitempty"`
-	MCPServers   []string            `json:"mcp_servers,omitempty"`
+	ProjectID     string              `json:"project_id" validate:"required,uuid"`
+	Title         string              `json:"title" validate:"required,min=1,max=255"`
+	Prompt        string              `json:"prompt" validate:"required"`
+	AssigneeID    string              `json:"assignee_id" validate:"required"`
+	AssigneeType  models.AssigneeType `json:"assignee_type" validate:"required,assignee_type"`
+	Priority      int                 `json:"priority" validate:"task_priority"`
+	ParentTaskID  *string             `json:"parent_task_id,omitempty" validate:"omitempty,uuid"`
+	IntegrationID *string             `json:"integration_id,omitempty" validate:"omitempty,uuid"`
+	Model         *string             `json:"model,omitempty"`
+	Skills        []string            `json:"skills,omitempty"`
+	MCPServers    []string            `json:"mcp_servers,omitempty"`
 }
 
 // TaskResponse represents the API response serialization for a Task.
 type TaskResponse struct {
 	ID            string              `json:"id"`
 	ProjectID     string              `json:"project_id"`
+	IntegrationID *string             `json:"integration_id,omitempty"`
 	Title         string              `json:"title"`
 	Prompt        string              `json:"prompt"`
 	AssigneeID    string              `json:"assignee_id"`
@@ -69,6 +71,7 @@ func ToTaskResponse(t *models.Task) TaskResponse {
 	return TaskResponse{
 		ID:             t.ID,
 		ProjectID:      t.ProjectID,
+		IntegrationID:  t.IntegrationID,
 		Title:          t.Title,
 		Prompt:         t.Prompt,
 		AssigneeID:     t.AssigneeID,

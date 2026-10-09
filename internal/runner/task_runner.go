@@ -399,10 +399,22 @@ func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attemp
 	if r.integRepo != nil && r.credRepo != nil && r.cipher != nil {
 		integrationsList, err := r.integRepo.ListByProjectID(ctx, task.ProjectID)
 		if err == nil {
-			for i := range integrationsList {
-				if integrationsList[i].Provider == models.IntegrationGitHub && integrationsList[i].Enabled {
-					ghInteg = &integrationsList[i]
-					break
+			// If task specifies a specific integration, look up that target repo
+			if task.IntegrationID != nil && *task.IntegrationID != "" {
+				for i := range integrationsList {
+					if integrationsList[i].ID == *task.IntegrationID && integrationsList[i].Enabled {
+						ghInteg = &integrationsList[i]
+						break
+					}
+				}
+			}
+			// Fallback to first enabled GitHub integration if not specifically designated
+			if ghInteg == nil {
+				for i := range integrationsList {
+					if integrationsList[i].Provider == models.IntegrationGitHub && integrationsList[i].Enabled {
+						ghInteg = &integrationsList[i]
+						break
+					}
 				}
 			}
 		}
@@ -424,13 +436,11 @@ func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attemp
 			}
 		}
 
-		// Ensure a dedicated repository directory for this GitHub repo
-		if repoPath == "" || strings.HasSuffix(repoPath, "/core") {
-			cleanSlug := strings.ReplaceAll(repoSlug, "/", "_")
-			repoPath = filepath.Join(r.cfg.HostRepoRoot, cleanSlug)
-			project.RepoPath = repoPath
-			_ = r.projectRepo.Update(ctx, project)
-		}
+		// Ensure a dedicated repository directory for this specific GitHub repo
+		cleanSlug := strings.ReplaceAll(repoSlug, "/", "_")
+		repoPath = filepath.Join(r.cfg.HostRepoRoot, cleanSlug)
+		project.RepoPath = repoPath
+		_ = r.projectRepo.Update(ctx, project)
 
 		r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[36m[Agent Control Plane]\x1b[0m Syncing GitHub repository %s (%s)...\r\n", repoSlug, baseBranch))
 		if err := git.SyncGitHubRepo(ctx, repoPath, repoSlug, baseBranch, token, func(msg string) {

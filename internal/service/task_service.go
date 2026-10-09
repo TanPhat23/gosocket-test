@@ -149,9 +149,10 @@ func (s *taskService) CreateTask(ctx context.Context, req *dto.CreateTaskRequest
 	sessionID := fmt.Sprintf("ses_atm_%s", taskID)
 
 	task := &models.Task{
-		ID:           taskID,
-		ProjectID:    req.ProjectID,
-		ParentTaskID: req.ParentTaskID,
+		ID:            taskID,
+		ProjectID:     req.ProjectID,
+		IntegrationID: req.IntegrationID,
+		ParentTaskID:  req.ParentTaskID,
 		Title:        req.Title,
 		Prompt:       req.Prompt,
 		AssigneeID:   req.AssigneeID,

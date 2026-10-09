@@ -17,6 +17,7 @@ export type AssigneeType = z.infer<typeof AssigneeTypeSchema>;
 export const CreateTaskRequestSchema = z.object({
   project_id: z.string().optional().default(''),
   parent_task_id: z.string().optional(),
+  integration_id: z.string().optional(),
   title: z.string().min(1, 'Title is required').max(255, 'Title too long'),
   prompt: z.string().min(1, 'Prompt is required'),
   assignee_id: z.string().min(1, 'Assignee ID is required'),
@@ -33,6 +34,7 @@ export type CreateTaskRequest = CreateTaskInput;
 export const TaskSchema = z.object({
   id: z.string().uuid().or(z.string().min(1)),
   project_id: z.string().uuid().or(z.string().min(1)),
+  integration_id: z.string().optional().nullable(),
   parent_task_id: z.string().optional().nullable(),
   title: z.string(),
   prompt: z.string(),

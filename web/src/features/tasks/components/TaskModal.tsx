@@ -15,7 +15,9 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Plus, Check, Sparkles, Server, Wrench, AlertCircle, Cpu } from 'lucide-react';
+import { Plus, Check, Sparkles, Server, Wrench, AlertCircle, Cpu, GitBranch } from 'lucide-react';
+import { integrationApi } from '@/features/integrations/api/integrationApi';
+import type { IntegrationDTO } from '@/features/integrations/schemas/integrationSchemas';
 import { cn } from '@/lib/utils';
 
 export interface ModelOption {
@@ -98,6 +100,34 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
 
   const effectiveProjectId = selectedProjectId || activeProjectId || (projects.length > 0 ? projects[0].id : '');
 
+  const [projectIntegrations, setProjectIntegrations] = useState<IntegrationDTO[]>([]);
+  const [selectedIntegrationId, setSelectedIntegrationId] = useState<string>('');
+
+  React.useEffect(() => {
+    if (!effectiveProjectId) {
+      setProjectIntegrations([]);
+      setSelectedIntegrationId('');
+      return;
+    }
+    integrationApi.listProjectIntegrations(effectiveProjectId)
+      .then((integs) => {
+        const ghIntegs = integs.filter((i) => i.provider === 'github' && i.enabled);
+        setProjectIntegrations(ghIntegs);
+        if (ghIntegs.length > 0) {
+          setSelectedIntegrationId((prev) => {
+            const exists = ghIntegs.some((g) => g.id === prev);
+            return exists ? prev : ghIntegs[0].id;
+          });
+        } else {
+          setSelectedIntegrationId('');
+        }
+      })
+      .catch(() => {
+        setProjectIntegrations([]);
+        setSelectedIntegrationId('');
+      });
+  }, [effectiveProjectId]);
+
   const toggleSkill = (skill: string) => {
     setSelectedSkills((prev) =>
       prev.includes(skill) ? prev.filter((s) => s !== skill) : [...prev, skill]
@@ -125,6 +155,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
 
     const rawData = {
       project_id: effectiveProjectId.trim(),
+      integration_id: selectedIntegrationId ? selectedIntegrationId.trim() : undefined,
       title: title.trim(),
       prompt: prompt.trim(),
       assignee_id: 'agent-sandbox-1',
@@ -222,6 +253,65 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
               <p className="text-[11px] text-destructive">{errors.project_id}</p>
             )}
           </div>
+
+          {/* Target Repository Selection (when project has connected GitHub repos) */}
+          {projectIntegrations.length > 0 && (
+            <div className="space-y-2 p-2.5 rounded-lg border border-border/70 bg-muted/20">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                  <GitBranch className="size-3.5 text-primary" />
+                  Target Repository
+                </label>
+                <Badge variant="outline" className="text-[9px] font-mono">
+                  {projectIntegrations.length} connected
+                </Badge>
+              </div>
+
+              {projectIntegrations.length === 1 ? (
+                <div className="flex items-center gap-2 text-xs font-mono text-muted-foreground bg-background px-2.5 py-1.5 rounded border border-border/50">
+                  <span className="size-1.5 rounded-full bg-emerald-500 shrink-0" />
+                  <span className="text-foreground font-medium">{projectIntegrations[0].external_id}</span>
+                  <span className="text-[10px] text-muted-foreground/70">
+                    ({String(projectIntegrations[0].config?.base_branch || 'main')})
+                  </span>
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  <p className="text-[11px] text-muted-foreground">
+                    Select which repository the agent should clone, work on, and create branches in:
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2" role="radiogroup" aria-label="Target Repository">
+                    {projectIntegrations.map((integ) => {
+                      const isSelected = selectedIntegrationId === integ.id;
+                      return (
+                        <button
+                          key={integ.id}
+                          type="button"
+                          onClick={() => setSelectedIntegrationId(integ.id)}
+                          data-testid={`target-repo-${integ.id}`}
+                          className={`text-left p-2 rounded-lg border text-xs transition-colors flex items-center justify-between gap-2 cursor-pointer ${
+                            isSelected
+                              ? 'border-primary bg-primary/10 text-foreground font-medium shadow-xs'
+                              : 'border-border/60 bg-background hover:bg-muted/40 text-muted-foreground'
+                          }`}
+                        >
+                          <div className="min-w-0 flex-1 truncate">
+                            <div className="font-mono text-xs truncate text-foreground">{integ.external_id}</div>
+                            <div className="text-[10px] text-muted-foreground truncate">
+                              Branch: {String(integ.config?.base_branch || 'main')}
+                            </div>
+                          </div>
+                          {isSelected && (
+                            <span className="size-2 rounded-full bg-primary shrink-0" />
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Title */}
           <div className="space-y-1.5">

@@ -72,4 +72,42 @@ describe('TaskModal', () => {
       expect(createTaskSpy).toHaveBeenCalledTimes(1);
     });
   });
+
+  it('allows selecting target repository when project has connected repositories', async () => {
+    const createTaskSpy = vi.fn().mockResolvedValue({
+      id: 'task-with-repo',
+      project_id: 'default-project',
+      integration_id: 'integ-repo-2',
+      title: 'Task on second repo',
+      prompt: 'Do work on repo 2',
+      assignee_id: 'agent-sandbox-1',
+      assignee_type: 'agent',
+      status: 'backlog',
+      priority: 50,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      skills: [],
+      mcp_servers: [],
+    });
+
+    useTaskStore.setState({ createTask: createTaskSpy });
+
+    render(<TaskModal />);
+
+    const triggerBtn = screen.getByRole('button', { name: /new task/i });
+    fireEvent.click(triggerBtn);
+
+    const titleInput = screen.getByLabelText(/Task Title/i);
+    const promptInput = screen.getByLabelText(/Prompt & Execution Specification/i);
+
+    fireEvent.change(titleInput, { target: { value: 'Task on second repo' } });
+    fireEvent.change(promptInput, { target: { value: 'Do work on repo 2' } });
+
+    const submitBtn = screen.getByRole('button', { name: /dispatch task/i });
+    fireEvent.click(submitBtn);
+
+    await waitFor(() => {
+      expect(createTaskSpy).toHaveBeenCalled();
+    });
+  });
 });
