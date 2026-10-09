@@ -104,6 +104,46 @@ describe('parseSessionMessageContent', () => {
     expect(parsed.toolCalls[0].input).toEqual({ command: 'npm test' });
   });
 
+  it('extracts question tool calls and parses state input options', () => {
+    const rawContent = [
+      {
+        type: 'tool',
+        name: 'question',
+        state: {
+          status: 'running',
+          input: {
+            questions: [
+              {
+                header: 'Design Direction',
+                question: 'Which visual aesthetic should be applied?',
+                options: [
+                  { label: 'Deep Blue (Recommended)', description: 'Minimalist blue palette' },
+                  { label: 'Monochrome Slate', description: 'Clean neutral black and white' },
+                ],
+                multiple: false,
+              },
+            ],
+          },
+        },
+      },
+    ];
+
+    const msg: SessionMessage = {
+      id: 'msg_q',
+      role: 'assistant',
+      content: rawContent,
+    };
+
+    const parsed = parseSessionMessageContent(msg);
+
+    expect(parsed.toolCalls).toHaveLength(1);
+    expect(parsed.toolCalls[0].name).toBe('question');
+    expect(parsed.toolCalls[0].status).toBe('running');
+    expect(parsed.toolCalls[0].input).toBeDefined();
+    const inputObj = parsed.toolCalls[0].input as { questions: unknown[] };
+    expect(inputObj.questions).toHaveLength(1);
+  });
+
   it('handles plain text and user messages cleanly', () => {
     const msg: SessionMessage = {
       id: 'msg_5',

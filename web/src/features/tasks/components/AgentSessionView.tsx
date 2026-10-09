@@ -25,6 +25,7 @@ import {
   Database,
   Cpu,
 } from 'lucide-react';
+import { AgentQuestionnaire } from './AgentQuestionnaire';
 
 interface AgentSessionViewProps {
   taskId: string;
@@ -90,6 +91,8 @@ export function parseSessionMessageContent(msg: SessionMessage): ParsedMessageDa
         part.type === 'tool_use' ||
         part.type === 'tool_call' ||
         part.type === 'tool' ||
+        part.name === 'question' ||
+        part.name === 'subagent' ||
         typeof part.call === 'string';
 
       if (isTool) {
@@ -310,15 +313,17 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
     }
   };
 
-  const handleSendPrompt = async (e?: React.FormEvent) => {
+  const handleSendPrompt = async (e?: React.FormEvent, customPrompt?: string) => {
     if (e) e.preventDefault();
-    const trimmed = steerPrompt.trim();
-    if (!trimmed || isSubmittingPrompt) return;
+    const textToSend = (customPrompt !== undefined ? customPrompt : steerPrompt).trim();
+    if (!textToSend || isSubmittingPrompt) return;
 
-    const userPromptText = trimmed;
+    const userPromptText = textToSend;
     setIsSubmittingPrompt(true);
     setSteerError(null);
-    setSteerPrompt('');
+    if (customPrompt === undefined) {
+      setSteerPrompt('');
+    }
     setIsSteeringActive(true);
 
     // Optimistically inject user prompt so it displays immediately
@@ -725,6 +730,22 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                         </span>
                         <div className="space-y-1.5">
                           {toolCalls.map((tc: SessionToolCall, tcIdx: number) => {
+                            if (tc.name === 'question') {
+                              return (
+                                <div key={tcIdx} className="pt-1">
+                                  <AgentQuestionnaire
+                                    questions={tc.input as any}
+                                    status={tc.status}
+                                    output={tc.output}
+                                    onSubmitAnswer={async (answerText) => {
+                                      await handleSendPrompt(undefined, answerText);
+                                    }}
+                                    isSubmitting={isSubmittingPrompt}
+                                  />
+                                </div>
+                              );
+                            }
+
                             const expandKey = `${msgIdx}-${tcIdx}`;
                             const isExpanded = !!expandedTools[expandKey];
 
