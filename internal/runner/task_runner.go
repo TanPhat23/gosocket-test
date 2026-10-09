@@ -1,7 +1,6 @@
 package runner
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -753,6 +752,7 @@ func (r *AgentTaskRunner) runInDocker(ctx context.Context, task *models.Task, at
 	cmd := []string{
 		"/root/.opencode/bin/opencode",
 		"run",
+		"--format", "json",
 		"--server", r.cfg.OpenCodeServerURL,
 		"--session", sessionID,
 		"--title", task.Title,
@@ -834,6 +834,7 @@ func (r *AgentTaskRunner) runOnHost(ctx context.Context, task *models.Task, atte
 
 	args := []string{
 		"run",
+		"--format", "json",
 		"--server", r.cfg.OpenCodeServerURL,
 		"--session", sessionID,
 		"--title", task.Title,
@@ -884,10 +885,27 @@ func (r *AgentTaskRunner) streamDemuxedLogs(ctx context.Context, taskID, attempt
 }
 
 func (r *AgentTaskRunner) streamPipe(ctx context.Context, taskID, attemptID string, reader io.Reader, stream string) {
-	scanner := bufio.NewScanner(reader)
+	scanner := NewAgentStreamScanner(reader)
+	tracker := NewTerminalTracker()
+
 	for scanner.Scan() {
-		line := scanner.Text() + "\r\n"
-		r.broadcastLog(ctx, taskID, attemptID, line)
+		line := scanner.Bytes()
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) == 0 {
+			continue
+		}
+
+		if evt, err := ParseOpenCodeWireEvent(trimmed); err == nil && evt.Type != "" {
+			tracker.Process(evt)
+			if r.hub != nil {
+				_ = r.hub.BroadcastTaskEvent(taskID, evt)
+			}
+			if ansi, isLog := FormatWireEventANSI(evt); isLog {
+				r.broadcastLog(ctx, taskID, attemptID, ansi)
+			}
+		} else {
+			r.broadcastLog(ctx, taskID, attemptID, string(line)+"\r\n")
+		}
 	}
 	if scanner.Err() != nil {
 		log.Printf("error reading %s stream for task %s: %v", stream, taskID, scanner.Err())
