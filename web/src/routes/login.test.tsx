@@ -57,9 +57,7 @@ describe('/login route', () => {
 
   describe('component', () => {
     it('renders LoginForm component within container layout', () => {
-      const Component = Route.options.component;
-      expect(Component).toBeDefined();
-
+      const Component = Route.options.component!;
       render(<Component />);
       expect(screen.getByTestId('login-form')).toBeInTheDocument();
       expect(screen.getByText('Mocked LoginForm')).toBeInTheDocument();
