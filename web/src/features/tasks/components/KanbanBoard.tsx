@@ -1,5 +1,6 @@
 import React from 'react';
 import { useTaskStore } from '../store/useTaskStore';
+import { useActiveProjectId } from '@/features/teams/store/useTeamStore';
 import { useShallow } from 'zustand/react/shallow';
 import { TaskCard } from './TaskCard';
 import { Badge } from '@/components/ui/badge';
@@ -50,12 +51,17 @@ interface KanbanLaneProps {
 }
 
 const KanbanLane: React.FC<KanbanLaneProps> = ({ column }) => {
-  // Use shallow selector to subscribe only to IDs belonging to this lane
+  const activeProjectId = useActiveProjectId();
+  // Use shallow selector to subscribe only to IDs belonging to this lane and active project
   const taskIds = useTaskStore(
     useShallow((state) =>
       state.taskIds.filter((id) => {
         const task = state.tasks[id];
-        return task ? column.statuses.includes(task.status) : false;
+        if (!task) return false;
+        if (activeProjectId && task.project_id && task.project_id !== activeProjectId) {
+          return false;
+        }
+        return column.statuses.includes(task.status);
       })
     )
   );

@@ -2,7 +2,7 @@ import React, { useEffect } from 'react';
 import { useAuthStore } from '@/features/auth/store/useAuthStore';
 import { LoginForm } from '@/features/auth/components/LoginForm';
 import { useTaskStore } from '@/features/tasks/store/useTaskStore';
-import { useTeamStore } from '@/features/teams/store/useTeamStore';
+import { useTeamStore, useActiveProjectId } from '@/features/teams/store/useTeamStore';
 import { useTaskSubscription } from '@/features/tasks/hooks/useTaskSubscription';
 import { AppSidebar } from '@/components/layout/AppSidebar';
 import { Header } from '@/components/layout/Header';
@@ -16,14 +16,15 @@ import { Loader2 } from 'lucide-react';
 export const WorkspaceView: React.FC = () => {
   const fetchTasks = useTaskStore((state) => state.fetchTasks);
   const fetchTeams = useTeamStore((state) => state.fetchTeams);
+  const activeProjectId = useActiveProjectId();
 
   // Maintain real-time task status updates across the Kanban board
   useTaskSubscription();
 
   useEffect(() => {
-    fetchTasks();
+    fetchTasks(activeProjectId || undefined);
     fetchTeams();
-  }, [fetchTasks, fetchTeams]);
+  }, [fetchTasks, fetchTeams, activeProjectId]);
 
   return (
     <div className="h-screen bg-background text-foreground flex overflow-hidden font-sans">

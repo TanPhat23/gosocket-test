@@ -24,9 +24,11 @@ import {
   ChevronRight,
   Database,
   Cpu,
+  Settings2,
 } from 'lucide-react';
 import { AgentQuestionnaire, type QuestionItemData } from './AgentQuestionnaire';
 import { extractQuestionsFromText } from '../utils/questionParser';
+import { cleanUserPrompt } from '../utils/promptCleaner';
 import { Markdown } from '@/components/ui/markdown';
 
 interface AgentSessionViewProps {
@@ -672,20 +674,38 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                   cleanUserText = '(User Prompt)';
                 }
 
+                const { prompt: displayPrompt, systemContext } = cleanUserPrompt(cleanUserText);
+
                 return (
                   <div
                     key={msg.id || `user-${msgIdx}`}
                     className="flex justify-end"
                     data-testid="user-message"
                   >
-                    <div className="max-w-[85%] rounded-lg p-3 bg-primary text-primary-foreground text-xs space-y-1.5 shadow-sm">
-                      <div className="flex items-center justify-between gap-3 text-[10px] opacity-80 border-b border-primary-foreground/20 pb-1">
-                        <span className="font-semibold flex items-center gap-1">
+                    <div className="max-w-[85%] rounded-xl p-3.5 bg-primary text-primary-foreground text-xs space-y-2 shadow-sm">
+                      <div className="flex items-center justify-between gap-3 text-[10px] opacity-80 border-b border-primary-foreground/20 pb-1.5">
+                        <span className="font-semibold flex items-center gap-1.5">
                           <User className="size-3" /> User Prompt
                         </span>
                         {timeString && <span className="font-mono">{timeString}</span>}
                       </div>
-                      <p className="whitespace-pre-wrap leading-relaxed font-sans">{cleanUserText}</p>
+                      <p className="whitespace-pre-wrap leading-relaxed font-sans text-xs">{displayPrompt}</p>
+
+                      {systemContext && (
+                        <details className="mt-2 rounded-lg bg-black/25 border border-white/10 p-2 text-primary-foreground/90 font-mono text-[11px] select-none group">
+                          <summary className="cursor-pointer font-semibold text-[10px] uppercase tracking-wider flex items-center justify-between select-none hover:text-white">
+                            <span className="flex items-center gap-1.5">
+                              <Settings2 className="size-3" /> System Context &amp; MCP Tool Catalog
+                            </span>
+                            <span className="text-[9px] opacity-75 font-normal">
+                              {systemContext.split('\n').length} lines
+                            </span>
+                          </summary>
+                          <pre className="mt-2 max-h-52 overflow-y-auto whitespace-pre-wrap p-2 bg-black/40 rounded border border-white/5 text-[10px] leading-relaxed text-primary-foreground/90 font-mono">
+                            {systemContext}
+                          </pre>
+                        </details>
+                      )}
                     </div>
                   </div>
                 );

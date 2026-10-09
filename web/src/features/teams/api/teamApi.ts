@@ -13,4 +13,13 @@ export const teamApi = {
     });
     return res.data.map((item) => ProjectSchema.parse(item));
   },
+
+  async createProject(req: { name: string; team_id: string; repo_path?: string }): Promise<ProjectDTO> {
+    const res = await axiosClient.post<unknown>('/projects', req);
+    return ProjectSchema.parse(res.data);
+  },
+
+  async deleteProject(projectId: string): Promise<void> {
+    await axiosClient.delete(`/projects/${encodeURIComponent(projectId)}`);
+  },
 };

@@ -41,6 +41,7 @@ func (m *mockProjectRepo) GetByID(ctx context.Context, id string) (*models.Proje
 func (m *mockProjectRepo) List(ctx context.Context, teamID string) ([]models.Project, error) {
 	return []models.Project{*m.project}, nil
 }
+func (m *mockProjectRepo) Delete(ctx context.Context, id string) error { return nil }
 
 type mockTaskRepo struct {
 	task *models.Task

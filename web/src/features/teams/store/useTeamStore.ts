@@ -15,6 +15,8 @@ interface TeamState {
   fetchProjects: (teamId?: string) => Promise<void>;
   selectProject: (projectId: string | null) => void;
   setActiveProjectId: (projectId: string | null) => void;
+  createProject: (req: { name: string; team_id: string; repo_path?: string }) => Promise<Project>;
+  deleteProject: (projectId: string) => Promise<void>;
 }
 
 export const useTeamStore = create<TeamState>((set, get) => ({
@@ -63,6 +65,29 @@ export const useTeamStore = create<TeamState>((set, get) => ({
 
   setActiveProjectId: (projectId: string | null) => {
     set({ activeProjectId: projectId });
+  },
+
+  createProject: async (req) => {
+    const newProject = await teamApi.createProject(req);
+    set((state) => ({
+      projects: [newProject, ...state.projects],
+      activeProjectId: newProject.id,
+    }));
+    return newProject;
+  },
+
+  deleteProject: async (projectId: string) => {
+    await teamApi.deleteProject(projectId);
+    set((state) => {
+      const remaining = state.projects.filter((p) => p.id !== projectId);
+      const nextActive = state.activeProjectId === projectId
+        ? (remaining.length > 0 ? remaining[0].id : null)
+        : state.activeProjectId;
+      return {
+        projects: remaining,
+        activeProjectId: nextActive,
+      };
+    });
   },
 }));
 

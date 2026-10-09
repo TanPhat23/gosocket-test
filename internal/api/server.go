@@ -166,6 +166,8 @@ func (s *Server) setupRoutes() {
 		}
 		if s.ProjectRepo != nil {
 			v1.Get("/projects", teamHandlers.ListProjects)
+			v1.Post("/projects", teamHandlers.CreateProject)
+			v1.Delete("/projects/:id", teamHandlers.DeleteProject)
 		}
 	}
 

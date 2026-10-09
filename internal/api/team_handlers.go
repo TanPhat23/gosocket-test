@@ -1,6 +1,7 @@
 package api
 
 import (
+	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/repository"
 
@@ -47,4 +48,52 @@ func (h *TeamHandlers) ListProjects(c fiber.Ctx) error {
 	}
 
 	return c.JSON(projects)
+}
+
+// CreateProject handles POST /api/v1/projects
+func (h *TeamHandlers) CreateProject(c fiber.Ctx) error {
+	var req struct {
+		Name     string `json:"name"`
+		TeamID   string `json:"team_id"`
+		RepoPath string `json:"repo_path"`
+	}
+	if err := c.Bind().JSON(&req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+	if req.Name == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "project name is required")
+	}
+	if req.TeamID == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "team_id is required")
+	}
+	repoPath := req.RepoPath
+	if repoPath == "" {
+		repoPath = req.Name
+	}
+
+	p := &models.Project{
+		ID:       common.NewID(),
+		Name:     req.Name,
+		TeamID:   req.TeamID,
+		RepoPath: repoPath,
+	}
+	if err := h.projectRepo.Create(c.Context(), p); err != nil {
+		return CentralErrorHandler(c, err)
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(p)
+}
+
+// DeleteProject handles DELETE /api/v1/projects/:id
+func (h *TeamHandlers) DeleteProject(c fiber.Ctx) error {
+	projectID := c.Params("id")
+	if projectID == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "project id is required")
+	}
+
+	if err := h.projectRepo.Delete(c.Context(), projectID); err != nil {
+		return CentralErrorHandler(c, err)
+	}
+
+	return c.SendStatus(fiber.StatusNoContent)
 }

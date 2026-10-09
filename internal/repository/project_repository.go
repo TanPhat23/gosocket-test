@@ -13,6 +13,7 @@ type ProjectRepository interface {
 	GetByID(ctx context.Context, id string) (*models.Project, error)
 	Create(ctx context.Context, p *models.Project) error
 	Update(ctx context.Context, p *models.Project) error
+	Delete(ctx context.Context, id string) error
 }
 
 type projectRepo struct {
@@ -45,4 +46,8 @@ func (r *projectRepo) Create(ctx context.Context, p *models.Project) error {
 
 func (r *projectRepo) Update(ctx context.Context, p *models.Project) error {
 	return r.db.WithContext(ctx).Save(p).Error
+}
+
+func (r *projectRepo) Delete(ctx context.Context, id string) error {
+	return r.db.WithContext(ctx).Where("id = ?", id).Delete(&models.Project{}).Error
 }
