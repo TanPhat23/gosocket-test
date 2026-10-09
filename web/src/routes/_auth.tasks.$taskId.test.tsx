@@ -42,10 +42,12 @@ describe('/_auth.tasks.$taskId route', () => {
       const loader = Route.options.loader;
       expect(loader).toBeDefined();
 
-      await loader!({
-        params: { taskId: 'task-test-456' },
-        context: { queryClient: mockQueryClient },
-      } as any);
+      if (typeof loader === 'function') {
+        await loader({
+          params: { taskId: 'task-test-456' },
+          context: { queryClient: mockQueryClient },
+        } as any);
+      }
 
       expect(mockQueryClient.ensureQueryData).toHaveBeenCalledTimes(3);
 
