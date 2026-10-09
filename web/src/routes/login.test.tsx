@@ -48,7 +48,9 @@ describe('/login route', () => {
         expect.fail('Expected beforeLoad to throw a redirect');
       } catch (err) {
         expect(isRedirect(err)).toBe(true);
-        expect((err as any).to).toBe('/');
+        const redirectObj = err as any;
+        const target = redirectObj.options?.to || redirectObj.to || redirectObj.headers?.get?.('Location');
+        expect(target).toBe('/');
       }
 
       expect(mockQueryClient.ensureQueryData).toHaveBeenCalledTimes(1);
