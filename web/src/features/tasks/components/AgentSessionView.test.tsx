@@ -1,6 +1,8 @@
-import { describe, it, expect } from 'vitest';
-import { parseSessionMessageContent } from './AgentSessionView';
-import type { SessionMessage } from '../schemas/taskSchemas';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { AgentSessionView, parseSessionMessageContent } from './AgentSessionView';
+import { taskApi } from '../api/taskApi';
+import type { SessionMessage, TaskSessionResponse } from '../schemas/taskSchemas';
 
 describe('parseSessionMessageContent', () => {
   it('extracts text from an array of parts with state/thoughtSignature (Gemini/OpenCode format)', () => {
@@ -190,5 +192,139 @@ Which direction do you prefer?
     expect(parsed.text).toBe('Add hero banner section to UI');
     expect(parsed.thoughts).toBeUndefined();
     expect(parsed.toolCalls).toHaveLength(0);
+  });
+});
+
+describe('AgentSessionView Split Two-Pane Inspector', () => {
+  const mockTaskId = 'task-test-split-1';
+
+  const mockSessionData: TaskSessionResponse = {
+    task_id: mockTaskId,
+    session_id: 'ses_atm_split_1',
+    status: 'idle',
+    model: 'gemini-3.8-flash',
+    tokens: {
+      input: 5000,
+      output: 1200,
+      reasoning: 200,
+      cache_read: 1500,
+      cache_write: 0,
+    },
+    cost: 0.0042,
+    messages: [
+      {
+        id: 'msg_u1',
+        type: 'user',
+        role: 'user',
+        text: 'Fix the failing test in agent service',
+        created_at: 1791357500000,
+      },
+      {
+        id: 'msg_a1',
+        type: 'assistant',
+        role: 'assistant',
+        agent: 'coordinator',
+        model: 'gemini-3.8-flash',
+        text: 'I ran the shell command and encountered an issue.',
+        tool_calls: [
+          {
+            name: 'shell',
+            input: { command: 'go test ./pkg/agent/...' },
+            output: 'FAIL: TestAgentSessionRunner (0.42s)\n    agent_test.go:45: expected nil, got error 500',
+            status: 'error',
+            exit_code: 1,
+          },
+          {
+            name: 'read',
+            input: { path: 'pkg/agent/runner.go' },
+            output: 'package agent\n\nfunc Run() error { return nil }',
+            status: 'completed',
+            exit_code: 0,
+          },
+        ],
+        created_at: 1791357510000,
+      },
+    ],
+  };
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('renders split two-pane layout with transcript and inspector panel', async () => {
+    vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue(mockSessionData);
+
+    render(<AgentSessionView taskId={mockTaskId} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('session-transcript-container')).toBeInTheDocument();
+      expect(screen.getByTestId('tool-inspector-panel')).toBeInTheDocument();
+    });
+
+    // Transcript messages
+    expect(screen.getByTestId('user-message')).toHaveTextContent('Fix the failing test in agent service');
+    expect(screen.getByTestId('assistant-message')).toHaveTextContent('I ran the shell command and encountered an issue.');
+
+    // Auto-selects first failed tool (shell, exit 1) into inspector
+    expect(screen.getByTestId('tool-inspector-panel')).toHaveTextContent('shell');
+    expect(screen.getByText('💡 Detected Error')).toBeInTheDocument();
+    expect(screen.getByText(/TestAgentSessionRunner/i)).toBeInTheDocument();
+    expect(screen.getByText('👉 Inspecting in Right Pane')).toBeInTheDocument();
+  });
+
+  it('allows clicking another tool call card to inspect its output in the right pane', async () => {
+    vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue(mockSessionData);
+
+    render(<AgentSessionView taskId={mockTaskId} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tool-inspector-panel')).toBeInTheDocument();
+    });
+
+    // Click second tool call card ('read')
+    const toolCards = screen.getAllByTestId('tool-call-card');
+    expect(toolCards.length).toBe(2);
+
+    fireEvent.click(toolCards[1]);
+
+    // Inspector should now show 'read' and its output
+    await waitFor(() => {
+      const inspector = screen.getByTestId('tool-inspector-panel');
+      expect(inspector).toHaveTextContent('read');
+      expect(inspector).toHaveTextContent('func Run() error { return nil }');
+    });
+  });
+
+  it('supports "Insert Fix into Steer Input" button to prefill steer prompt', async () => {
+    vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue(mockSessionData);
+
+    render(<AgentSessionView taskId={mockTaskId} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('insert-fix-btn')).toBeInTheDocument();
+    });
+
+    const insertFixBtn = screen.getByTestId('insert-fix-btn');
+    fireEvent.click(insertFixBtn);
+
+    const steerTextarea = screen.getByTestId('steer-prompt-textarea');
+    expect(steerTextarea).toHaveValue(
+      'Fix the error in tool "shell":\nFAIL: TestAgentSessionRunner (0.42s)\n    agent_test.go:45: expected nil, got error 500\nPlease resolve and re-run.'
+    );
+  });
+
+  it('populates steer textarea when clicking suggestion chips', async () => {
+    vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue(mockSessionData);
+
+    render(<AgentSessionView taskId={mockTaskId} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('"Fix failed step"')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText('"Fix failed step"'));
+
+    const steerTextarea = screen.getByTestId('steer-prompt-textarea');
+    expect(steerTextarea).toHaveValue('Fix the failed step and run tests again.');
   });
 });

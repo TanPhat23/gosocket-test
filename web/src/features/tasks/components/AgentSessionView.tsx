@@ -25,6 +25,10 @@ import {
   Database,
   Cpu,
   Settings2,
+  FileCode,
+  Layers,
+  X,
+  CornerDownLeft,
 } from 'lucide-react';
 import { AgentQuestionnaire, type QuestionItemData } from './AgentQuestionnaire';
 import { extractQuestionsFromText } from '../utils/questionParser';
@@ -218,8 +222,72 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
   const [isCompacting, setIsCompacting] = useState<boolean>(false);
   const [compactMessage, setCompactMessage] = useState<string | null>(null);
 
+  // Selected tool key for inspector: `${msgIdx}-${tcIdx}`
+  const [selectedToolKey, setSelectedToolKey] = useState<string | null>(null);
+  const [inspectorTab, setInspectorTab] = useState<'output' | 'input'>('output');
+
   // Expanded tool calls tracker: msgIndex-toolIndex
   const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({});
+
+  const toggleToolExpanded = (key: string) => {
+    setExpandedTools((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  };
+
+  // Helper to collect all tool calls across messages for inspector lookup and metrics
+  const allToolCallsMap = React.useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        tc: SessionToolCall;
+        msgIdx: number;
+        tcIdx: number;
+        msg: SessionMessage;
+      }
+    >();
+    if (!session?.messages) return map;
+
+    const sortedMsgs = [...(session.messages || [])].sort((a, b) => {
+      const tA = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const tB = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return tA - tB;
+    });
+
+    sortedMsgs.forEach((msg, mIdx) => {
+      const parsed = parseSessionMessageContent(msg);
+      parsed.toolCalls.forEach((tc, tIdx) => {
+        map.set(`${mIdx}-${tIdx}`, { tc, msgIdx: mIdx, tcIdx: tIdx, msg });
+      });
+    });
+
+    return map;
+  }, [session?.messages]);
+
+  const selectedToolInfo = selectedToolKey ? allToolCallsMap.get(selectedToolKey) : null;
+
+  // Tool statistics for overview when nothing is selected
+  const toolStats = React.useMemo(() => {
+    let total = 0;
+    let failed = 0;
+    let succeeded = 0;
+    let running = 0;
+
+    allToolCallsMap.forEach(({ tc }) => {
+      if (tc.name === 'question') return;
+      total++;
+      if (tc.status === 'running') {
+        running++;
+      } else if (tc.status === 'error' || (tc.exit_code !== undefined && tc.exit_code !== 0)) {
+        failed++;
+      } else {
+        succeeded++;
+      }
+    });
+
+    return { total, failed, succeeded, running };
+  }, [allToolCallsMap]);
 
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
@@ -232,6 +300,36 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
     try {
       const data = await taskApi.getTaskSession(taskId);
       setSession(data);
+
+      // Auto-select first failed tool if available on initial load or failure, if nothing selected yet
+      if (data?.messages) {
+        let firstFailedKey: string | null = null;
+        const sortedMsgs = [...(data.messages || [])].sort((a, b) => {
+          const tA = a.created_at ? new Date(a.created_at).getTime() : 0;
+          const tB = b.created_at ? new Date(b.created_at).getTime() : 0;
+          return tA - tB;
+        });
+
+        for (let mIdx = 0; mIdx < sortedMsgs.length; mIdx++) {
+          const m = sortedMsgs[mIdx];
+          const parsed = parseSessionMessageContent(m);
+          for (let tIdx = 0; tIdx < parsed.toolCalls.length; tIdx++) {
+            const tc = parsed.toolCalls[tIdx];
+            if (tc.name === 'question') continue;
+            const isSuccess = tc.status !== 'error' && (tc.exit_code === undefined || tc.exit_code === 0);
+            if (!isSuccess || (tc.exit_code !== undefined && tc.exit_code !== 0)) {
+              firstFailedKey = `${mIdx}-${tIdx}`;
+              break;
+            }
+          }
+          if (firstFailedKey) break;
+        }
+
+        setSelectedToolKey((prev) => {
+          if (prev) return prev;
+          return firstFailedKey;
+        });
+      }
     } catch (err: unknown) {
       const apiErr = err as { status?: number; message?: string };
       if (apiErr?.status === 503) {
@@ -388,13 +486,6 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
     } finally {
       setIsCompacting(false);
     }
-  };
-
-  const toggleToolExpanded = (key: string) => {
-    setExpandedTools((prev) => ({
-      ...prev,
-      [key]: !prev[key],
-    }));
   };
 
   const currentSessionId = session?.session_id || defaultSessionId || 'Unavailable';
@@ -572,503 +663,844 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
         )}
       </div>
 
-      {/* Main Transcript Body or State banners */}
-      <div className="flex-1 min-h-0 flex flex-col rounded-lg border border-border bg-card/60 overflow-hidden">
-        {loading && !session ? (
-          <div className="flex-1 flex flex-col items-center justify-center p-8 space-y-2 text-muted-foreground">
-            <RefreshCw className="size-6 animate-spin text-primary" />
-            <span className="text-xs font-mono">Fetching agent session state...</span>
-          </div>
-        ) : isUnavailable ? (
-          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-3">
-            <div className="p-3 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400">
-              <AlertTriangle className="size-6" />
-            </div>
-            <div className="space-y-1 max-w-sm">
-              <h4 className="text-sm font-semibold text-foreground">
-                Agent Execution Service Unavailable
-              </h4>
-              <p className="text-xs text-muted-foreground">
-                The OpenCode daemon server is currently offline or unreachable (503). Ensure the background runner is initialized.
-              </p>
-            </div>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => fetchSession(true)}
-              className="text-xs font-mono mt-2"
-              data-testid="retry-session-btn"
-            >
-              <RefreshCw className="size-3 mr-1.5" /> Retry Connection
-            </Button>
-          </div>
-        ) : error ? (
-          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-3">
-            <div className="p-3 rounded-full bg-destructive/10 text-destructive">
-              <AlertTriangle className="size-6" />
-            </div>
-            <div className="space-y-1 max-w-sm">
-              <h4 className="text-sm font-semibold text-foreground">Unable to Load Session</h4>
-              <p className="text-xs text-muted-foreground">{error}</p>
-            </div>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => fetchSession(true)}
-              className="text-xs font-mono mt-2"
-              data-testid="retry-session-btn"
-            >
-              <RefreshCw className="size-3 mr-1.5" /> Retry
-            </Button>
-          </div>
-        ) : !session?.messages || session.messages.length === 0 ? (
-          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-2 text-muted-foreground">
-            <Terminal className="size-6 opacity-40" />
-            <p className="text-xs font-mono">No messages recorded in this session transcript yet.</p>
-          </div>
-        ) : (
-          /* Conversation Transcript Scrollable Container */
-          <div
-            className="flex-1 overflow-y-auto p-4 space-y-4"
-            data-testid="session-transcript-container"
-          >
-            {[...(session.messages || [])]
-              .sort((a, b) => {
-                const tA = a.created_at ? new Date(a.created_at).getTime() : 0;
-                const tB = b.created_at ? new Date(b.created_at).getTime() : 0;
-                return tA - tB;
-              })
-              .map((msg: SessionMessage, msgIdx: number, allMsgs: SessionMessage[]) => {
-              const isUser = msg.role === 'user' || msg.type === 'user';
-              const isSystem = msg.role === 'system' || msg.type === 'system';
-              if (isSystem) {
-                return null;
-              }
-
-              const parsed = parseSessionMessageContent(msg);
-              const { text: textContent, thoughts, toolCalls, extractedQuestions } = parsed;
-              const timeString = formatTimestamp(msg.created_at);
-              const hasQuestionTool = toolCalls.some((tc) => tc.name === 'question');
-              const hasSubsequentUserMessage = allMsgs
-                .slice(msgIdx + 1)
-                .some((m) => m.role === 'user' || m.type === 'user');
-
-              // Skip rendering empty bubbles or internal tool catalog instruction notices
-              const isInternalInstructionDump =
-                !isUser &&
-                (textContent.includes('The Code Mode tool catalog has changed') ||
-                  textContent.includes('<mcp_instructions>') ||
-                  textContent.startsWith('Current thought number')) &&
-                toolCalls.length === 0 &&
-                !thoughts;
-
-              if (!isUser && ((!textContent && !thoughts && toolCalls.length === 0) || isInternalInstructionDump)) {
-                return null;
-              }
-
-              if (isUser) {
-                // Ensure text is extracted even if in msg.text, msg.content, or JSON formatted
-                let rawUserText = textContent || (typeof msg.text === 'string' ? msg.text : '') || (typeof msg.content === 'string' ? msg.content : '');
-                if (!rawUserText && typeof msg.content === 'object' && msg.content !== null) {
-                  const cObj = msg.content as Record<string, unknown>;
-                  if (typeof cObj.text === 'string') rawUserText = cObj.text;
-                }
-                let cleanUserText = rawUserText.trim();
-                if (cleanUserText.startsWith('"') && cleanUserText.endsWith('"') && cleanUserText.length >= 2) {
-                  try {
-                    cleanUserText = JSON.parse(cleanUserText);
-                  } catch {
-                    cleanUserText = cleanUserText.slice(1, -1);
-                  }
-                }
-                if (!cleanUserText) {
-                  cleanUserText = '(User Prompt)';
-                }
-
-                const { prompt: displayPrompt, systemContext } = cleanUserPrompt(cleanUserText);
-
-                return (
-                  <div
-                    key={msg.id || `user-${msgIdx}`}
-                    className="flex justify-end"
-                    data-testid="user-message"
-                  >
-                    <div className="max-w-[85%] rounded-xl p-3.5 bg-primary text-primary-foreground text-xs space-y-2 shadow-sm">
-                      <div className="flex items-center justify-between gap-3 text-[10px] opacity-80 border-b border-primary-foreground/20 pb-1.5">
-                        <span className="font-semibold flex items-center gap-1.5">
-                          <User className="size-3" /> User Prompt
-                        </span>
-                        {timeString && <span className="font-mono">{timeString}</span>}
-                      </div>
-                      <p className="whitespace-pre-wrap leading-relaxed font-sans text-xs">{displayPrompt}</p>
-
-                      {systemContext && (
-                        <details className="mt-2 rounded-lg bg-black/25 border border-white/10 p-2 text-primary-foreground/90 font-mono text-[11px] select-none group">
-                          <summary className="cursor-pointer font-semibold text-[10px] uppercase tracking-wider flex items-center justify-between select-none hover:text-white">
-                            <span className="flex items-center gap-1.5">
-                              <Settings2 className="size-3" /> System Context &amp; MCP Tool Catalog
-                            </span>
-                            <span className="text-[9px] opacity-75 font-normal">
-                              {systemContext.split('\n').length} lines
-                            </span>
-                          </summary>
-                          <pre className="mt-2 max-h-52 overflow-y-auto whitespace-pre-wrap p-2 bg-black/40 rounded border border-white/5 text-[10px] leading-relaxed text-primary-foreground/90 font-mono">
-                            {systemContext}
-                          </pre>
-                        </details>
-                      )}
-                    </div>
-                  </div>
-                );
-              }
-
-              // Assistant Message
-              return (
-                <div
-                  key={msg.id || `assistant-${msgIdx}`}
-                  className="flex justify-start"
-                  data-testid="assistant-message"
+      {/* 2-Pane Responsive Grid/Flex Body */}
+      <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 gap-3 h-full overflow-hidden">
+        {/* Left Pane (Transcript & Steer Form) - 60% / lg:col-span-7 */}
+        <div className="lg:col-span-7 flex flex-col h-full min-h-0 gap-3 overflow-hidden">
+          {/* Transcript Body or State banners */}
+          <div className="flex-1 min-h-0 flex flex-col rounded-lg border border-border bg-card/60 overflow-hidden">
+            {loading && !session ? (
+              <div className="flex-1 flex flex-col items-center justify-center p-8 space-y-2 text-muted-foreground">
+                <RefreshCw className="size-6 animate-spin text-primary" />
+                <span className="text-xs font-mono">Fetching agent session state...</span>
+              </div>
+            ) : isUnavailable ? (
+              <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-3">
+                <div className="p-3 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400">
+                  <AlertTriangle className="size-6" />
+                </div>
+                <div className="space-y-1 max-w-sm">
+                  <h4 className="text-sm font-semibold text-foreground">
+                    Agent Execution Service Unavailable
+                  </h4>
+                  <p className="text-xs text-muted-foreground">
+                    The OpenCode daemon server is currently offline or unreachable (503). Ensure the background runner is initialized.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => fetchSession(true)}
+                  className="text-xs font-mono mt-2"
+                  data-testid="retry-session-btn"
                 >
-                  <div className="max-w-[90%] w-full rounded-lg p-3.5 bg-muted/30 border border-border text-xs space-y-3">
-                    {/* Header info */}
-                    <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground border-b border-border/60 pb-1.5">
-                      <div className="flex items-center gap-1.5 font-medium">
-                        <Bot className="size-3 text-primary" />
-                        <span className="font-semibold text-foreground">
-                          {msg.agent ? `Agent (${msg.agent})` : 'Assistant'}
-                        </span>
-                        {msg.model && (
-                          <span className="font-mono opacity-80">[{msg.model}]</span>
-                        )}
-                      </div>
-                      {timeString && <span className="font-mono">{timeString}</span>}
-                    </div>
+                  <RefreshCw className="size-3 mr-1.5" /> Retry Connection
+                </Button>
+              </div>
+            ) : error ? (
+              <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-3">
+                <div className="p-3 rounded-full bg-destructive/10 text-destructive">
+                  <AlertTriangle className="size-6" />
+                </div>
+                <div className="space-y-1 max-w-sm">
+                  <h4 className="text-sm font-semibold text-foreground">Unable to Load Session</h4>
+                  <p className="text-xs text-muted-foreground">{error}</p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => fetchSession(true)}
+                  className="text-xs font-mono mt-2"
+                  data-testid="retry-session-btn"
+                >
+                  <RefreshCw className="size-3 mr-1.5" /> Retry
+                </Button>
+              </div>
+            ) : !session?.messages || session.messages.length === 0 ? (
+              <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-2 text-muted-foreground">
+                <Terminal className="size-6 opacity-40" />
+                <p className="text-xs font-mono">No messages recorded in this session transcript yet.</p>
+              </div>
+            ) : (
+              /* Conversation Transcript Scrollable Container */
+              <div
+                className="flex-1 overflow-y-auto p-4 space-y-4"
+                data-testid="session-transcript-container"
+              >
+                {[...(session.messages || [])]
+                  .sort((a, b) => {
+                    const tA = a.created_at ? new Date(a.created_at).getTime() : 0;
+                    const tB = b.created_at ? new Date(b.created_at).getTime() : 0;
+                    return tA - tB;
+                  })
+                  .map((msg: SessionMessage, msgIdx: number, allMsgs: SessionMessage[]) => {
+                  const isUser = msg.role === 'user' || msg.type === 'user';
+                  const isSystem = msg.role === 'system' || msg.type === 'system';
+                  if (isSystem) {
+                    return null;
+                  }
 
-                    {/* Agent Reasoning / Thoughts (if present) */}
-                    {thoughts && (
-                      <details className="text-[11px] text-muted-foreground bg-muted/50 rounded p-2 border border-border/40 group">
-                        <summary className="cursor-pointer font-medium flex items-center gap-1.5 select-none text-muted-foreground hover:text-foreground">
-                          <Sparkles className="size-3 text-purple-500" />
-                          <span>Agent Reasoning</span>
-                        </summary>
-                        <div className="mt-2 whitespace-pre-wrap font-mono text-[10.5px] leading-relaxed opacity-90 pl-3 border-l-2 border-purple-500/30">
-                          {thoughts}
+                  const parsed = parseSessionMessageContent(msg);
+                  const { text: textContent, thoughts, toolCalls, extractedQuestions } = parsed;
+                  const timeString = formatTimestamp(msg.created_at);
+                  const hasQuestionTool = toolCalls.some((tc) => tc.name === 'question');
+                  const hasSubsequentUserMessage = allMsgs
+                    .slice(msgIdx + 1)
+                    .some((m) => m.role === 'user' || m.type === 'user');
+
+                  // Skip rendering empty bubbles or internal tool catalog instruction notices
+                  const isInternalInstructionDump =
+                    !isUser &&
+                    (textContent.includes('The Code Mode tool catalog has changed') ||
+                      textContent.includes('<mcp_instructions>') ||
+                      textContent.startsWith('Current thought number')) &&
+                    toolCalls.length === 0 &&
+                    !thoughts;
+
+                  if (!isUser && ((!textContent && !thoughts && toolCalls.length === 0) || isInternalInstructionDump)) {
+                    return null;
+                  }
+
+                  if (isUser) {
+                    // Ensure text is extracted even if in msg.text, msg.content, or JSON formatted
+                    let rawUserText = textContent || (typeof msg.text === 'string' ? msg.text : '') || (typeof msg.content === 'string' ? msg.content : '');
+                    if (!rawUserText && typeof msg.content === 'object' && msg.content !== null) {
+                      const cObj = msg.content as Record<string, unknown>;
+                      if (typeof cObj.text === 'string') rawUserText = cObj.text;
+                    }
+                    let cleanUserText = rawUserText.trim();
+                    if (cleanUserText.startsWith('"') && cleanUserText.endsWith('"') && cleanUserText.length >= 2) {
+                      try {
+                        cleanUserText = JSON.parse(cleanUserText);
+                      } catch {
+                        cleanUserText = cleanUserText.slice(1, -1);
+                      }
+                    }
+                    if (!cleanUserText) {
+                      cleanUserText = '(User Prompt)';
+                    }
+
+                    const { prompt: displayPrompt, systemContext } = cleanUserPrompt(cleanUserText);
+
+                    return (
+                      <div
+                        key={msg.id || `user-${msgIdx}`}
+                        className="flex justify-end"
+                        data-testid="user-message"
+                      >
+                        <div className="max-w-[85%] rounded-xl p-3.5 bg-muted/60 border border-border/80 text-foreground text-xs space-y-2 shadow-sm">
+                          <div className="flex items-center justify-between gap-3 text-[10px] text-muted-foreground border-b border-border/60 pb-1.5">
+                            <span className="font-semibold flex items-center gap-1.5 text-foreground">
+                              <User className="size-3 text-primary" /> User Prompt
+                            </span>
+                            {timeString && <span className="font-mono">{timeString}</span>}
+                          </div>
+                          <p className="whitespace-pre-wrap leading-relaxed font-sans text-xs">{displayPrompt}</p>
+
+                          {systemContext && (
+                            <details className="mt-2 rounded-lg bg-background/80 border border-border/60 p-2 text-foreground/90 font-mono text-[11px] select-none group">
+                              <summary className="cursor-pointer font-semibold text-[10px] uppercase tracking-wider flex items-center justify-between select-none text-muted-foreground hover:text-foreground">
+                                <span className="flex items-center gap-1.5">
+                                  <Settings2 className="size-3 text-primary" /> System Context &amp; MCP Tool Catalog
+                                </span>
+                                <span className="text-[9px] opacity-75 font-normal">
+                                  {systemContext.split('\n').length} lines
+                                </span>
+                              </summary>
+                              <pre className="mt-2 max-h-52 overflow-y-auto whitespace-pre-wrap p-2 bg-muted/40 rounded border border-border/40 text-[10px] leading-relaxed text-foreground/90 font-mono">
+                                {systemContext}
+                              </pre>
+                            </details>
+                          )}
                         </div>
-                      </details>
-                    )}
-
-                    {/* Text reply rendered with Markdown */}
-                    {textContent && (
-                      <div className="leading-relaxed text-foreground font-sans text-xs">
-                        <Markdown content={textContent} />
                       </div>
-                    )}
+                    );
+                  }
 
-                    {/* Extracted Questionnaire from message text (if no explicit question tool call) */}
-                    {!hasQuestionTool && extractedQuestions && extractedQuestions.length > 0 && (
-                      <div className="pt-2">
-                        <AgentQuestionnaire
-                          questions={extractedQuestions}
-                          status={hasSubsequentUserMessage ? 'completed' : 'pending'}
-                          onSubmitAnswer={async (answerText) => {
-                            await handleSendPrompt(undefined, answerText);
-                          }}
-                          isSubmitting={isSubmittingPrompt}
-                        />
-                      </div>
-                    )}
+                  // Assistant Message
+                  return (
+                    <div
+                      key={msg.id || `assistant-${msgIdx}`}
+                      className="flex justify-start"
+                      data-testid="assistant-message"
+                    >
+                      <div className="max-w-[90%] w-full rounded-lg p-3.5 bg-muted/30 border border-border text-xs space-y-3">
+                        {/* Header info */}
+                        <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground border-b border-border/60 pb-1.5">
+                          <div className="flex items-center gap-1.5 font-medium">
+                            <Bot className="size-3 text-primary" />
+                            <span className="font-semibold text-foreground">
+                              {msg.agent ? `Agent (${msg.agent})` : 'Assistant'}
+                            </span>
+                            {msg.model && (
+                              <span className="font-mono opacity-80">[{msg.model}]</span>
+                            )}
+                          </div>
+                          {timeString && <span className="font-mono">{timeString}</span>}
+                        </div>
 
-                    {/* Tool executions */}
-                    {toolCalls.length > 0 && (
-                      <div className="space-y-2 pt-1">
-                        <span className="text-[10px] uppercase font-semibold text-muted-foreground tracking-wider flex items-center gap-1">
-                          <Terminal className="size-3" /> Tool Executions ({toolCalls.length})
-                        </span>
-                        <div className="space-y-1.5">
-                          {toolCalls.map((tc: SessionToolCall, tcIdx: number) => {
-                            if (tc.name === 'question') {
-                              return (
-                                <div key={tcIdx} className="pt-1">
-                                  <AgentQuestionnaire
-                                    questions={tc.input as any}
-                                    status={tc.status}
-                                    output={tc.output}
-                                    onSubmitAnswer={async (answerText) => {
-                                      await handleSendPrompt(undefined, answerText);
-                                    }}
-                                    isSubmitting={isSubmittingPrompt}
-                                  />
-                                </div>
-                              );
-                            }
+                        {/* Agent Reasoning / Thoughts (if present) */}
+                        {thoughts && (
+                          <details className="text-[11px] text-muted-foreground bg-muted/50 rounded-lg p-2.5 border border-border/60 group">
+                            <summary className="cursor-pointer font-medium flex items-center justify-between select-none text-muted-foreground hover:text-foreground">
+                              <span className="flex items-center gap-1.5">
+                                <span className="text-sm">🧠</span>
+                                <span className="font-semibold text-foreground/90">Thought Process</span>
+                              </span>
+                              <span className="text-[10px] text-muted-foreground opacity-70 group-open:rotate-180 transition-transform">▼</span>
+                            </summary>
+                            <div className="mt-2.5 whitespace-pre-wrap font-mono text-[10.5px] leading-relaxed text-foreground/90 pl-3 border-l-2 border-purple-500/40 bg-background/50 p-2 rounded">
+                              {thoughts}
+                            </div>
+                          </details>
+                        )}
 
-                            const expandKey = `${msgIdx}-${tcIdx}`;
-                            const isExpanded = !!expandedTools[expandKey];
+                        {/* Text reply rendered with Markdown */}
+                        {textContent && (
+                          <div className="leading-relaxed text-foreground font-sans text-xs">
+                            <Markdown content={textContent} />
+                          </div>
+                        )}
 
-                            const isSubagent = tc.name === 'subagent';
-                            const inputObj =
-                              typeof tc.input === 'object' && tc.input !== null
-                                ? (tc.input as Record<string, unknown>)
-                                : null;
-                            const subagentAgent = inputObj ? String(inputObj.agent || '') : '';
-                            const subagentDesc = inputObj
-                              ? String(inputObj.description || inputObj.prompt || '')
-                              : '';
+                        {/* Extracted Questionnaire from message text (if no explicit question tool call) */}
+                        {!hasQuestionTool && extractedQuestions && extractedQuestions.length > 0 && (
+                          <div className="pt-2">
+                            <AgentQuestionnaire
+                              questions={extractedQuestions}
+                              status={hasSubsequentUserMessage ? 'completed' : 'pending'}
+                              onSubmitAnswer={async (answerText) => {
+                                await handleSendPrompt(undefined, answerText);
+                              }}
+                              isSubmitting={isSubmittingPrompt}
+                            />
+                          </div>
+                        )}
 
-                            const inputStr =
-                              typeof tc.input === 'string'
-                                ? tc.input
-                                : tc.input
-                                ? JSON.stringify(tc.input, null, 2)
-                                : '';
+                        {/* Tool executions */}
+                        {toolCalls.length > 0 && (
+                          <div className="space-y-2 pt-1">
+                            <span className="text-[10px] uppercase font-semibold text-muted-foreground tracking-wider flex items-center gap-1">
+                              <Terminal className="size-3" /> Tool Executions ({toolCalls.length})
+                            </span>
+                            <div className="space-y-1.5">
+                              {toolCalls.map((tc: SessionToolCall, tcIdx: number) => {
+                                if (tc.name === 'question') {
+                                  return (
+                                    <div key={tcIdx} className="pt-1">
+                                      <AgentQuestionnaire
+                                        questions={tc.input as any}
+                                        status={tc.status}
+                                        output={tc.output}
+                                        onSubmitAnswer={async (answerText) => {
+                                          await handleSendPrompt(undefined, answerText);
+                                        }}
+                                        isSubmitting={isSubmittingPrompt}
+                                      />
+                                    </div>
+                                  );
+                                }
 
-                            const outputStr =
-                              typeof tc.output === 'string'
-                                ? tc.output
-                                : tc.output
-                                ? JSON.stringify(tc.output, null, 2)
-                                : '';
+                                const expandKey = `${msgIdx}-${tcIdx}`;
+                                const isExpanded = !!expandedTools[expandKey];
+                                const isSelectedInInspector = selectedToolKey === expandKey;
 
-                            const exitCode = tc.exit_code;
-                            const isSuccess =
-                              tc.status !== 'error' && (exitCode === undefined || exitCode === 0);
+                                const isSubagent = tc.name === 'subagent';
+                                const inputObj =
+                                  typeof tc.input === 'object' && tc.input !== null
+                                    ? (tc.input as Record<string, unknown>)
+                                    : null;
+                                const subagentAgent = inputObj ? String(inputObj.agent || '') : '';
+                                const subagentDesc = inputObj
+                                  ? String(inputObj.description || inputObj.prompt || '')
+                                  : '';
 
-                            return (
-                              <div
-                                key={tcIdx}
-                                className="rounded border border-border/80 bg-background/80 overflow-hidden font-mono text-[11px]"
-                                data-testid="tool-call-card"
-                              >
-                                <button
-                                  type="button"
-                                  onClick={() => toggleToolExpanded(expandKey)}
-                                  className="w-full flex items-center justify-between p-2 bg-muted/40 hover:bg-muted/60 transition-colors text-left cursor-pointer"
-                                  data-testid={`toggle-tool-${tc.name}`}
-                                >
-                                  <div className="flex items-center gap-2 min-w-0">
-                                    {isExpanded ? (
-                                      <ChevronDown className="size-3 text-muted-foreground shrink-0" />
-                                    ) : (
-                                      <ChevronRight className="size-3 text-muted-foreground shrink-0" />
-                                    )}
-                                    <Badge
-                                      variant="outline"
-                                      className={`font-mono text-[10px] px-1.5 py-0 ${
-                                        isSubagent
-                                          ? 'bg-purple-500/10 text-purple-400 border-purple-500/30'
-                                          : 'bg-primary/10 text-primary border-primary/20'
+                                const inputStr =
+                                  typeof tc.input === 'string'
+                                    ? tc.input
+                                    : tc.input
+                                    ? JSON.stringify(tc.input, null, 2)
+                                    : '';
+
+                                const outputStr =
+                                  typeof tc.output === 'string'
+                                    ? tc.output
+                                    : tc.output
+                                    ? JSON.stringify(tc.output, null, 2)
+                                    : '';
+
+                                const exitCode = tc.exit_code;
+                                const isSuccess =
+                                  tc.status !== 'error' && (exitCode === undefined || exitCode === 0);
+
+                                return (
+                                  <div
+                                    key={tcIdx}
+                                    onClick={() => setSelectedToolKey(expandKey)}
+                                    className={`rounded-lg border transition-all overflow-hidden font-mono text-[11px] cursor-pointer ${
+                                      isSelectedInInspector
+                                        ? 'border-cyan-500/80 ring-1 ring-cyan-500/40 bg-cyan-950/10'
+                                        : !isSuccess
+                                        ? 'border-rose-500/50 bg-rose-950/10'
+                                        : 'border-border/80 bg-background/80'
+                                    }`}
+                                    data-testid="tool-call-card"
+                                  >
+                                    <div
+                                      className={`w-full flex items-center justify-between p-2.5 transition-colors text-left select-none ${
+                                        isSelectedInInspector
+                                          ? 'bg-cyan-500/10'
+                                          : !isSuccess
+                                          ? 'bg-rose-500/10 hover:bg-rose-500/15'
+                                          : 'bg-muted/40 hover:bg-muted/60'
                                       }`}
                                     >
-                                      {tc.name}
-                                    </Badge>
-                                    {isSubagent && subagentAgent && (
-                                      <Badge
-                                        variant="outline"
-                                        className="font-mono text-[9px] px-1 py-0 bg-primary/10 text-primary border-primary/20"
-                                      >
-                                        {subagentAgent}
-                                      </Badge>
-                                    )}
-                                    <span className="truncate text-muted-foreground max-w-xs sm:max-w-md">
-                                      {isSubagent && subagentDesc
-                                        ? subagentDesc
-                                        : inputStr.replace(/\n/g, ' ')}
-                                    </span>
-                                  </div>
-
-                                  <div className="flex items-center gap-2 shrink-0">
-                                    {tc.status === 'running' ? (
-                                      <Badge
-                                        variant="outline"
-                                        className="font-mono text-[9px] px-1.5 py-0 text-sky-500 border-sky-500/30 flex items-center gap-1"
-                                      >
-                                        <span className="size-1.5 rounded-full bg-sky-500 animate-pulse" />
-                                        running
-                                      </Badge>
-                                    ) : !isSuccess ? (
-                                      <Badge
-                                        variant="outline"
-                                        className="font-mono text-[9px] px-1 py-0 text-rose-500 border-rose-500/30"
-                                      >
-                                        {exitCode !== undefined && exitCode !== 0
-                                          ? `exit ${exitCode}`
-                                          : 'failed'}
-                                      </Badge>
-                                    ) : exitCode !== undefined ? (
-                                      <Badge
-                                        variant="outline"
-                                        className="font-mono text-[9px] px-1 py-0 text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
-                                      >
-                                        exit {exitCode}
-                                      </Badge>
-                                    ) : null}
-                                  </div>
-                                </button>
-
-                                {isExpanded && (
-                                  <div className="p-2.5 border-t border-border/60 space-y-2 bg-background font-mono text-[11px]">
-                                    {isSubagent && inputObj && (
-                                      <div className="rounded p-2 bg-purple-500/5 border border-purple-500/15 space-y-1 text-xs font-sans">
-                                        <div className="flex items-center gap-2">
-                                          <span className="font-semibold text-purple-400">Subagent:</span>
-                                          <span className="font-mono text-[11px] text-foreground">
-                                            {subagentAgent ? `[${subagentAgent}] ` : ''}
-                                            {subagentDesc}
-                                          </span>
-                                        </div>
-                                      </div>
-                                    )}
-
-                                    {inputStr && (
-                                      <div className="space-y-1">
-                                        <div className="text-[10px] text-muted-foreground uppercase font-semibold">
-                                          {isSubagent ? 'Prompt / Task Brief' : 'Input'}
-                                        </div>
-                                        <pre className="p-2 rounded bg-muted/50 text-[10px] overflow-x-auto whitespace-pre-wrap text-foreground max-h-48 font-mono">
-                                          {isSubagent && inputObj?.prompt
-                                            ? String(inputObj.prompt)
-                                            : inputStr}
-                                        </pre>
-                                      </div>
-                                    )}
-
-                                    <div className="space-y-1">
-                                      <div className="text-[10px] text-muted-foreground uppercase font-semibold">
-                                        {isSubagent ? 'Subagent Output / Results' : 'Output'}
-                                      </div>
-                                      {tc.status === 'running' ? (
-                                        <div className="flex items-center gap-2 p-3 rounded bg-muted/30 border border-border/50 text-xs text-primary font-mono">
-                                          <RefreshCw className="size-3.5 animate-spin text-primary" />
-                                          <span>
-                                            {isSubagent
-                                              ? 'Subagent is executing in child session...'
-                                              : 'Tool execution in progress...'}
-                                          </span>
-                                        </div>
-                                      ) : outputStr ? (
-                                        <pre
-                                          className={`p-2 rounded text-[10px] overflow-x-auto whitespace-pre-wrap max-h-60 font-mono ${
-                                            tc.status === 'error' || !isSuccess
-                                              ? 'bg-destructive/10 text-destructive border border-destructive/20'
-                                              : 'bg-muted/50 text-foreground'
+                                      <div className="flex items-center gap-2 min-w-0">
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            toggleToolExpanded(expandKey);
+                                          }}
+                                          className="p-0.5 hover:bg-muted/80 rounded"
+                                          title={isExpanded ? 'Collapse inline preview' : 'Expand inline preview'}
+                                          data-testid={`toggle-tool-${tc.name}`}
+                                        >
+                                          {isExpanded ? (
+                                            <ChevronDown className="size-3 text-muted-foreground shrink-0" />
+                                          ) : (
+                                            <ChevronRight className="size-3 text-muted-foreground shrink-0" />
+                                          )}
+                                        </button>
+                                        <Badge
+                                          variant="outline"
+                                          className={`font-mono text-[10px] px-1.5 py-0 ${
+                                            isSubagent
+                                              ? 'bg-purple-500/10 text-purple-400 border-purple-500/30'
+                                              : 'bg-primary/10 text-primary border-primary/20'
                                           }`}
                                         >
-                                          {outputStr}
-                                        </pre>
-                                      ) : (
-                                        <div className="text-[10px] text-muted-foreground italic p-1">
-                                          No output recorded.
-                                        </div>
-                                      )}
+                                          {tc.name}
+                                        </Badge>
+                                        {isSubagent && subagentAgent && (
+                                          <Badge
+                                            variant="outline"
+                                            className="font-mono text-[9px] px-1 py-0 bg-primary/10 text-primary border-primary/20"
+                                          >
+                                            {subagentAgent}
+                                          </Badge>
+                                        )}
+                                        <span className="truncate text-muted-foreground max-w-xs sm:max-w-md">
+                                          {isSubagent && subagentDesc
+                                            ? subagentDesc
+                                            : inputStr.replace(/\n/g, ' ')}
+                                        </span>
+                                      </div>
+
+                                      <div className="flex items-center gap-2 shrink-0">
+                                        {isSelectedInInspector && (
+                                          <span className="text-[10px] font-sans font-semibold text-cyan-600 dark:text-cyan-400 hidden sm:inline-flex items-center gap-1">
+                                            👉 Inspecting in Right Pane
+                                          </span>
+                                        )}
+                                        {tc.status === 'running' ? (
+                                          <Badge
+                                            variant="outline"
+                                            className="font-mono text-[9px] px-1.5 py-0 text-sky-500 border-sky-500/30 flex items-center gap-1"
+                                          >
+                                            <span className="size-1.5 rounded-full bg-sky-500 animate-pulse" />
+                                            running
+                                          </Badge>
+                                        ) : !isSuccess ? (
+                                          <Badge
+                                            variant="outline"
+                                            className="font-mono text-[9px] px-1.5 py-0 bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/40"
+                                          >
+                                            {exitCode !== undefined && exitCode !== 0
+                                              ? `exit ${exitCode}`
+                                              : 'exit 1'}
+                                          </Badge>
+                                        ) : (
+                                          <Badge
+                                            variant="outline"
+                                            className="font-mono text-[9px] px-1.5 py-0 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
+                                          >
+                                            exit {exitCode ?? 0}
+                                          </Badge>
+                                        )}
+                                      </div>
                                     </div>
+
+                                    {isExpanded && (
+                                      <div className="p-2.5 border-t border-border/60 space-y-2 bg-background font-mono text-[11px]">
+                                        {isSubagent && inputObj && (
+                                          <div className="rounded p-2 bg-purple-500/5 border border-purple-500/15 space-y-1 text-xs font-sans">
+                                            <div className="flex items-center gap-2">
+                                              <span className="font-semibold text-purple-400">Subagent:</span>
+                                              <span className="font-mono text-[11px] text-foreground">
+                                                {subagentAgent ? `[${subagentAgent}] ` : ''}
+                                                {subagentDesc}
+                                              </span>
+                                            </div>
+                                          </div>
+                                        )}
+
+                                        {inputStr && (
+                                          <div className="space-y-1">
+                                            <div className="text-[10px] text-muted-foreground uppercase font-semibold">
+                                              {isSubagent ? 'Prompt / Task Brief' : 'Input'}
+                                            </div>
+                                            <pre className="p-2 rounded bg-muted/50 text-[10px] overflow-x-auto whitespace-pre-wrap text-foreground max-h-48 font-mono">
+                                              {isSubagent && inputObj?.prompt
+                                                ? String(inputObj.prompt)
+                                                : inputStr}
+                                            </pre>
+                                          </div>
+                                        )}
+
+                                        <div className="space-y-1">
+                                          <div className="text-[10px] text-muted-foreground uppercase font-semibold">
+                                            {isSubagent ? 'Subagent Output / Results' : 'Output'}
+                                          </div>
+                                          {tc.status === 'running' ? (
+                                            <div className="flex items-center gap-2 p-3 rounded bg-muted/30 border border-border/50 text-xs text-primary font-mono">
+                                              <RefreshCw className="size-3.5 animate-spin text-primary" />
+                                              <span>
+                                                {isSubagent
+                                                  ? 'Subagent is executing in child session...'
+                                                  : 'Tool execution in progress...'}
+                                              </span>
+                                            </div>
+                                          ) : outputStr ? (
+                                            <pre
+                                              className={`p-2 rounded text-[10px] overflow-x-auto whitespace-pre-wrap max-h-60 font-mono ${
+                                                tc.status === 'error' || !isSuccess
+                                                  ? 'bg-destructive/10 text-destructive border border-destructive/20'
+                                                  : 'bg-muted/50 text-foreground'
+                                              }`}
+                                            >
+                                              {outputStr}
+                                            </pre>
+                                          ) : (
+                                            <div className="text-[10px] text-muted-foreground italic p-1">
+                                              No output recorded.
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
+                                    )}
                                   </div>
-                                )}
-                              </div>
-                            );
-                          })}
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+                {isSteeringActive && (
+                  <div
+                    className="flex justify-start animate-fade-in"
+                    data-testid="steering-live-indicator"
+                  >
+                    <div className="max-w-[90%] w-full rounded-lg p-3 bg-muted/40 border border-primary/30 text-xs space-y-2 shadow-sm">
+                      <div className="flex items-center justify-between text-[11px] font-mono text-primary">
+                        <span className="flex items-center gap-1.5 font-semibold">
+                          <Bot className="size-3.5 animate-pulse" /> Agent Streaming &amp; Reasoning...
+                        </span>
+                        <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                          <RefreshCw className="size-2.5 animate-spin text-primary" /> Live
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <span className="size-1.5 rounded-full bg-primary animate-ping" />
+                        <span className="text-[11px] font-mono">
+                          Generating tool calls and response...
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                <div ref={transcriptEndRef} />
+              </div>
+            )}
+          </div>
+
+          {/* Smart Steer Input bar */}
+          <form
+            onSubmit={handleSendPrompt}
+            className="p-3 rounded-lg border border-border bg-card shrink-0 space-y-2.5"
+            data-testid="steer-prompt-form"
+          >
+            {/* Contextual suggestion chips */}
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mr-1">
+                Suggestions:
+              </span>
+              <button
+                type="button"
+                onClick={() => setSteerPrompt('Fix the failed step and run tests again.')}
+                className="px-2 py-0.5 rounded-full text-[11px] font-mono bg-muted/60 hover:bg-muted border border-border/70 text-foreground transition-colors cursor-pointer"
+              >
+                &quot;Fix failed step&quot;
+              </button>
+              <button
+                type="button"
+                onClick={() => setSteerPrompt('Retry subagent execution with the specified guidelines.')}
+                className="px-2 py-0.5 rounded-full text-[11px] font-mono bg-muted/60 hover:bg-muted border border-border/70 text-foreground transition-colors cursor-pointer"
+              >
+                &quot;Retry subagent&quot;
+              </button>
+              <button
+                type="button"
+                onClick={() => setSteerPrompt('Resume session and continue with remaining tasks.')}
+                className="px-2 py-0.5 rounded-full text-[11px] font-mono bg-muted/60 hover:bg-muted border border-border/70 text-foreground transition-colors cursor-pointer"
+              >
+                &quot;Resume session&quot;
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <label htmlFor="steer-prompt-input" className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                <Sparkles className="size-3.5 text-primary" />
+                Agent Steering &amp; Intervention
+                {(isSteeringActive || session?.status === 'running') && (
+                  <Badge variant="outline" className="font-mono text-[10px] bg-primary/10 text-primary border-primary/20 animate-pulse ml-2">
+                    <RefreshCw className="size-2.5 mr-1 animate-spin" />
+                    Live Streaming...
+                  </Badge>
+                )}
+              </label>
+              <span className="text-[10px] text-muted-foreground font-mono">
+                Directly injects prompt into persistent session
+              </span>
+            </div>
+
+            {steerError && (
+              <div className="text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded p-2 font-mono">
+                {steerError}
+              </div>
+            )}
+
+            <div className="flex items-end gap-2">
+              <Textarea
+                id="steer-prompt-input"
+                value={steerPrompt}
+                onChange={(e) => setSteerPrompt(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    handleSendPrompt();
+                  }
+                }}
+                placeholder="Type guidance, bug fix details, or command corrections... (Ctrl+Enter to send)"
+                disabled={isSubmittingPrompt || isUnavailable}
+                className="flex-1 min-h-[56px] max-h-28 text-xs font-mono resize-none bg-background placeholder:text-muted-foreground"
+                data-testid="steer-prompt-textarea"
+              />
+
+              <Button
+                type="submit"
+                disabled={!steerPrompt.trim() || isSubmittingPrompt || isUnavailable}
+                size="sm"
+                className="h-14 px-4 text-xs font-medium gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90 shrink-0"
+                data-testid="send-steer-btn"
+              >
+                {isSubmittingPrompt ? (
+                  <>
+                    <RefreshCw className="size-3.5 animate-spin" />
+                    <span>Sending...</span>
+                  </>
+                ) : (
+                  <>
+                    <Send className="size-3.5" />
+                    <span>Steer</span>
+                  </>
+                )}
+              </Button>
+            </div>
+          </form>
+        </div>
+
+        {/* Right Pane (Live Tool & Diagnostics Inspector) - 40% / lg:col-span-5 */}
+        <div
+          className="lg:col-span-5 flex flex-col h-full min-h-0 rounded-lg border border-border bg-card/80 overflow-hidden shadow-sm"
+          data-testid="tool-inspector-panel"
+        >
+          {selectedToolInfo ? (
+            (() => {
+              const { tc, msg } = selectedToolInfo;
+              const isSubagent = tc.name === 'subagent';
+              const inputObj =
+                typeof tc.input === 'object' && tc.input !== null
+                  ? (tc.input as Record<string, unknown>)
+                  : null;
+              const subagentAgent = inputObj ? String(inputObj.agent || '') : '';
+
+              const inputStr =
+                typeof tc.input === 'string'
+                  ? tc.input
+                  : tc.input
+                  ? JSON.stringify(tc.input, null, 2)
+                  : '';
+
+              const outputStr =
+                typeof tc.output === 'string'
+                  ? tc.output
+                  : tc.output
+                  ? JSON.stringify(tc.output, null, 2)
+                  : '';
+
+              const exitCode = tc.exit_code;
+              const isSuccess =
+                tc.status !== 'error' && (exitCode === undefined || exitCode === 0);
+
+              // Build detected error snippet or root cause for exit 1
+              const detectedError = !isSuccess ? outputStr || 'Process terminated with non-zero exit code.' : null;
+
+              return (
+                <div className="flex flex-col h-full min-h-0">
+                  {/* Inspector Header */}
+                  <div className="p-3 border-b border-border bg-card flex items-center justify-between gap-2 shrink-0">
+                    <div className="flex items-center gap-2 min-w-0">
+                      {isSubagent ? (
+                        <Bot className="size-4 text-purple-400 shrink-0" />
+                      ) : (
+                        <Terminal className="size-4 text-primary shrink-0" />
+                      )}
+                      <div className="min-w-0 flex items-center gap-1.5">
+                        <span className="font-mono font-semibold text-xs text-foreground truncate">
+                          {tc.name}
+                        </span>
+                        {isSubagent && subagentAgent && (
+                          <Badge variant="outline" className="font-mono text-[9px] px-1 py-0 text-purple-400 border-purple-500/30">
+                            {subagentAgent}
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="shrink-0">
+                        {tc.status === 'running' ? (
+                          <Badge
+                            variant="outline"
+                            className="font-mono text-[9px] px-1.5 py-0 text-sky-500 border-sky-500/30 flex items-center gap-1"
+                          >
+                            <span className="size-1.5 rounded-full bg-sky-500 animate-pulse" />
+                            running
+                          </Badge>
+                        ) : !isSuccess ? (
+                          <Badge
+                            variant="outline"
+                            className="font-mono text-[9px] px-1.5 py-0 bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/40"
+                          >
+                            exit {exitCode !== undefined && exitCode !== 0 ? exitCode : 1}
+                          </Badge>
+                        ) : (
+                          <Badge
+                            variant="outline"
+                            className="font-mono text-[9px] px-1.5 py-0 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
+                          >
+                            exit {exitCode ?? 0}
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 text-muted-foreground hover:text-foreground"
+                        onClick={() => setSelectedToolKey(null)}
+                        title="Close / Unselect"
+                        aria-label="Close / Unselect"
+                      >
+                        <X className="size-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+
+                  {/* Sub-tabs toggle: Output vs Input */}
+                  <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/60 bg-muted/30 text-xs">
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setInspectorTab('output')}
+                        className={`px-2.5 py-1 rounded text-[11px] font-mono transition-colors cursor-pointer flex items-center gap-1.5 ${
+                          inspectorTab === 'output'
+                            ? 'bg-card text-foreground font-semibold shadow-sm border border-border/80'
+                            : 'text-muted-foreground hover:text-foreground'
+                        }`}
+                      >
+                        <Terminal className="size-3" />
+                        <span>Terminal Output (Stdout/Stderr)</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setInspectorTab('input')}
+                        className={`px-2.5 py-1 rounded text-[11px] font-mono transition-colors cursor-pointer flex items-center gap-1.5 ${
+                          inspectorTab === 'input'
+                            ? 'bg-card text-foreground font-semibold shadow-sm border border-border/80'
+                            : 'text-muted-foreground hover:text-foreground'
+                        }`}
+                      >
+                        <FileCode className="size-3" />
+                        <span>Prompt Brief / Input</span>
+                      </button>
+                    </div>
+
+                    {msg.created_at && (
+                      <span className="text-[10px] font-mono text-muted-foreground hidden sm:inline">
+                        {formatTimestamp(msg.created_at)}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Inspector Content Body */}
+                  <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 font-mono text-[11px]">
+                    {/* Detected Error Callout (when exit 1 or failed) */}
+                    {!isSuccess && detectedError && (
+                      <div className="rounded-lg p-2.5 bg-rose-500/10 border border-rose-500/30 space-y-1.5">
+                        <div className="flex items-center gap-1.5 text-rose-600 dark:text-rose-400 font-semibold text-xs">
+                          <AlertTriangle className="size-3.5" />
+                          <span>💡 Detected Error</span>
                         </div>
+                        <p className="text-[10px] text-muted-foreground font-sans">
+                          The tool invocation returned non-zero exit status. Review diagnostic logs below or insert a targeted fix into the steer prompt.
+                        </p>
                       </div>
                     )}
+
+                    {inspectorTab === 'output' ? (
+                      <div className="h-full flex flex-col space-y-1">
+                        <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center justify-between">
+                          <span>Terminal Logs</span>
+                          <span className="font-normal opacity-70">
+                            {outputStr ? `${outputStr.split('\n').length} lines` : '0 lines'}
+                          </span>
+                        </div>
+                        {tc.status === 'running' ? (
+                          <div className="flex items-center gap-2 p-4 rounded bg-muted/20 border border-border/50 text-xs text-primary">
+                            <RefreshCw className="size-4 animate-spin text-primary" />
+                            <span>Execution running in child environment...</span>
+                          </div>
+                        ) : outputStr ? (
+                          <pre
+                            className={`flex-1 min-h-[160px] p-3 rounded-lg overflow-x-auto whitespace-pre-wrap leading-relaxed text-[10.5px] border ${
+                              !isSuccess
+                                ? 'bg-rose-950/20 text-rose-200 border-rose-500/30'
+                                : 'bg-black/40 text-foreground border-border/50'
+                            }`}
+                          >
+                            {outputStr}
+                          </pre>
+                        ) : (
+                          <div className="p-4 text-center text-muted-foreground italic text-xs">
+                            No terminal output recorded for this tool run.
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="h-full flex flex-col space-y-1">
+                        <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center justify-between">
+                          <span>Command / Prompt Input</span>
+                          <span className="font-normal opacity-70">
+                            {inputStr ? `${inputStr.split('\n').length} lines` : '0 lines'}
+                          </span>
+                        </div>
+                        {inputStr ? (
+                          <pre className="flex-1 min-h-[160px] p-3 rounded-lg bg-black/40 text-foreground border border-border/50 overflow-x-auto whitespace-pre-wrap leading-relaxed text-[10.5px]">
+                            {inputStr}
+                          </pre>
+                        ) : (
+                          <div className="p-4 text-center text-muted-foreground italic text-xs">
+                            No input arguments provided.
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Inspector Footer Actions */}
+                  <div className="p-2.5 border-t border-border bg-card/90 flex flex-wrap items-center justify-between gap-2 shrink-0">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setSelectedToolKey(null)}
+                      className="h-7 text-xs font-mono gap-1 text-muted-foreground hover:text-foreground"
+                    >
+                      <X className="size-3" />
+                      <span>Close / Unselect</span>
+                    </Button>
+
+                    <Button
+                      type="button"
+                      variant="default"
+                      size="sm"
+                      onClick={() => {
+                        const snippet = (!isSuccess && detectedError ? detectedError : outputStr || inputStr)
+                          .trim()
+                          .slice(0, 500);
+                        const fixMessage = `Fix the error in tool "${tc.name}":\n${snippet}\nPlease resolve and re-run.`;
+                        setSteerPrompt(fixMessage);
+                      }}
+                      className="h-7 text-xs font-mono gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90"
+                      data-testid="insert-fix-btn"
+                    >
+                      <CornerDownLeft className="size-3" />
+                      <span>Insert Fix into Steer Input ↵</span>
+                    </Button>
                   </div>
                 </div>
               );
-            })}
-            {isSteeringActive && (
-              <div
-                className="flex justify-start animate-fade-in"
-                data-testid="steering-live-indicator"
-              >
-                <div className="max-w-[90%] w-full rounded-lg p-3 bg-muted/40 border border-primary/30 text-xs space-y-2 shadow-sm">
-                  <div className="flex items-center justify-between text-[11px] font-mono text-primary">
-                    <span className="flex items-center gap-1.5 font-semibold">
-                      <Bot className="size-3.5 animate-pulse" /> Agent Streaming &amp; Reasoning...
-                    </span>
-                    <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                      <RefreshCw className="size-2.5 animate-spin text-primary" /> Live
-                    </span>
+            })()
+          ) : (
+            /* Empty state: Overview of tool runs & instructions */
+            <div className="flex-1 flex flex-col items-center justify-center p-6 text-center space-y-4 text-muted-foreground">
+              <div className="p-3.5 rounded-full bg-muted/60 border border-border/70 text-foreground/80">
+                <Layers className="size-7 text-primary" />
+              </div>
+
+              <div className="space-y-1.5 max-w-xs">
+                <h4 className="text-sm font-semibold text-foreground">
+                  Tool &amp; Diagnostics Inspector
+                </h4>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Click on any interactive tool execution or subagent card in the transcript to inspect live stdout, stderr, and inputs here.
+                </p>
+              </div>
+
+              {/* Overview Metrics Card */}
+              <div className="w-full max-w-xs p-3 rounded-lg border border-border bg-background/60 space-y-2 text-left font-mono text-[11px]">
+                <div className="text-[10px] uppercase font-semibold text-muted-foreground tracking-wider border-b border-border/50 pb-1">
+                  Session Execution Summary
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="p-2 rounded bg-muted/40 border border-border/40">
+                    <span className="text-[10px] text-muted-foreground block">Total Tools</span>
+                    <strong className="text-foreground text-sm">{toolStats.total}</strong>
                   </div>
-                  <div className="flex items-center gap-2 text-muted-foreground">
-                    <span className="size-1.5 rounded-full bg-primary animate-ping" />
-                    <span className="text-[11px] font-mono">
-                      Generating tool calls and response...
-                    </span>
+                  <div className="p-2 rounded bg-muted/40 border border-border/40">
+                    <span className="text-[10px] text-muted-foreground block">Succeeded</span>
+                    <strong className="text-emerald-500 text-sm">{toolStats.succeeded}</strong>
+                  </div>
+                  <div className="p-2 rounded bg-muted/40 border border-border/40">
+                    <span className="text-[10px] text-muted-foreground block">Failed / Errs</span>
+                    <strong className="text-rose-500 text-sm">{toolStats.failed}</strong>
+                  </div>
+                  <div className="p-2 rounded bg-muted/40 border border-border/40">
+                    <span className="text-[10px] text-muted-foreground block">Running</span>
+                    <strong className="text-sky-500 text-sm">{toolStats.running}</strong>
                   </div>
                 </div>
               </div>
-            )}
-            <div ref={transcriptEndRef} />
-          </div>
-        )}
+            </div>
+          )}
+        </div>
       </div>
-
-      {/* Interactive Steering Form */}
-      <form
-        onSubmit={handleSendPrompt}
-        className="p-3 rounded-lg border border-border bg-card shrink-0 space-y-2"
-        data-testid="steer-prompt-form"
-      >
-        <div className="flex items-center justify-between">
-          <label htmlFor="steer-prompt-input" className="text-xs font-semibold text-foreground flex items-center gap-1.5">
-            <Sparkles className="size-3.5 text-primary" />
-            Agent Steering &amp; Intervention
-            {(isSteeringActive || session?.status === 'running') && (
-              <Badge variant="outline" className="font-mono text-[10px] bg-primary/10 text-primary border-primary/20 animate-pulse ml-2">
-                <RefreshCw className="size-2.5 mr-1 animate-spin" />
-                Live Streaming...
-              </Badge>
-            )}
-          </label>
-          <span className="text-[10px] text-muted-foreground font-mono">
-            Directly injects prompt into persistent session
-          </span>
-        </div>
-
-        {steerError && (
-          <div className="text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded p-2 font-mono">
-            {steerError}
-          </div>
-        )}
-
-        <div className="flex items-end gap-2">
-          <Textarea
-            id="steer-prompt-input"
-            value={steerPrompt}
-            onChange={(e) => setSteerPrompt(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                e.preventDefault();
-                handleSendPrompt();
-              }
-            }}
-            placeholder="Type guidance, bug fix details, or command corrections... (Ctrl+Enter to send)"
-            disabled={isSubmittingPrompt || isUnavailable}
-            className="flex-1 min-h-[56px] max-h-28 text-xs font-mono resize-none bg-background placeholder:text-muted-foreground"
-            data-testid="steer-prompt-textarea"
-          />
-
-          <Button
-            type="submit"
-            disabled={!steerPrompt.trim() || isSubmittingPrompt || isUnavailable}
-            size="sm"
-            className="h-14 px-4 text-xs font-medium gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90 shrink-0"
-            data-testid="send-steer-btn"
-          >
-            {isSubmittingPrompt ? (
-              <>
-                <RefreshCw className="size-3.5 animate-spin" />
-                <span>Sending...</span>
-              </>
-            ) : (
-              <>
-                <Send className="size-3.5" />
-                <span>Steer</span>
-              </>
-            )}
-          </Button>
-        </div>
-      </form>
     </div>
   );
 };
