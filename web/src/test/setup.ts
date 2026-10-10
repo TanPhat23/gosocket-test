@@ -1,4 +1,37 @@
 import '@testing-library/jest-dom/vitest';
+import React from 'react';
+import { vi } from 'vitest';
+import { QueryClientProvider, QueryClient } from '@tanstack/react-query';
+
+// Ensure all React Testing Library renders have a QueryClientProvider if none is present
+vi.mock('@testing-library/react', async (importOriginal: () => Promise<typeof import('@testing-library/react')>) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    render: (ui: React.ReactNode, options?: any) => {
+      const testQueryClient = new QueryClient({
+        defaultOptions: {
+          queries: { retry: false },
+          mutations: { retry: false },
+        },
+      });
+      const Wrapper: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+        const content = options?.wrapper
+          ? React.createElement(options.wrapper, null, children)
+          : children;
+        return React.createElement(
+          QueryClientProvider,
+          { client: testQueryClient },
+          content
+        );
+      };
+      return actual.render(ui, {
+        ...options,
+        wrapper: Wrapper,
+      });
+    },
+  };
+});
 
 // Polyfill window.matchMedia for JSDOM test environments
 if (typeof window !== 'undefined' && typeof window.matchMedia !== 'function') {

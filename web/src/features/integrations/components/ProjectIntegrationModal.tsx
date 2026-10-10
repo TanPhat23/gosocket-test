@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useForm } from '@tanstack/react-form';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { z } from 'zod';
 import {
   Dialog,
@@ -20,8 +21,14 @@ import {
 } from '@/features/teams/store/useTeamStore';
 import { integrationApi } from '../api/integrationApi';
 import { credentialApi } from '@/features/teams/api/credentialApi';
-import type { IntegrationDTO } from '../schemas/integrationSchemas';
-import type { CredentialDTO, GitHubRepoDTO } from '@/features/teams/schemas/credentialSchemas';
+import {
+  projectIntegrationsQueryOptions,
+  credentialsQueryOptions,
+  gitHubReposQueryOptions,
+  gitHubBranchesQueryOptions,
+} from '../queries';
+import type { IntegrationDTO, CreateIntegrationInput, UpdateIntegrationInput } from '../schemas/integrationSchemas';
+import type { CredentialDTO, GitHubRepoDTO, CreateCredentialInput } from '@/features/teams/schemas/credentialSchemas';
 import {
   GitBranch,
   Plus,
@@ -61,6 +68,7 @@ const connectRepoSchema = z.object({
 export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = ({
   trigger,
 }) => {
+  const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const activeProjectId = useActiveProjectId();
   const activeTeamId = useActiveTeamId();
@@ -71,10 +79,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
   // Tab State
   const [activeTab, setActiveTab] = useState<'repos' | 'pat'>('repos');
 
-  // Core Data
-  const [integrations, setIntegrations] = useState<IntegrationDTO[]>([]);
-  const [credentials, setCredentials] = useState<CredentialDTO[]>([]);
-  const [loading, setLoading] = useState(false);
+  // Local notification banners
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
 
@@ -88,13 +93,10 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
   const [tokenLabel, setTokenLabel] = useState('');
   const [tokenSecret, setTokenSecret] = useState('');
   const [showSecret, setShowSecret] = useState(false);
-  const [savingToken, setSavingToken] = useState(false);
   const [tokenFormError, setTokenFormError] = useState<string | null>(null);
 
   // Repositories View State
   const [showAddRepoForm, setShowAddRepoForm] = useState(false);
-  const [gitHubRepos, setGitHubRepos] = useState<GitHubRepoDTO[]>([]);
-  const [loadingRepos, setLoadingRepos] = useState(false);
   const [repoFilterQuery, setRepoFilterQuery] = useState('');
   const [manualRepoMode, setManualRepoMode] = useState(false);
   const [repoScopeFilter, setRepoScopeFilter] = useState<'all' | 'connected' | 'my'>('all');
@@ -104,10 +106,6 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
   const [loadingBranchesForInteg, setLoadingBranchesForInteg] = useState<Record<string, boolean>>({});
   const [updatingBranchIntegId, setUpdatingBranchIntegId] = useState<string | null>(null);
 
-  // New Repo Branches
-  const [availableBranches, setAvailableBranches] = useState<string[]>([]);
-  const [loadingBranches, setLoadingBranches] = useState(false);
-
   const [copiedWebhook, setCopiedWebhook] = useState(false);
   const [copiedSecret, setCopiedSecret] = useState(false);
 
@@ -115,6 +113,39 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
     typeof window !== 'undefined'
       ? `${window.location.protocol}//${window.location.host}/api/v1/webhooks/github`
       : 'http://localhost:8080/api/v1/webhooks/github';
+
+  // --- QUERIES ---
+  const {
+    data: rawIntegrations,
+    isLoading: loadingIntegrations,
+    error: integrationsError,
+  } = useQuery({
+    ...projectIntegrationsQueryOptions(activeProjectId || ''),
+    enabled: Boolean(activeProjectId),
+  });
+
+  const integrations = useMemo(() => rawIntegrations || [], [rawIntegrations]);
+
+  const {
+    data: rawCredentials,
+    isLoading: loadingCredentials,
+    error: credentialsError,
+  } = useQuery({
+    ...credentialsQueryOptions(activeTeamId || ''),
+    enabled: Boolean(activeTeamId),
+  });
+
+  const gitHubCreds = useMemo(
+    () => (rawCredentials || []).filter((c) => c.provider === 'github'),
+    [rawCredentials]
+  );
+  const credentials = gitHubCreds;
+
+  const loading = loadingIntegrations || loadingCredentials;
+
+  // Selected credential for new repo connect form
+  const [selectedCredId, setSelectedCredId] = useState<string>('');
+  const activeCredId = selectedCredId || (gitHubCreds.length > 0 ? gitHubCreds[0].id : '');
 
   // Connect Repo Form
   const connectForm = useForm({
@@ -133,8 +164,9 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
       if (!activeProjectId) return;
       setActionError(null);
       setActionSuccess(null);
-      try {
-        const created = await integrationApi.createProjectIntegration(activeProjectId, {
+      createIntegrationMutation.mutate({
+        projectId: activeProjectId,
+        data: {
           credential_id: value.credential_id,
           provider: 'github',
           repo: value.repo.trim(),
@@ -142,15 +174,243 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
           auto_pr: value.auto_pr,
           webhook_secret: value.webhook_secret?.trim() || undefined,
           filter_label: value.filter_label?.trim() || undefined,
-        });
+        },
+      });
+    },
+  });
 
-        setIntegrations((prev) => [...prev, created]);
-        connectForm.reset();
-        setShowAddRepoForm(false);
-        setActionSuccess(`Connected ${created.external_id} successfully!`);
-      } catch (err) {
-        setActionError(err instanceof Error ? err.message : 'Failed to connect repository');
+  // Query repositories for the selected credential
+  const {
+    data: queriedRepos,
+    isLoading: loadingRepos,
+    error: reposQueryError,
+  } = useQuery({
+    ...gitHubReposQueryOptions(activeTeamId || '', activeCredId),
+    enabled: Boolean(activeTeamId && activeCredId),
+    retry: false,
+  });
+
+  const gitHubRepos = useMemo(() => queriedRepos || [], [queriedRepos]);
+
+  // Handle repository query error or success for tokenStatus
+  useEffect(() => {
+    if (reposQueryError) {
+      setTokenStatus('invalid');
+      const msg = reposQueryError instanceof Error ? reposQueryError.message : 'Failed to list GitHub repositories';
+      setActionError(msg);
+    } else if (queriedRepos) {
+      setTokenStatus('valid');
+    }
+  }, [reposQueryError, queriedRepos]);
+
+  // Sync credential_id in form when credentials load
+  useEffect(() => {
+    if (credentials.length > 0) {
+      const currentVal = connectForm.getFieldValue('credential_id');
+      if (!currentVal || !credentials.some((c) => c.id === currentVal)) {
+        connectForm.setFieldValue('credential_id', credentials[0].id);
+        setSelectedCredId(credentials[0].id);
       }
+    } else if (rawCredentials !== undefined && rawCredentials.length === 0) {
+      setTokenStatus('unknown');
+      setShowTokenForm(true);
+    }
+  }, [credentials, rawCredentials, connectForm]);
+
+  // Handle integration or credential fetch errors
+  useEffect(() => {
+    if (integrationsError) {
+      setActionError(integrationsError instanceof Error ? integrationsError.message : 'Failed to load integrations');
+    } else if (credentialsError) {
+      setActionError(credentialsError instanceof Error ? credentialsError.message : 'Failed to load credentials');
+    }
+  }, [integrationsError, credentialsError]);
+
+  // Query branches for newly selected repo
+  const newRepoSlug = connectForm.getFieldValue('repo') || '';
+  const shouldFetchNewRepoBranches = Boolean(
+    activeTeamId && activeCredId && newRepoSlug.includes('/')
+  );
+
+  const {
+    data: queriedBranches,
+    isLoading: loadingBranches,
+  } = useQuery({
+    ...gitHubBranchesQueryOptions(activeTeamId || '', activeCredId, newRepoSlug),
+    enabled: shouldFetchNewRepoBranches,
+    retry: false,
+  });
+
+  const availableBranches = useMemo(() => queriedBranches || [], [queriedBranches]);
+
+  useEffect(() => {
+    if (queriedBranches && queriedBranches.length > 0) {
+      connectForm.setFieldValue('base_branch', queriedBranches[0]);
+    }
+  }, [queriedBranches, connectForm]);
+
+  // --- MUTATIONS ---
+  const createIntegrationMutation = useMutation({
+    mutationFn: ({ projectId, data }: { projectId: string; data: CreateIntegrationInput }) =>
+      integrationApi.createProjectIntegration(projectId, data),
+    onSuccess: (created) => {
+      queryClient.setQueryData<IntegrationDTO[]>(
+        ['integrations', activeProjectId],
+        (old) => (old ? [...old, created] : [created])
+      );
+      queryClient.invalidateQueries({ queryKey: ['integrations', activeProjectId] });
+      connectForm.reset();
+      setShowAddRepoForm(false);
+      setActionSuccess(`Connected ${created.external_id} successfully!`);
+    },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : 'Failed to connect repository');
+    },
+  });
+
+  const updateIntegrationMutation = useMutation({
+    mutationFn: ({
+      projectId,
+      integrationId,
+      data,
+    }: {
+      projectId: string;
+      integrationId: string;
+      data: UpdateIntegrationInput;
+    }) => integrationApi.updateProjectIntegration(projectId, integrationId, data),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<IntegrationDTO[]>(
+        ['integrations', activeProjectId],
+        (old) => (old ? old.map((i) => (i.id === updated.id ? updated : i)) : [updated])
+      );
+      queryClient.invalidateQueries({ queryKey: ['integrations', activeProjectId] });
+      setActionSuccess(`Updated ${updated.external_id} base branch to ${updated.config?.base_branch || 'main'}!`);
+    },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : 'Failed to update base branch');
+    },
+    onSettled: () => {
+      setUpdatingBranchIntegId(null);
+    },
+  });
+
+  const deleteIntegrationMutation = useMutation({
+    mutationFn: ({ projectId, integrationId }: { projectId: string; integrationId: string }) =>
+      integrationApi.deleteProjectIntegration(projectId, integrationId),
+    onSuccess: async (_, { integrationId }) => {
+      queryClient.setQueryData<IntegrationDTO[]>(
+        ['integrations', activeProjectId],
+        (old) => (old ? old.filter((i) => i.id !== integrationId) : [])
+      );
+      setActionSuccess('Repository integration removed');
+    },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : 'Failed to delete integration');
+    },
+  });
+
+  const createCredentialMutation = useMutation({
+    mutationFn: ({ teamId, data }: { teamId: string; data: CreateCredentialInput }) =>
+      credentialApi.createCredential(teamId, data),
+    onSuccess: async (savedCred) => {
+      queryClient.setQueryData<CredentialDTO[]>(
+        ['credentials', activeTeamId],
+        (old) => (old ? [...old, savedCred] : [savedCred])
+      );
+      queryClient.invalidateQueries({ queryKey: ['credentials', activeTeamId] });
+      connectForm.setFieldValue('credential_id', savedCred.id);
+      setSelectedCredId(savedCred.id);
+      setShowTokenForm(false);
+      setEditingCred(null);
+      setTokenSecret('');
+
+      // Test token immediately
+      if (activeTeamId) {
+        try {
+          const repos = await credentialApi.listGitHubRepositories(activeTeamId, savedCred.id);
+          queryClient.setQueryData(
+            gitHubReposQueryOptions(activeTeamId, savedCred.id).queryKey,
+            repos
+          );
+          setTokenStatus('valid');
+          setActionSuccess(`✓ Token saved and verified! Found ${repos.length} accessible repositories.`);
+        } catch (testErr) {
+          setTokenStatus('invalid');
+          setActionError(testErr instanceof Error ? testErr.message : 'Token saved, but verification failed');
+        }
+      }
+    },
+    onError: (err) => {
+      setTokenFormError(err instanceof Error ? err.message : 'Failed to save credential');
+    },
+  });
+
+  const updateCredentialMutation = useMutation({
+    mutationFn: ({
+      teamId,
+      credentialId,
+      data,
+    }: {
+      teamId: string;
+      credentialId: string;
+      data: { label?: string; secret?: string };
+    }) => credentialApi.updateCredential(teamId, credentialId, data),
+    onSuccess: async (savedCred) => {
+      queryClient.setQueryData<CredentialDTO[]>(
+        ['credentials', activeTeamId],
+        (old) => (old ? old.map((c) => (c.id === savedCred.id ? savedCred : c)) : [savedCred])
+      );
+      queryClient.invalidateQueries({ queryKey: ['credentials', activeTeamId] });
+      connectForm.setFieldValue('credential_id', savedCred.id);
+      setSelectedCredId(savedCred.id);
+      setShowTokenForm(false);
+      setEditingCred(null);
+      setTokenSecret('');
+
+      // Test token immediately
+      if (activeTeamId) {
+        try {
+          const repos = await credentialApi.listGitHubRepositories(activeTeamId, savedCred.id);
+          queryClient.setQueryData(
+            gitHubReposQueryOptions(activeTeamId, savedCred.id).queryKey,
+            repos
+          );
+          setTokenStatus('valid');
+          setActionSuccess(`✓ Token saved and verified! Found ${repos.length} accessible repositories.`);
+        } catch (testErr) {
+          setTokenStatus('invalid');
+          setActionError(testErr instanceof Error ? testErr.message : 'Token saved, but verification failed');
+        }
+      }
+    },
+    onError: (err) => {
+      setTokenFormError(err instanceof Error ? err.message : 'Failed to save credential');
+    },
+  });
+
+  const deleteCredentialMutation = useMutation({
+    mutationFn: ({ teamId, credentialId }: { teamId: string; credentialId: string }) =>
+      credentialApi.deleteCredential(teamId, credentialId),
+    onSuccess: (_, { credentialId }) => {
+      queryClient.setQueryData<CredentialDTO[]>(
+        ['credentials', activeTeamId],
+        (old) => (old ? old.filter((c) => c.id !== credentialId) : [])
+      );
+      queryClient.invalidateQueries({ queryKey: ['credentials', activeTeamId] });
+      const remaining = credentials.filter((c) => c.id !== credentialId);
+      if (remaining.length > 0) {
+        connectForm.setFieldValue('credential_id', remaining[0].id);
+        setSelectedCredId(remaining[0].id);
+      } else {
+        connectForm.setFieldValue('credential_id', '');
+        setSelectedCredId('');
+        setTokenStatus('unknown');
+        setShowTokenForm(true);
+      }
+      setActionSuccess('Token deleted successfully');
+    },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : 'Failed to delete token');
     },
   });
 
@@ -165,113 +425,39 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
           integ.external_id
         );
         setConnectedRepoBranches((prev) => ({ ...prev, [integ.id]: branches }));
+        queryClient.setQueryData(
+          gitHubBranchesQueryOptions(activeTeamId, integ.credential_id, integ.external_id).queryKey,
+          branches
+        );
       } catch (err) {
         console.warn('Failed to fetch branches for integration:', err);
       } finally {
         setLoadingBranchesForInteg((prev) => ({ ...prev, [integ.id]: false }));
       }
     },
-    [activeTeamId]
+    [activeTeamId, queryClient]
   );
+
+  // Pre-fetch branches for connected integrations on open
+  useEffect(() => {
+    if (open && integrations.length > 0) {
+      integrations.forEach((i) => {
+        if (i.enabled && !connectedRepoBranches[i.id]) {
+          fetchBranchesForIntegration(i);
+        }
+      });
+    }
+  }, [open, integrations, fetchBranchesForIntegration, connectedRepoBranches]);
 
   const handleUpdateIntegrationBranch = async (integ: IntegrationDTO, newBranch: string) => {
     if (!activeProjectId) return;
     setUpdatingBranchIntegId(integ.id);
-    try {
-      const updated = await integrationApi.updateProjectIntegration(activeProjectId, integ.id, {
-        base_branch: newBranch,
-      });
-      setIntegrations((prev) => prev.map((item) => (item.id === integ.id ? updated : item)));
-      setActionSuccess(`Updated ${integ.external_id} base branch to ${newBranch}!`);
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to update base branch');
-    } finally {
-      setUpdatingBranchIntegId(null);
-    }
+    updateIntegrationMutation.mutate({
+      projectId: activeProjectId,
+      integrationId: integ.id,
+      data: { base_branch: newBranch },
+    });
   };
-
-  const fetchBranchesForNewRepo = useCallback(
-    async (repoSlug: string, credId: string) => {
-      if (!activeTeamId || !credId || !repoSlug.includes('/')) return;
-      setLoadingBranches(true);
-      try {
-        const branches = await credentialApi.listGitHubBranches(activeTeamId, credId, repoSlug);
-        setAvailableBranches(branches);
-        if (branches.length > 0) {
-          connectForm.setFieldValue('base_branch', branches[0]);
-        }
-      } catch (err) {
-        console.warn('Failed to fetch branches for new repo:', err);
-        setAvailableBranches([]);
-      } finally {
-        setLoadingBranches(false);
-      }
-    },
-    [activeTeamId, connectForm]
-  );
-
-  const fetchReposForCredential = useCallback(async (teamId: string, credId: string) => {
-    if (!teamId || !credId) return;
-    setLoadingRepos(true);
-    try {
-      const repos = await credentialApi.listGitHubRepositories(teamId, credId);
-      setGitHubRepos(repos);
-      setTokenStatus('valid');
-      return repos;
-    } catch (err) {
-      setTokenStatus('invalid');
-      const msg = err instanceof Error ? err.message : 'Failed to list GitHub repositories';
-      setActionError(msg);
-      throw err;
-    } finally {
-      setLoadingRepos(false);
-    }
-  }, []);
-
-  const fetchData = useCallback(async () => {
-    if (!activeProjectId) return;
-    setLoading(true);
-    setActionError(null);
-    setActionSuccess(null);
-    try {
-      const [integs, creds] = await Promise.all([
-        integrationApi.listProjectIntegrations(activeProjectId),
-        activeTeamId ? credentialApi.listCredentials(activeTeamId) : Promise.resolve([]),
-      ]);
-      setIntegrations(integs);
-      // Fetch branches for each connected integration
-      integs.forEach((i) => {
-        if (i.enabled) fetchBranchesForIntegration(i);
-      });
-      const ghCreds = creds.filter((c) => c.provider === 'github');
-      setCredentials(ghCreds);
-
-      const targetCredId = ghCreds.length > 0 ? ghCreds[0].id : '';
-      connectForm.setFieldValue('credential_id', targetCredId);
-
-      if (ghCreds.length === 0) {
-        setTokenStatus('unknown');
-        setShowTokenForm(true);
-        if (integs.length === 0) {
-          setActiveTab('pat');
-        }
-      } else if (activeTeamId && targetCredId) {
-        fetchReposForCredential(activeTeamId, targetCredId).catch(() => {
-          // fetchReposForCredential already updates tokenStatus to 'invalid' & setActionError
-        });
-      }
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to load integrations');
-    } finally {
-      setLoading(false);
-    }
-  }, [activeProjectId, activeTeamId, connectForm, fetchReposForCredential]);
-
-  useEffect(() => {
-    if (open && activeProjectId) {
-      fetchData();
-    }
-  }, [open, activeProjectId, fetchData]);
 
   const handleTestToken = async (credId: string) => {
     if (!activeTeamId) return;
@@ -280,7 +466,10 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
     setActionSuccess(null);
     try {
       const repos = await credentialApi.listGitHubRepositories(activeTeamId, credId);
-      setGitHubRepos(repos);
+      queryClient.setQueryData(
+        gitHubReposQueryOptions(activeTeamId, credId).queryKey,
+        repos
+      );
       setTokenStatus('valid');
       setActionSuccess(`✓ Token verified successfully! Found ${repos.length} accessible repositories.`);
     } catch (err) {
@@ -330,50 +519,31 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
       return;
     }
 
-    setSavingToken(true);
     setTokenFormError(null);
     setActionError(null);
 
-    try {
-      let savedCred: CredentialDTO;
-      if (editingCred) {
-        // Updating existing credential
-        savedCred = await credentialApi.updateCredential(activeTeamId, editingCred.id, {
+    if (editingCred) {
+      updateCredentialMutation.mutate({
+        teamId: activeTeamId,
+        credentialId: editingCred.id,
+        data: {
           label: trimmedLabel,
           secret: trimmedSecret || undefined,
-        });
-        setCredentials((prev) => prev.map((c) => (c.id === savedCred.id ? savedCred : c)));
-      } else {
-        // Creating new credential
-        savedCred = await credentialApi.createCredential(activeTeamId, {
+        },
+      });
+    } else {
+      createCredentialMutation.mutate({
+        teamId: activeTeamId,
+        data: {
           provider: 'github',
           label: trimmedLabel,
           secret: trimmedSecret,
-        });
-        setCredentials((prev) => [...prev, savedCred]);
-      }
-
-      connectForm.setFieldValue('credential_id', savedCred.id);
-      setShowTokenForm(false);
-      setEditingCred(null);
-      setTokenSecret('');
-
-      // Test token immediately
-      try {
-        const repos = await credentialApi.listGitHubRepositories(activeTeamId, savedCred.id);
-        setGitHubRepos(repos);
-        setTokenStatus('valid');
-        setActionSuccess(`✓ Token saved and verified! Found ${repos.length} accessible repositories.`);
-      } catch (testErr) {
-        setTokenStatus('invalid');
-        setActionError(testErr instanceof Error ? testErr.message : 'Token saved, but verification failed');
-      }
-    } catch (err) {
-      setTokenFormError(err instanceof Error ? err.message : 'Failed to save credential');
-    } finally {
-      setSavingToken(false);
+        },
+      });
     }
   };
+
+  const savingToken = createCredentialMutation.isPending || updateCredentialMutation.isPending;
 
   const handleDeleteToken = async (credId: string) => {
     if (!activeTeamId) return;
@@ -381,29 +551,15 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
       return;
     }
     setActionError(null);
-    try {
-      await credentialApi.deleteCredential(activeTeamId, credId);
-      const remaining = credentials.filter((c) => c.id !== credId);
-      setCredentials(remaining);
-      if (remaining.length > 0) {
-        connectForm.setFieldValue('credential_id', remaining[0].id);
-      } else {
-        connectForm.setFieldValue('credential_id', '');
-        setTokenStatus('unknown');
-        setShowTokenForm(true);
-      }
-      setActionSuccess('Token deleted successfully');
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to delete token');
-    }
+    deleteCredentialMutation.mutate({ teamId: activeTeamId, credentialId: credId });
   };
 
   const handleSelectRepository = (item: GitHubRepoDTO) => {
     connectForm.setFieldValue('repo', item.full_name);
     connectForm.setFieldValue('base_branch', item.default_branch || 'main');
-    const credId = connectForm.getFieldValue('credential_id');
+    const credId = connectForm.getFieldValue('credential_id') || activeCredId;
     if (credId) {
-      fetchBranchesForNewRepo(item.full_name, credId);
+      setSelectedCredId(credId);
     }
   };
 
@@ -448,13 +604,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
     if (!activeProjectId) return;
     if (!confirm('Are you sure you want to remove this GitHub integration?')) return;
 
-    try {
-      await integrationApi.deleteProjectIntegration(activeProjectId, id);
-      setIntegrations((prev) => prev.filter((item) => item.id !== id));
-      setActionSuccess('Repository integration removed');
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to delete integration');
-    }
+    deleteIntegrationMutation.mutate({ projectId: activeProjectId, integrationId: id });
   };
 
   const isTokenExpired =
@@ -632,10 +782,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                 size="xs"
                 variant={showAddRepoForm ? 'secondary' : 'default'}
                 onClick={() => {
-                  setShowAddRepoForm(!showAddRepoForm);
-                  if (!showAddRepoForm && credentials.length === 0) {
-                    setActiveTab('pat');
-                  }
+                  setShowAddRepoForm((prev) => !prev);
                 }}
                 className="h-7 text-xs gap-1"
                 data-testid="toggle-connect-repo-btn"
@@ -743,7 +890,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                             <button
                               type="button"
                               onClick={() => fetchBranchesForIntegration(item)}
-                              className="text-muted-foreground hover:text-foreground text-[10px] flex items-center gap-0.5 p-0.5 rounded hover:bg-muted"
+                              className="text-muted-foreground hover:text-foreground text-[10px] flex items-center gap-0.5 p-0.5 rounded hover:bg-muted cursor-pointer"
                               title="Fetch all branches from GitHub"
                               data-testid={`fetch-branches-btn-${item.id}`}
                             >
@@ -761,7 +908,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                         size="icon-xs"
                         variant="ghost"
                         onClick={() => handleDeleteIntegration(item.id)}
-                        className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                        className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer"
                         title="Disconnect repository"
                         data-testid={`delete-integration-${item.id}`}
                       >
@@ -789,7 +936,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                   <button
                     type="button"
                     onClick={() => setManualRepoMode(!manualRepoMode)}
-                    className="text-[11px] text-primary hover:underline font-medium"
+                    className="text-[11px] text-primary hover:underline font-medium cursor-pointer"
                     data-testid="toggle-manual-repo"
                   >
                     {manualRepoMode ? 'Browse accessible repos' : 'Enter owner/repo manually'}
@@ -804,7 +951,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                       <span>
                         Using PAT:{' '}
                         <b className="text-foreground font-mono">
-                          {credentials.find((c) => c.id === connectForm.getFieldValue('credential_id'))?.label ||
+                          {credentials.find((c) => c.id === (connectForm.getFieldValue('credential_id') || activeCredId))?.label ||
                             credentials[0].label}
                         </b>
                       </span>
@@ -812,7 +959,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                     <button
                       type="button"
                       onClick={() => setActiveTab('pat')}
-                      className="text-[11px] text-primary hover:underline font-medium"
+                      className="text-[11px] text-primary hover:underline font-medium cursor-pointer"
                     >
                       Change or update token
                     </button>
@@ -866,10 +1013,6 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                                 onChange={(e) => {
                                   const val = e.target.value;
                                   repoField.handleChange(val);
-                                  const credId = connectForm.getFieldValue('credential_id');
-                                  if (credId && val.includes('/')) {
-                                    fetchBranchesForNewRepo(val.trim(), credId);
-                                  }
                                 }}
                                 className="font-mono text-xs h-8"
                                 data-testid="repo-input"
@@ -939,7 +1082,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                                   <button
                                     type="button"
                                     onClick={() => setManualRepoMode(true)}
-                                    className="text-[11px] text-primary hover:underline font-medium"
+                                    className="text-[11px] text-primary hover:underline font-medium cursor-pointer"
                                   >
                                     Enter repository name manually
                                   </button>
@@ -965,7 +1108,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                                           key={item.id}
                                           type="button"
                                           onClick={() => handleSelectRepository(item)}
-                                          className={`w-full text-left p-2.5 transition-colors flex items-center justify-between gap-3 text-xs ${
+                                          className={`w-full text-left p-2.5 transition-colors flex items-center justify-between gap-3 text-xs cursor-pointer ${
                                             isSelected
                                               ? 'bg-primary/10 text-foreground font-medium'
                                               : 'hover:bg-muted/50 text-foreground'
@@ -1019,10 +1162,6 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                                   onChange={(e) => {
                                     const val = e.target.value;
                                     repoField.handleChange(val);
-                                    const credId = connectForm.getFieldValue('credential_id');
-                                    if (credId && val.includes('/')) {
-                                      fetchBranchesForNewRepo(val.trim(), credId);
-                                    }
                                   }}
                                   className="font-mono text-xs h-8"
                                   data-testid="repo-input"
@@ -1067,7 +1206,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                           size="icon-xs"
                           variant="outline"
                           onClick={handleCopyWebhook}
-                          className="h-7 w-7 shrink-0"
+                          className="h-7 w-7 shrink-0 cursor-pointer"
                           title="Copy Payload URL"
                           data-testid="copy-webhook-btn"
                         >
@@ -1094,7 +1233,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                                 variant="ghost"
                                 size="xs"
                                 onClick={() => handleCopySecret(field.state.value || '')}
-                                className="h-5 text-[10px] text-muted-foreground gap-1 px-1"
+                                className="h-5 text-[10px] text-muted-foreground gap-1 px-1 cursor-pointer"
                               >
                                 {copiedSecret ? <Check className="size-2.5 text-emerald-500" /> : <Copy className="size-2.5" />}
                                 Copy
@@ -1197,7 +1336,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                           id="auto-pr-checkbox"
                           checked={field.state.value}
                           onChange={(e) => field.handleChange(e.target.checked)}
-                          className="size-4 rounded border-input text-primary focus:ring-ring"
+                          className="size-4 rounded border-input text-primary focus:ring-ring cursor-pointer"
                           data-testid="auto-pr-checkbox"
                         />
                         <label htmlFor="auto-pr-checkbox" className="text-xs text-foreground cursor-pointer">
@@ -1214,7 +1353,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                       variant="ghost"
                       size="sm"
                       onClick={() => setShowAddRepoForm(false)}
-                      className="text-xs"
+                      className="text-xs cursor-pointer"
                     >
                       Cancel
                     </Button>
@@ -1224,11 +1363,11 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                         <Button
                           type="submit"
                           size="sm"
-                          disabled={isSubmitting}
-                          className="text-xs font-medium"
+                          disabled={isSubmitting || createIntegrationMutation.isPending}
+                          className="text-xs font-medium cursor-pointer"
                           data-testid="connect-submit-btn"
                         >
-                          {isSubmitting ? 'Connecting...' : 'Connect Repository'}
+                          {isSubmitting || createIntegrationMutation.isPending ? 'Connecting...' : 'Connect Repository'}
                         </Button>
                       )}
                     />
@@ -1257,7 +1396,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                   size="xs"
                   variant="default"
                   onClick={handleOpenNewToken}
-                  className="h-7 text-xs gap-1"
+                  className="h-7 text-xs gap-1 cursor-pointer"
                   data-testid="add-token-btn"
                 >
                   <Plus className="size-3" />
@@ -1270,7 +1409,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
             {credentials.length > 0 && !showTokenForm && (
               <div className="space-y-3">
                 {credentials.map((c) => {
-                  const isCurrentTarget = connectForm.getFieldValue('credential_id') === c.id;
+                  const isCurrentTarget = (connectForm.getFieldValue('credential_id') || activeCredId) === c.id;
                   const isTesting = testingCredId === c.id;
 
                   return (
@@ -1323,7 +1462,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                             variant="outline"
                             onClick={() => handleTestToken(c.id)}
                             disabled={isTesting}
-                            className="h-7 text-xs gap-1"
+                            className="h-7 text-xs gap-1 cursor-pointer"
                             data-testid={`test-token-btn-${c.id}`}
                           >
                             {isTesting ? (
@@ -1339,7 +1478,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                             size="xs"
                             variant="secondary"
                             onClick={() => handleOpenEditToken(c)}
-                            className="h-7 text-xs gap-1"
+                            className="h-7 text-xs gap-1 cursor-pointer"
                             data-testid={`edit-token-btn-${c.id}`}
                           >
                             <KeyRound className="size-3" />
@@ -1351,7 +1490,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                             size="icon-xs"
                             variant="ghost"
                             onClick={() => handleDeleteToken(c.id)}
-                            className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                            className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer"
                             title="Delete Token"
                             data-testid={`delete-token-btn-${c.id}`}
                           >
@@ -1388,7 +1527,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                         setShowTokenForm(false);
                         setEditingCred(null);
                       }}
-                      className="h-6 text-xs"
+                      className="h-6 text-xs cursor-pointer"
                     >
                       Cancel
                     </Button>
@@ -1463,7 +1602,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                       <button
                         type="button"
                         onClick={() => setShowSecret(!showSecret)}
-                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer"
                         title={showSecret ? 'Hide secret' : 'Show secret'}
                       >
                         {showSecret ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
@@ -1482,7 +1621,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                         setShowTokenForm(false);
                         setEditingCred(null);
                       }}
-                      className="text-xs"
+                      className="text-xs cursor-pointer"
                     >
                       Cancel
                     </Button>
@@ -1491,7 +1630,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                     type="submit"
                     size="sm"
                     disabled={savingToken}
-                    className="text-xs font-medium gap-1.5"
+                    className="text-xs font-medium gap-1.5 cursor-pointer"
                     data-testid="save-token-btn"
                   >
                     {savingToken ? (

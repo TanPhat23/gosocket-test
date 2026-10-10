@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import {
   useTeamStore,
   useTeamsList,
@@ -20,7 +21,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from '@/components/ui/dialog';
-import { integrationApi } from '@/features/integrations/api/integrationApi';
+import { projectIntegrationsQueryOptions } from '@/features/integrations/queries';
 import type { ProjectDTO as Project } from '@/features/teams/schemas/teamSchemas';
 
 export const AppSidebar: React.FC = () => {
@@ -34,7 +35,13 @@ export const AppSidebar: React.FC = () => {
   const allTasks = useTaskStore((state) => state.tasks);
 
   const activeTeam = teams.find((t) => t.id === activeTeamId);
-  const [activeConnectedReposCount, setActiveConnectedReposCount] = useState<number | null>(null);
+
+  // Use TanStack Query for project integrations
+  const { data: projectIntegrations } = useQuery({
+    ...projectIntegrationsQueryOptions(activeProjectId || ''),
+    enabled: Boolean(activeProjectId),
+  });
+  const activeConnectedReposCount = activeProjectId && projectIntegrations ? projectIntegrations.length : null;
 
   // New Project Dialog state
   const [isNewProjectOpen, setIsNewProjectOpen] = useState(false);
@@ -81,32 +88,6 @@ export const AppSidebar: React.FC = () => {
       setIsDeletingProject(false);
     }
   };
-
-  // Fetch count of connected integrations for active project
-  useEffect(() => {
-    let isMounted = true;
-    if (!activeProjectId) {
-      setActiveConnectedReposCount(null);
-      return;
-    }
-
-    integrationApi
-      .listProjectIntegrations(activeProjectId)
-      .then((integrations) => {
-        if (isMounted) {
-          setActiveConnectedReposCount(integrations.length);
-        }
-      })
-      .catch(() => {
-        if (isMounted) {
-          setActiveConnectedReposCount(null);
-        }
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [activeProjectId]);
 
   return (
     <aside

@@ -83,7 +83,9 @@ describe('ProjectIntegrationModal', () => {
 
     fireEvent.click(screen.getByTestId('toggle-connect-repo-btn'));
 
-    expect(screen.getByTestId('connect-repo-form')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByTestId('connect-repo-form')).toBeInTheDocument();
+    });
 
     const submitBtn = screen.getByTestId('connect-submit-btn');
     fireEvent.click(submitBtn);

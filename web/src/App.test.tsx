@@ -86,7 +86,7 @@ describe('App Auth Gateway', () => {
     expect(fetchTeamsMock).not.toHaveBeenCalled();
   });
 
-  it('renders authenticated workspace when user is logged in and triggers task/team fetches', () => {
+  it('renders authenticated workspace when user is logged in', () => {
     useAuthStore.setState({
       user: {
         id: 'usr-123',
@@ -103,7 +103,5 @@ describe('App Auth Gateway', () => {
 
     expect(fetchUserMock).toHaveBeenCalledTimes(1);
     expect(screen.getByText('Agent Control Plane')).toBeInTheDocument();
-    expect(fetchTasksMock).toHaveBeenCalledTimes(1);
-    expect(fetchTeamsMock).toHaveBeenCalled();
   });
 });

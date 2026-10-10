@@ -1,10 +1,17 @@
 import { queryOptions } from '@tanstack/react-query';
 import { taskApi } from './api/taskApi';
 
-export const tasksQueryOptions = () =>
+export const modelsQueryOptions = () =>
   queryOptions({
-    queryKey: ['tasks'],
-    queryFn: () => taskApi.getTasks(),
+    queryKey: ['models'],
+    queryFn: () => taskApi.getModels(),
+    staleTime: 1000 * 60 * 5,
+  });
+
+export const tasksQueryOptions = (projectId?: string) =>
+  queryOptions({
+    queryKey: projectId ? ['tasks', projectId] : ['tasks'],
+    queryFn: () => taskApi.getTasks(projectId),
     staleTime: 1000 * 30,
   });
 

@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useWorkspaceSettingsStore } from '../store/useWorkspaceSettingsStore';
 import { useActiveProjectId } from '@/features/teams/store/useTeamStore';
 import { useTaskStore } from '../store/useTaskStore';
@@ -21,6 +22,8 @@ import {
   Filter,
   X,
 } from 'lucide-react';
+import { modelsQueryOptions } from '../queries';
+import { projectIntegrationsQueryOptions } from '@/features/integrations/queries';
 
 export const WorkspaceControlBar: React.FC = () => {
   const activeProjectId = useActiveProjectId();
@@ -28,12 +31,12 @@ export const WorkspaceControlBar: React.FC = () => {
   const defaultModel = useWorkspaceSettingsStore((s) => s.defaultModel);
   const setDefaultModel = useWorkspaceSettingsStore((s) => s.setDefaultModel);
   const availableModels = useWorkspaceSettingsStore((s) => s.availableModels);
-  const fetchModels = useWorkspaceSettingsStore((s) => s.fetchModels);
+  const setAvailableModels = useWorkspaceSettingsStore((s) => s.setAvailableModels);
 
   const selectedRepoId = useWorkspaceSettingsStore((s) => s.selectedRepoId);
   const setSelectedRepoId = useWorkspaceSettingsStore((s) => s.setSelectedRepoId);
-  const connectedRepos = useWorkspaceSettingsStore((s) => s.connectedRepos);
-  const fetchConnectedRepos = useWorkspaceSettingsStore((s) => s.fetchConnectedRepos);
+  const setConnectedRepos = useWorkspaceSettingsStore((s) => s.setConnectedRepos);
+  const defaultRepoId = useWorkspaceSettingsStore((s) => s.defaultRepoId);
 
   const searchQuery = useWorkspaceSettingsStore((s) => s.searchQuery);
   const setSearchQuery = useWorkspaceSettingsStore((s) => s.setSearchQuery);
@@ -43,13 +46,42 @@ export const WorkspaceControlBar: React.FC = () => {
   const tasks = useTaskStore((s) => s.tasks);
   const taskIds = useTaskStore((s) => s.taskIds);
 
-  useEffect(() => {
-    fetchModels();
-  }, [fetchModels]);
+  // Queries for models and project integrations
+  const { data: modelsData } = useQuery(modelsQueryOptions());
+  const { data: integrationsData } = useQuery({
+    ...projectIntegrationsQueryOptions(activeProjectId || ''),
+    enabled: Boolean(activeProjectId),
+  });
 
   useEffect(() => {
-    fetchConnectedRepos(activeProjectId || undefined);
-  }, [activeProjectId, fetchConnectedRepos]);
+    if (modelsData && modelsData.length > 0) {
+      setAvailableModels(modelsData);
+    }
+  }, [modelsData, setAvailableModels]);
+
+  useEffect(() => {
+    if (!activeProjectId) {
+      setConnectedRepos([]);
+      setSelectedRepoId('all');
+      return;
+    }
+    if (integrationsData) {
+      const ghIntegs = integrationsData.filter((i) => i.provider === 'github' && i.enabled);
+      setConnectedRepos(ghIntegs);
+      if (selectedRepoId !== 'all' && ghIntegs.some((g) => g.id === selectedRepoId)) {
+        return;
+      }
+      if (defaultRepoId && ghIntegs.some((g) => g.id === defaultRepoId)) {
+        setSelectedRepoId(defaultRepoId);
+        return;
+      }
+      if (ghIntegs.length > 0 && selectedRepoId === 'all') {
+        // keep 'all' or default
+      }
+    }
+  }, [activeProjectId, integrationsData, selectedRepoId, defaultRepoId, setConnectedRepos, setSelectedRepoId]);
+
+  const connectedRepos = useWorkspaceSettingsStore((s) => s.connectedRepos);
 
   // Calculate filtered task count
   const matchingTasksCount = taskIds.filter((id) => {

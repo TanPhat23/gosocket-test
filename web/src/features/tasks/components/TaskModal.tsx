@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTaskStore } from '../store/useTaskStore';
-import { taskApi } from '../api/taskApi';
 import { useProjectsList, useActiveProjectId, useActiveTeamId } from '@/features/teams/store/useTeamStore';
 import { CreateTaskRequestSchema } from '../schemas/taskSchemas';
 import {
@@ -24,8 +24,8 @@ import {
 } from '@/components/ui/select';
 import { Plus, Check, Sparkles, Server, Wrench, AlertCircle, Cpu, GitBranch, FolderGit2, RefreshCw } from 'lucide-react';
 import { integrationApi } from '@/features/integrations/api/integrationApi';
-import { credentialApi } from '@/features/teams/api/credentialApi';
-import type { IntegrationDTO } from '@/features/integrations/schemas/integrationSchemas';
+import { projectIntegrationsQueryOptions, gitHubBranchesQueryOptions } from '@/features/integrations/queries';
+import { modelsQueryOptions } from '../queries';
 import {
   useWorkspaceSettingsStore,
   type ModelOption,
@@ -57,6 +57,7 @@ export interface TaskModalProps {
 }
 
 export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
+  const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const createTask = useTaskStore((state) => state.createTask);
   const projects = useProjectsList();
@@ -69,9 +70,14 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
   const defaultRepoId = useWorkspaceSettingsStore((state) => state.defaultRepoId);
   const workspaceModels = useWorkspaceSettingsStore((state) => state.availableModels);
 
-  const [availableModels, setAvailableModels] = useState<ModelOption[]>(
-    workspaceModels.length > 0 ? workspaceModels : DEFAULT_OPENCODE_MODELS
-  );
+  // Queries for models
+  const { data: fetchedModels } = useQuery(modelsQueryOptions());
+  const availableModels: ModelOption[] = useMemo(() => {
+    if (fetchedModels && fetchedModels.length > 0) return fetchedModels;
+    if (workspaceModels && workspaceModels.length > 0) return workspaceModels;
+    return DEFAULT_OPENCODE_MODELS;
+  }, [fetchedModels, workspaceModels]);
+
   const [selectedProjectId, setSelectedProjectId] = useState<string>(activeProjectId || '');
   const [title, setTitle] = useState('');
   const [prompt, setPrompt] = useState('');
@@ -80,36 +86,6 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [selectedMcps, setSelectedMcps] = useState<string[]>([]);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [isSubmitting, setIsSubmitting] = useState(false);
-
-  // Repository & Branch Selection State
-  const [projectIntegrations, setProjectIntegrations] = useState<IntegrationDTO[]>([]);
-  const [selectedIntegrationId, setSelectedIntegrationId] = useState<string>('');
-  const [repoBranches, setRepoBranches] = useState<string[]>([]);
-  const [selectedBranch, setSelectedBranch] = useState<string>('');
-  const [loadingBranches, setLoadingBranches] = useState<boolean>(false);
-
-  // Sync with workspace settings defaults when opening
-  React.useEffect(() => {
-    if (open) {
-      if (defaultModel) setSelectedModel(defaultModel);
-      if (defaultPriority) setPriority(defaultPriority);
-      if (activeProjectId) setSelectedProjectId(activeProjectId);
-    }
-  }, [open, defaultModel, defaultPriority, activeProjectId]);
-
-  // Load available models from OpenCode
-  React.useEffect(() => {
-    taskApi.getModels()
-      .then((models) => {
-        if (models && models.length > 0) {
-          setAvailableModels(models);
-        }
-      })
-      .catch(() => {
-        // Fallback to DEFAULT_OPENCODE_MODELS
-      });
-  }, []);
 
   // Sync project ID when projects load
   React.useEffect(() => {
@@ -122,73 +98,117 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
 
   const effectiveProjectId = selectedProjectId || activeProjectId || (projects.length > 0 ? projects[0].id : '');
 
-  React.useEffect(() => {
-    if (!effectiveProjectId) {
-      setProjectIntegrations([]);
-      setSelectedIntegrationId('');
-      return;
-    }
-    integrationApi.listProjectIntegrations(effectiveProjectId)
-      .then((integs) => {
-        const ghIntegs = integs.filter((i) => i.provider === 'github' && i.enabled);
-        setProjectIntegrations(ghIntegs);
-        if (ghIntegs.length > 0) {
-          const preferredRepo = selectedRepoId !== 'all' ? selectedRepoId : defaultRepoId;
-          const matchPreferred = ghIntegs.find((g) => g.id === preferredRepo);
-          if (matchPreferred) {
-            setSelectedIntegrationId(matchPreferred.id);
-          } else {
-            setSelectedIntegrationId((prev) => {
-              const exists = ghIntegs.some((g) => g.id === prev);
-              return exists ? prev : ghIntegs[0].id;
-            });
-          }
-        } else {
-          setSelectedIntegrationId('');
-        }
-      })
-      .catch(() => {
-        setProjectIntegrations([]);
-        setSelectedIntegrationId('');
-      });
-  }, [effectiveProjectId, selectedRepoId, defaultRepoId]);
+  // Query project integrations
+  const { data: rawIntegrations } = useQuery({
+    ...projectIntegrationsQueryOptions(effectiveProjectId),
+    enabled: Boolean(effectiveProjectId),
+  });
 
-  // When selected repository changes, fetch branches from GitHub using credentialApi.listGitHubBranches
+  const projectIntegrations = useMemo(() => {
+    return (rawIntegrations || []).filter((i) => i.provider === 'github' && i.enabled);
+  }, [rawIntegrations]);
+
+  const [selectedIntegrationId, setSelectedIntegrationId] = useState<string>('');
+  const [selectedBranch, setSelectedBranch] = useState<string>('');
+
+  // Sync selected integration based on preferences or available integrations
   React.useEffect(() => {
-    const selectedInteg = projectIntegrations.find((i) => i.id === selectedIntegrationId);
+    if (projectIntegrations.length > 0) {
+      const preferredRepo = selectedRepoId !== 'all' ? selectedRepoId : defaultRepoId;
+      const matchPreferred = projectIntegrations.find((g) => g.id === preferredRepo);
+      if (matchPreferred) {
+        setSelectedIntegrationId(matchPreferred.id);
+      } else {
+        setSelectedIntegrationId((prev) => {
+          const exists = projectIntegrations.some((g) => g.id === prev);
+          return exists ? prev : projectIntegrations[0].id;
+        });
+      }
+    } else {
+      setSelectedIntegrationId('');
+    }
+  }, [projectIntegrations, selectedRepoId, defaultRepoId]);
+
+  const selectedInteg = useMemo(
+    () => projectIntegrations.find((i) => i.id === selectedIntegrationId),
+    [projectIntegrations, selectedIntegrationId]
+  );
+
+  // Query branches for selected integration
+  const shouldFetchBranches = Boolean(
+    activeTeamId && selectedInteg?.credential_id && selectedInteg?.external_id
+  );
+
+  const { data: fetchedBranches, isLoading: loadingBranches } = useQuery({
+    ...gitHubBranchesQueryOptions(
+      activeTeamId || '',
+      selectedInteg?.credential_id || '',
+      selectedInteg?.external_id || ''
+    ),
+    enabled: shouldFetchBranches,
+  });
+
+  const defaultBaseBranch = String(selectedInteg?.config?.base_branch || 'main');
+  const repoBranches = useMemo(() => {
+    if (fetchedBranches && fetchedBranches.length > 0) {
+      return fetchedBranches;
+    }
+    return selectedInteg ? [defaultBaseBranch] : [];
+  }, [fetchedBranches, selectedInteg, defaultBaseBranch]);
+
+  // Keep selected branch updated
+  React.useEffect(() => {
     if (!selectedInteg) {
-      setRepoBranches([]);
       setSelectedBranch('');
       return;
     }
-
-    const defaultBase = String(selectedInteg.config?.base_branch || 'main');
-    setSelectedBranch(defaultBase);
-
-    if (activeTeamId && selectedInteg.credential_id && selectedInteg.external_id) {
-      setLoadingBranches(true);
-      credentialApi
-        .listGitHubBranches(activeTeamId, selectedInteg.credential_id, selectedInteg.external_id)
-        .then((branches) => {
-          if (branches && branches.length > 0) {
-            setRepoBranches(branches);
-            if (!branches.includes(defaultBase)) {
-              setSelectedBranch(branches[0]);
-            }
-          } else {
-            setRepoBranches([defaultBase]);
-          }
-        })
-        .catch(() => {
-          setRepoBranches([defaultBase]);
-        })
-        .finally(() => {
-          setLoadingBranches(false);
-        });
+    if (fetchedBranches && fetchedBranches.length > 0) {
+      if (fetchedBranches.includes(defaultBaseBranch)) {
+        setSelectedBranch(defaultBaseBranch);
+      } else {
+        setSelectedBranch(fetchedBranches[0]);
+      }
     } else {
-      setRepoBranches([defaultBase]);
+      setSelectedBranch(defaultBaseBranch);
     }
-  }, [selectedIntegrationId, projectIntegrations, activeTeamId]);
+  }, [selectedInteg, fetchedBranches, defaultBaseBranch]);
+
+  // Sync with workspace settings defaults when opening
+  React.useEffect(() => {
+    if (open) {
+      if (defaultModel) setSelectedModel(defaultModel);
+      if (defaultPriority) setPriority(defaultPriority);
+      if (activeProjectId) setSelectedProjectId(activeProjectId);
+    }
+  }, [open, defaultModel, defaultPriority, activeProjectId]);
+
+  const createTaskMutation = useMutation({
+    mutationFn: async (taskData: Parameters<typeof createTask>[0]) => {
+      // If a branch was customized, ensure integration config base_branch reflects the selected branch
+      if (effectiveProjectId && selectedIntegrationId && selectedBranch) {
+        const currentIntegBranch = String(selectedInteg?.config?.base_branch || 'main');
+        if (selectedBranch !== currentIntegBranch) {
+          try {
+            await integrationApi.updateProjectIntegration(effectiveProjectId, selectedIntegrationId, {
+              base_branch: selectedBranch,
+            });
+          } catch (err) {
+            console.warn('Failed to update integration base_branch before dispatch:', err);
+          }
+        }
+      }
+
+      return await createTask(taskData);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+      resetForm();
+      setOpen(false);
+    },
+    onError: (err) => {
+      setErrors({ form: err instanceof Error ? err.message : 'Failed to create task' });
+    },
+  });
 
   const toggleSkill = (skill: string) => {
     setSelectedSkills((prev) =>
@@ -211,28 +231,12 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
     setSelectedMcps([]);
     setSelectedIntegrationId('');
     setSelectedBranch('');
-    setRepoBranches([]);
     setErrors({});
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrors({});
-
-    // If a branch was customized, ensure integration config base_branch reflects the selected branch
-    if (effectiveProjectId && selectedIntegrationId && selectedBranch) {
-      const selectedInteg = projectIntegrations.find((i) => i.id === selectedIntegrationId);
-      const currentIntegBranch = String(selectedInteg?.config?.base_branch || 'main');
-      if (selectedBranch !== currentIntegBranch) {
-        try {
-          await integrationApi.updateProjectIntegration(effectiveProjectId, selectedIntegrationId, {
-            base_branch: selectedBranch,
-          });
-        } catch (err) {
-          console.warn('Failed to update integration base_branch before dispatch:', err);
-        }
-      }
-    }
 
     const rawData = {
       project_id: effectiveProjectId.trim(),
@@ -259,17 +263,10 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
       return;
     }
 
-    try {
-      setIsSubmitting(true);
-      await createTask(validation.data);
-      resetForm();
-      setOpen(false);
-    } catch (err) {
-      setErrors({ form: err instanceof Error ? err.message : 'Failed to create task' });
-    } finally {
-      setIsSubmitting(false);
-    }
+    createTaskMutation.mutate(validation.data);
   };
+
+  const isSubmitting = createTaskMutation.isPending;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>

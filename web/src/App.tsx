@@ -16,17 +16,15 @@ import { TaskInspectorModal } from '@/features/tasks/components/TaskInspectorMod
 import { Loader2 } from 'lucide-react';
 
 export const WorkspaceView: React.FC = () => {
-  const fetchTasks = useTaskStore((state) => state.fetchTasks);
   const setTasksData = useTaskStore((state) => state.setTasksData);
-  const fetchTeams = useTeamStore((state) => state.fetchTeams);
   const setTeamsData = useTeamStore((state) => state.setTeamsData);
   const activeProjectId = useActiveProjectId();
 
-  // Consume TanStack Query cache loaded by router loader
+  // Consume TanStack Query cache driven by queries
   const { data: cachedTeams } = useQuery(teamsQueryOptions());
-  const { data: cachedTasks } = useQuery(tasksQueryOptions());
+  const { data: cachedTasks } = useQuery(tasksQueryOptions(activeProjectId || undefined));
 
-  // Sync loader/query data into Zustand store on initial load
+  // Sync loader/query data into Zustand store on load or updates
   useEffect(() => {
     if (cachedTeams && cachedTeams.length > 0) {
       setTeamsData(cachedTeams);
@@ -34,21 +32,13 @@ export const WorkspaceView: React.FC = () => {
   }, [cachedTeams, setTeamsData]);
 
   useEffect(() => {
-    if (cachedTasks && cachedTasks.length > 0) {
+    if (cachedTasks) {
       setTasksData(cachedTasks);
     }
   }, [cachedTasks, setTasksData]);
 
   // Maintain real-time task status updates across the Kanban board
   useTaskSubscription();
-
-  useEffect(() => {
-    fetchTeams();
-  }, [fetchTeams]);
-
-  useEffect(() => {
-    fetchTasks(activeProjectId || undefined);
-  }, [fetchTasks, activeProjectId]);
 
   return (
     <div className="h-screen bg-background text-foreground flex overflow-hidden font-sans">
