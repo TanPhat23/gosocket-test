@@ -510,7 +510,11 @@ func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attemp
 
 	r.broadcastLog(ctx, task.ID, attempt.ID, "\x1b[36m[Agent Control Plane]\x1b[0m Starting autonomous task execution...\r\n")
 	r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[36m[Agent Control Plane]\x1b[0m Model: %s\r\n", selectedModel))
-	r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[36m[Agent Control Plane]\x1b[0m Worktree: %s\r\n\r\n", hostWorktreePath))
+	worktreeDisplay := hostWorktreePath
+	if r.dockerRunner != nil && r.dockerCli != nil {
+		worktreeDisplay = fmt.Sprintf("/workspace (sandboxed from %s)", hostWorktreePath)
+	}
+	r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[36m[Agent Control Plane]\x1b[0m Worktree: %s\r\n\r\n", worktreeDisplay))
 
 	maxIterations := 3
 	if r.cfg != nil && r.cfg.MaxVerificationRetries > 0 {
@@ -818,13 +822,18 @@ func (r *AgentTaskRunner) runInDocker(ctx context.Context, task *models.Task, at
 		hostBinPath = "/home/ghug/.opencode/bin/opencode"
 	}
 
+	binds := []string{
+		fmt.Sprintf("%s:/workspace:rw", hostPath),
+		fmt.Sprintf("%s:/usr/local/bin/opencode:ro", hostBinPath),
+		fmt.Sprintf("%s:/root/.config/opencode:ro", r.cfg.OpenCodeConfigDir),
+		fmt.Sprintf("%s:/root/.local/share/opencode:rw", r.cfg.OpenCodeDataDir),
+	}
+	if hostPath != "/workspace" {
+		binds = append(binds, fmt.Sprintf("%s:%s:rw", hostPath, hostPath))
+	}
+
 	hostCfg := &container.HostConfig{
-		Binds: []string{
-			fmt.Sprintf("%s:/workspace:rw", hostPath),
-			fmt.Sprintf("%s:/usr/local/bin/opencode:ro", hostBinPath),
-			fmt.Sprintf("%s:/root/.config/opencode:ro", r.cfg.OpenCodeConfigDir),
-			fmt.Sprintf("%s:/root/.local/share/opencode:rw", r.cfg.OpenCodeDataDir),
-		},
+		Binds:  binds,
 		Memory: 4 * 1024 * 1024 * 1024,
 	}
 
