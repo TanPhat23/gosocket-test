@@ -79,6 +79,24 @@ func main() {
 			} else {
 				fmt.Printf("Seeded default team (%s) and project (%s)\n", teamID, projectID)
 			}
+
+			// Seed admin user and membership
+			adminUserID := common.NewID()
+			adminUser := &models.User{
+				ID:          adminUserID,
+				Issuer:      "http://localhost/dex",
+				Subject:     "CiQwOGE1MmM2My00NDRhLTRkNTYtOTgzMy00MTUyYmIwZDQ0YWMSBWxvY2Fs",
+				Email:       "admin@example.com",
+				DisplayName: "admin",
+			}
+			if err := gormDB.Create(adminUser).Error; err == nil {
+				_ = gormDB.Create(&models.TeamMembership{
+					TeamID: teamID,
+					UserID: adminUserID,
+					Role:   models.RoleOwner,
+				}).Error
+				fmt.Printf("Seeded default admin user (%s) as Team Owner\n", adminUser.Email)
+			}
 		}
 	}
 

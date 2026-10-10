@@ -214,6 +214,23 @@ func (s *authService) LoginWithCredentials(ctx context.Context, email, password 
 		return newUser, nil
 	}
 
+	// Ensure local account is enrolled as owner in existing teams if not already a member
+	teams, err := s.teamRepo.List(ctx)
+	if err == nil && len(teams) > 0 {
+		for _, tm := range teams {
+			if _, mErr := s.teamRepo.GetMembership(ctx, tm.ID, existingUser.ID); mErr != nil {
+				now := time.Now().UTC()
+				_ = s.teamRepo.AddMembership(ctx, &models.TeamMembership{
+					TeamID:    tm.ID,
+					UserID:    existingUser.ID,
+					Role:      models.RoleOwner,
+					CreatedAt: now,
+					UpdatedAt: now,
+				})
+			}
+		}
+	}
+
 	return existingUser, nil
 }
 

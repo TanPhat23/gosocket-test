@@ -11,6 +11,7 @@ import (
 type TeamRepository interface {
 	GetByID(ctx context.Context, id string) (*models.Team, error)
 	GetMembership(ctx context.Context, teamID, userID string) (*models.TeamMembership, error)
+	AddMembership(ctx context.Context, membership *models.TeamMembership) error
 	List(ctx context.Context) ([]models.Team, error)
 }
 
@@ -37,6 +38,10 @@ func (r *teamRepo) GetMembership(ctx context.Context, teamID, userID string) (*m
 		return nil, err
 	}
 	return &membership, nil
+}
+
+func (r *teamRepo) AddMembership(ctx context.Context, membership *models.TeamMembership) error {
+	return r.db.WithContext(ctx).Create(membership).Error
 }
 
 func (r *teamRepo) List(ctx context.Context) ([]models.Team, error) {

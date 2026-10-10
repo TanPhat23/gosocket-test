@@ -741,45 +741,45 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
           onValueChange={(val) => setActiveTab(val as 'repos' | 'connect' | 'pat')}
           className="w-full space-y-4 pt-1"
         >
-          <TabsList className="grid grid-cols-3 w-full max-w-xl h-9">
+          <TabsList className="grid grid-cols-1 sm:grid-cols-3 w-full max-w-2xl lg:max-w-3xl h-auto min-h-10 p-1 bg-muted/60 border border-border/50 rounded-xl gap-1">
             <TabsTrigger
               value="repos"
-              className="text-xs flex items-center justify-center gap-2 cursor-pointer"
+              className="text-xs px-3 py-2 flex items-center justify-center gap-2 cursor-pointer h-8 rounded-lg data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm font-medium transition-all"
               data-testid="tab-repositories"
             >
-              <GitBranch className="size-3.5" />
-              <span>Connected Repositories</span>
-              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 font-mono font-medium">
+              <GitBranch className="size-3.5 shrink-0" />
+              <span className="truncate">Connected Repositories</span>
+              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 font-mono font-medium shrink-0">
                 {integrations.length}
               </Badge>
             </TabsTrigger>
 
             <TabsTrigger
               value="connect"
-              className="text-xs flex items-center justify-center gap-2 cursor-pointer"
+              className="text-xs px-3 py-2 flex items-center justify-center gap-2 cursor-pointer h-8 rounded-lg data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm font-medium transition-all"
               data-testid="tab-connect"
             >
-              <Plus className="size-3.5" />
-              <span>Connect Repository</span>
+              <Plus className="size-3.5 shrink-0" />
+              <span className="truncate">Connect Repository</span>
             </TabsTrigger>
 
             <TabsTrigger
               value="pat"
-              className="text-xs flex items-center justify-center gap-2 cursor-pointer"
+              className="text-xs px-3 py-2 flex items-center justify-center gap-2 cursor-pointer h-8 rounded-lg data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm font-medium transition-all"
               data-testid="tab-pat"
             >
-              <KeyRound className="size-3.5" />
-              <span>GitHub Token (PAT)</span>
+              <KeyRound className="size-3.5 shrink-0" />
+              <span className="truncate">GitHub Token (PAT)</span>
               {isTokenExpired ? (
-                <Badge variant="destructive" className="text-[9px] px-1 py-0 h-3.5 font-medium animate-pulse">
+                <Badge variant="destructive" className="text-[9px] px-1.5 py-0 h-4 font-mono font-medium shrink-0 animate-pulse">
                   Expired
                 </Badge>
               ) : credentials.length > 0 ? (
-                <Badge variant="outline" className="text-[9px] px-1 py-0 h-3.5 font-medium text-emerald-600 dark:text-emerald-400">
+                <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4 font-mono font-medium text-emerald-600 dark:text-emerald-400 border-emerald-500/30 shrink-0">
                   Active
                 </Badge>
               ) : (
-                <Badge variant="secondary" className="text-[9px] px-1 py-0 h-3.5 font-medium">
+                <Badge variant="secondary" className="text-[9px] px-1.5 py-0 h-4 font-mono font-medium shrink-0 bg-muted-foreground/15 text-muted-foreground">
                   Setup Needed
                 </Badge>
               )}
