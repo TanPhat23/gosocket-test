@@ -35,9 +35,12 @@ import {
   Bot,
   GitMerge,
   RefreshCw,
+  Database,
+  DollarSign,
+  Zap,
 } from 'lucide-react';
 import { taskApi } from '../api/taskApi';
-import type { TaskStatus } from '../schemas/taskSchemas';
+import type { TaskStatus, TaskSessionResponse } from '../schemas/taskSchemas';
 import { cn } from '@/lib/utils';
 
 const getStatusBadge = (status: TaskStatus) => {
@@ -109,6 +112,26 @@ export const TaskInspectorModal: React.FC<TaskInspectorModalProps> = ({
   const [loadingDiff, setLoadingDiff] = useState(false);
   const [isSyncingPR, setIsSyncingPR] = useState(false);
   const syncedTasksRef = useRef<Set<string>>(new Set());
+  const [sessionData, setSessionData] = useState<TaskSessionResponse | null>(null);
+
+  React.useEffect(() => {
+    if (!task?.id) {
+      setSessionData(null);
+      return;
+    }
+    let isMounted = true;
+    taskApi
+      .getTaskSession(task.id)
+      .then((data) => {
+        if (isMounted) setSessionData(data);
+      })
+      .catch(() => {
+        if (isMounted) setSessionData(null);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [task?.id]);
 
   const handleSyncPR = React.useCallback(async () => {
     if (!task) return;
@@ -239,7 +262,7 @@ export const TaskInspectorModal: React.FC<TaskInspectorModalProps> = ({
 
   return (
     <Dialog open={isOpen} onOpenChange={handleOpenChange}>
-      <DialogContent className="w-[96vw] sm:max-w-[96vw] md:max-w-[96vw] lg:max-w-[96vw] xl:max-w-[1680px] h-[92vh] max-h-[94vh] flex flex-col p-6">
+      <DialogContent className="w-full h-full max-h-screen rounded-none p-3 sm:rounded-xl sm:p-6 sm:w-[96vw] sm:max-w-[1680px] sm:h-[92vh] sm:max-h-[94vh] flex flex-col">
         <DialogHeader className="pb-3 border-b border-border">
           <div className="flex items-center justify-between gap-4 pr-6">
             <div className="flex items-center gap-2">
@@ -396,26 +419,28 @@ export const TaskInspectorModal: React.FC<TaskInspectorModalProps> = ({
         <Tabs
           value={activeTab}
           onValueChange={(val) => setActiveTab(val as string)}
-          className="flex-1 flex flex-col mt-3 overflow-hidden"
+          className="flex-1 flex flex-col mt-3 overflow-hidden min-h-0"
         >
-          <TabsList className="grid grid-cols-4 w-full max-w-xl">
-            <TabsTrigger value="overview" className="text-xs flex items-center gap-1.5">
-              <Info className="size-3.5" />
-              Overview
-            </TabsTrigger>
-            <TabsTrigger value="session" className="text-xs flex items-center gap-1.5" data-testid="tab-agent-session">
-              <Bot className="size-3.5" />
-              Agent Session
-            </TabsTrigger>
-            <TabsTrigger value="terminal" className="text-xs flex items-center gap-1.5">
-              <TerminalIcon className="size-3.5" />
-              Terminal Logs
-            </TabsTrigger>
-            <TabsTrigger value="diff" className="text-xs flex items-center gap-1.5">
-              <GitCompare className="size-3.5" />
-              Git Diff Review
-            </TabsTrigger>
-          </TabsList>
+          <div className="overflow-x-auto pb-1 max-w-full">
+            <TabsList className="inline-flex min-w-full sm:min-w-0 sm:grid sm:grid-cols-4 sm:w-full sm:max-w-xl">
+              <TabsTrigger value="overview" className="text-xs flex items-center gap-1.5 shrink-0 sm:shrink">
+                <Info className="size-3.5" />
+                Overview
+              </TabsTrigger>
+              <TabsTrigger value="session" className="text-xs flex items-center gap-1.5 shrink-0 sm:shrink" data-testid="tab-agent-session">
+                <Bot className="size-3.5" />
+                Agent Session
+              </TabsTrigger>
+              <TabsTrigger value="terminal" className="text-xs flex items-center gap-1.5 shrink-0 sm:shrink">
+                <TerminalIcon className="size-3.5" />
+                Terminal Logs
+              </TabsTrigger>
+              <TabsTrigger value="diff" className="text-xs flex items-center gap-1.5 shrink-0 sm:shrink">
+                <GitCompare className="size-3.5" />
+                Git Diff Review
+              </TabsTrigger>
+            </TabsList>
+          </div>
 
           {/* Overview Tab */}
           <TabsContent value="overview" className="flex-1 overflow-y-auto mt-4 space-y-4 pr-1">
@@ -541,6 +566,59 @@ export const TaskInspectorModal: React.FC<TaskInspectorModalProps> = ({
                 </div>
               </div>
             </div>
+
+            {/* Session & Token Metrics Card if Session exists */}
+            {sessionData && (
+              <div className="p-3 rounded-lg border border-border bg-card space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <h5 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
+                    <Zap className="size-3.5 text-amber-500" />
+                    Session Token Metrics &amp; Usage
+                  </h5>
+                  <Badge variant="outline" className="font-mono text-[10px] capitalize">
+                    {sessionData.status || 'unknown'}
+                  </Badge>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <div className="p-2 rounded bg-muted/40 border border-border/40 font-mono">
+                    <span className="text-[10px] text-muted-foreground block">Input Tokens</span>
+                    <strong className="text-foreground text-xs font-semibold">
+                      {sessionData.tokens?.input?.toLocaleString() ?? 0}
+                    </strong>
+                  </div>
+                  <div className="p-2 rounded bg-muted/40 border border-border/40 font-mono">
+                    <span className="text-[10px] text-muted-foreground block">Output Tokens</span>
+                    <strong className="text-foreground text-xs font-semibold">
+                      {sessionData.tokens?.output?.toLocaleString() ?? 0}
+                    </strong>
+                  </div>
+                  <div className="p-2 rounded bg-muted/40 border border-border/40 font-mono">
+                    <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                      <Database className="size-2.5 text-emerald-500" /> Cache Read
+                    </span>
+                    <strong className="text-foreground text-xs font-semibold">
+                      {sessionData.tokens?.cache_read?.toLocaleString() ?? 0}
+                    </strong>
+                  </div>
+                  <div className="p-2 rounded bg-muted/40 border border-border/40 font-mono">
+                    <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                      <DollarSign className="size-2.5 text-muted-foreground" /> Cost
+                    </span>
+                    <strong className="text-foreground text-xs font-semibold">
+                      ${sessionData.cost ? sessionData.cost.toFixed(4) : '0.0000'}
+                    </strong>
+                  </div>
+                </div>
+
+                {sessionData.tokens?.reasoning !== undefined && sessionData.tokens.reasoning > 0 && (
+                  <div className="text-[11px] font-mono text-purple-600 dark:text-purple-400 bg-purple-500/10 border border-purple-500/20 rounded px-2 py-1 flex items-center justify-between">
+                    <span>Reasoning Tokens:</span>
+                    <strong>{sessionData.tokens.reasoning.toLocaleString()}</strong>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Skills & MCPs */}
             {(task.skills?.length > 0 || task.mcp_servers?.length > 0) && (

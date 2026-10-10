@@ -25,12 +25,11 @@ import {
   ChevronDown,
   ChevronRight,
   Database,
-  Cpu,
   Settings2,
   FileCode,
-  Layers,
   X,
   CornerDownLeft,
+  ArrowDown,
 } from 'lucide-react';
 import { AgentQuestionnaire, type QuestionItemData } from './AgentQuestionnaire';
 import { extractQuestionsFromText } from '../utils/questionParser';
@@ -269,29 +268,22 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
 
   const selectedToolInfo = selectedToolKey ? allToolCallsMap.get(selectedToolKey) : null;
 
-  // Tool statistics for overview when nothing is selected
-  const toolStats = React.useMemo(() => {
-    let total = 0;
-    let failed = 0;
-    let succeeded = 0;
-    let running = 0;
-
-    allToolCallsMap.forEach(({ tc }) => {
-      if (tc.name === 'question') return;
-      total++;
-      if (tc.status === 'running') {
-        running++;
-      } else if (tc.status === 'error' || (tc.exit_code !== undefined && tc.exit_code !== 0)) {
-        failed++;
-      } else {
-        succeeded++;
-      }
-    });
-
-    return { total, failed, succeeded, running };
-  }, [allToolCallsMap]);
-
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const transcriptContainerRef = useRef<HTMLDivElement>(null);
+  const [showScrollBottomBtn, setShowScrollBottomBtn] = useState<boolean>(false);
+  const prevMessagesCountRef = useRef<number>(0);
+
+  const scrollToBottom = (smooth = true) => {
+    transcriptEndRef.current?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto' });
+  };
+
+  const handleTranscriptScroll = () => {
+    const el = transcriptContainerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    // Show button when scrolled up by more than 100px
+    setShowScrollBottomBtn(distanceFromBottom > 100);
+  };
 
   const fetchSession = async (showLoadingSpinner = true) => {
     if (showLoadingSpinner) {
@@ -303,35 +295,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
       const data = await taskApi.getTaskSession(taskId);
       setSession(data);
 
-      // Auto-select first failed tool if available on initial load or failure, if nothing selected yet
-      if (data?.messages) {
-        let firstFailedKey: string | null = null;
-        const sortedMsgs = [...(data.messages || [])].sort((a, b) => {
-          const tA = a.created_at ? new Date(a.created_at).getTime() : 0;
-          const tB = b.created_at ? new Date(b.created_at).getTime() : 0;
-          return tA - tB;
-        });
-
-        for (let mIdx = 0; mIdx < sortedMsgs.length; mIdx++) {
-          const m = sortedMsgs[mIdx];
-          const parsed = parseSessionMessageContent(m);
-          for (let tIdx = 0; tIdx < parsed.toolCalls.length; tIdx++) {
-            const tc = parsed.toolCalls[tIdx];
-            if (tc.name === 'question') continue;
-            const isSuccess = tc.status !== 'error' && (tc.exit_code === undefined || tc.exit_code === 0);
-            if (!isSuccess || (tc.exit_code !== undefined && tc.exit_code !== 0)) {
-              firstFailedKey = `${mIdx}-${tIdx}`;
-              break;
-            }
-          }
-          if (firstFailedKey) break;
-        }
-
-        setSelectedToolKey((prev) => {
-          if (prev) return prev;
-          return firstFailedKey;
-        });
-      }
+      // Note: By default selectedToolKey remains null so inspector is conditional upon clicking
     } catch (err: unknown) {
       const apiErr = err as { status?: number; message?: string };
       if (apiErr?.status === 503) {
@@ -353,6 +317,21 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
     fetchSession(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskId]);
+
+  // Auto-scroll chat to bottom on initial load and whenever messages arrive
+  useEffect(() => {
+    const currentCount = session?.messages?.length ?? 0;
+    if (currentCount > 0) {
+      if (prevMessagesCountRef.current === 0) {
+        // Initial load scroll
+        scrollToBottom(false);
+      } else if (currentCount > prevMessagesCountRef.current) {
+        // New messages arrived
+        scrollToBottom(true);
+      }
+    }
+    prevMessagesCountRef.current = currentCount;
+  }, [session?.messages]);
 
   // Adaptive auto-refresh when session is in active running state or user is steering
   useEffect(() => {
@@ -538,139 +517,157 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
   };
 
   return (
-    <div className="flex flex-col h-full overflow-hidden bg-background text-foreground space-y-3">
-      {/* Session Header */}
-      <div className="p-3 rounded-lg border border-border bg-card shrink-0 space-y-2.5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          {/* Session ID & Copy */}
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="text-xs font-medium text-muted-foreground flex items-center gap-1.5 shrink-0">
-              <Bot className="size-3.5 text-primary" /> Session ID:
-            </span>
-            <Badge
-              variant="secondary"
-              className="font-mono text-xs truncate max-w-[220px] sm:max-w-xs select-all bg-muted/60"
-              title={currentSessionId}
-              data-testid="session-id-display"
-            >
-              {currentSessionId}
-            </Badge>
-            {currentSessionId !== 'Unavailable' && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                onClick={() => handleCopySessionId(currentSessionId)}
-                className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
-                title={copiedSessionId ? 'Copied' : 'Copy Session ID'}
-                aria-label={copiedSessionId ? 'Copied Session ID' : 'Copy Session ID'}
-                data-testid="copy-session-id-btn"
+    <div className="flex flex-col h-full overflow-hidden bg-background text-foreground space-y-2.5">
+      {/* Minimal Collapsible Session Info Header */}
+      <div className="rounded-lg border border-border bg-card shrink-0 text-xs">
+        <details className="group">
+          <summary className="flex items-center justify-between p-2.5 cursor-pointer select-none hover:bg-muted/30 transition-colors rounded-lg">
+            <div className="flex items-center gap-2 min-w-0">
+              <Bot className="size-3.5 text-primary shrink-0" />
+              <span className="font-semibold text-foreground text-xs">Session Info</span>
+              <span className="text-muted-foreground hidden sm:inline">&bull;</span>
+              <Badge
+                variant="secondary"
+                className="font-mono text-[11px] truncate max-w-[160px] sm:max-w-xs select-all bg-muted/60"
+                title={currentSessionId}
+                data-testid="session-id-display"
+                onClick={(e) => e.stopPropagation()}
               >
-                {copiedSessionId ? (
-                  <Check className="size-3 text-emerald-500" />
-                ) : (
-                  <Copy className="size-3" />
+                {currentSessionId}
+              </Badge>
+              {renderStatusBadge(session?.status)}
+            </div>
+
+            <div className="flex items-center gap-2">
+              {/* Quick Compact & Refresh in toolbar */}
+              <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={loading || isCompacting || isUnavailable}
+                  onClick={handleCompactSession}
+                  className="h-6 px-2 text-[11px] font-mono gap-1 text-muted-foreground hover:text-foreground"
+                  title="Compact session context"
+                  data-testid="compact-session-btn"
+                >
+                  <Zap className={`size-3 ${isCompacting ? 'animate-spin text-amber-500' : 'text-amber-500'}`} />
+                  <span className="hidden sm:inline">{isCompacting ? 'Compacting...' : 'Compact'}</span>
+                </Button>
+
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={loading}
+                  onClick={() => fetchSession(false)}
+                  className="h-6 px-2 text-[11px] font-mono gap-1 text-muted-foreground hover:text-foreground"
+                  title="Refresh transcript"
+                  data-testid="refresh-session-btn"
+                >
+                  <RefreshCw className={`size-3 ${loading ? 'animate-spin' : ''}`} />
+                  <span className="hidden sm:inline">Refresh</span>
+                </Button>
+              </div>
+
+              <ChevronDown className="size-3.5 text-muted-foreground transition-transform duration-200 group-open:rotate-180 shrink-0" />
+            </div>
+          </summary>
+
+          {/* Collapsible Details: Copy ID, Token metrics row, Model, Compact status */}
+          <div className="p-3 pt-0 border-t border-border/60 space-y-2 mt-1">
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground text-[11px] uppercase tracking-wider font-semibold">
+                  Model:
+                </span>
+                <span className="font-mono text-xs">{session?.model || 'default'}</span>
+                {currentSessionId !== 'Unavailable' && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleCopySessionId(currentSessionId)}
+                    className="h-6 px-2 text-[11px] font-mono gap-1 text-muted-foreground hover:text-foreground ml-2"
+                    data-testid="copy-session-id-btn"
+                  >
+                    {copiedSessionId ? (
+                      <>
+                        <Check className="size-3 text-emerald-500" />
+                        <span>Copied</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="size-3" />
+                        <span>Copy ID</span>
+                      </>
+                    )}
+                  </Button>
                 )}
-              </Button>
+              </div>
+
+              {/* Token Metric Pills */}
+              <div className="flex flex-wrap items-center gap-1.5" data-testid="token-metrics-row">
+                <Badge variant="outline" className="font-mono text-[10px] px-2 py-0.5 bg-muted/40">
+                  <span className="text-muted-foreground mr-1">In:</span>
+                  <strong className="text-foreground font-semibold">
+                    {session?.tokens?.input?.toLocaleString() ?? 0}
+                  </strong>
+                </Badge>
+                <Badge variant="outline" className="font-mono text-[10px] px-2 py-0.5 bg-muted/40">
+                  <span className="text-muted-foreground mr-1">Out:</span>
+                  <strong className="text-foreground font-semibold">
+                    {session?.tokens?.output?.toLocaleString() ?? 0}
+                  </strong>
+                </Badge>
+                {session?.tokens?.reasoning !== undefined && session.tokens.reasoning > 0 && (
+                  <Badge variant="outline" className="font-mono text-[10px] px-2 py-0.5 bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20">
+                    <span className="opacity-80 mr-1">Reasoning:</span>
+                    <strong className="font-semibold">{session.tokens.reasoning.toLocaleString()}</strong>
+                  </Badge>
+                )}
+                {session?.tokens?.cache_read !== undefined && session.tokens.cache_read > 0 && (
+                  <Badge variant="outline" className="font-mono text-[10px] px-2 py-0.5 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20">
+                    <Database className="size-2.5 mr-1" />
+                    <span>Cache: {session.tokens.cache_read.toLocaleString()}</span>
+                  </Badge>
+                )}
+                {session?.cost !== undefined && session.cost > 0 && (
+                  <Badge variant="outline" className="font-mono text-[10px] px-2 py-0.5 bg-muted/40">
+                    <span className="text-muted-foreground mr-1">Cost:</span>
+                    <span>${session.cost.toFixed(4)}</span>
+                  </Badge>
+                )}
+              </div>
+            </div>
+
+            {compactMessage && (
+              <div className="text-xs font-mono text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded p-1.5 px-2">
+                {compactMessage}
+              </div>
             )}
           </div>
-
-          {/* Action buttons: Compact & Refresh */}
-          <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={loading || isCompacting || isUnavailable}
-              onClick={handleCompactSession}
-              className="h-7 text-xs font-mono gap-1.5 hover:bg-muted"
-              title="Compact session context to free token window"
-              data-testid="compact-session-btn"
-            >
-              <Zap className={`size-3 ${isCompacting ? 'animate-spin text-amber-500' : 'text-amber-500'}`} />
-              <span>{isCompacting ? 'Compacting...' : 'Compact Session'}</span>
-            </Button>
-
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={loading}
-              onClick={() => fetchSession(false)}
-              className="h-7 text-xs font-mono gap-1.5 hover:bg-muted"
-              title="Refresh session transcript and metrics"
-              data-testid="refresh-session-btn"
-            >
-              <RefreshCw className={`size-3 ${loading ? 'animate-spin' : ''}`} />
-              <span>Refresh</span>
-            </Button>
-          </div>
-        </div>
-
-        {/* Status, Model, and Token Badges Row */}
-        <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-border/50 text-xs">
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground text-[11px] uppercase tracking-wider font-semibold">
-              Status:
-            </span>
-            {renderStatusBadge(session?.status)}
-            {session?.model && (
-              <Badge variant="outline" className="font-mono text-[10px] gap-1 text-muted-foreground">
-                <Cpu className="size-2.5" />
-                {session.model}
-              </Badge>
-            )}
-          </div>
-
-          {/* Token Metric Pills */}
-          <div className="flex flex-wrap items-center gap-1.5" data-testid="token-metrics-row">
-            <Badge variant="outline" className="font-mono text-[10px] px-2 py-0.5 bg-muted/40">
-              <span className="text-muted-foreground mr-1">In:</span>
-              <strong className="text-foreground font-semibold">
-                {session?.tokens?.input?.toLocaleString() ?? 0}
-              </strong>
-            </Badge>
-            <Badge variant="outline" className="font-mono text-[10px] px-2 py-0.5 bg-muted/40">
-              <span className="text-muted-foreground mr-1">Out:</span>
-              <strong className="text-foreground font-semibold">
-                {session?.tokens?.output?.toLocaleString() ?? 0}
-              </strong>
-            </Badge>
-            {session?.tokens?.reasoning !== undefined && session.tokens.reasoning > 0 && (
-              <Badge variant="outline" className="font-mono text-[10px] px-2 py-0.5 bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20">
-                <span className="opacity-80 mr-1">Reasoning:</span>
-                <strong className="font-semibold">{session.tokens.reasoning.toLocaleString()}</strong>
-              </Badge>
-            )}
-            {session?.tokens?.cache_read !== undefined && session.tokens.cache_read > 0 && (
-              <Badge variant="outline" className="font-mono text-[10px] px-2 py-0.5 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20">
-                <Database className="size-2.5 mr-1" />
-                <span>Cache: {session.tokens.cache_read.toLocaleString()}</span>
-              </Badge>
-            )}
-            {session?.cost !== undefined && session.cost > 0 && (
-              <Badge variant="outline" className="font-mono text-[10px] px-2 py-0.5 bg-muted/40">
-                <span className="text-muted-foreground mr-1">Cost:</span>
-                <span>${session.cost.toFixed(4)}</span>
-              </Badge>
-            )}
-          </div>
-        </div>
-
-        {/* Compact Success Message */}
-        {compactMessage && (
-          <div className="text-xs font-mono text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded p-1.5 px-2">
-            {compactMessage}
-          </div>
-        )}
+        </details>
       </div>
 
-      {/* 2-Pane Responsive Grid/Flex Body */}
-      <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 gap-3.5 h-full overflow-hidden">
-        {/* Left Pane (Transcript & Steer Form) - 50% / lg:col-span-6 */}
-        <div className="lg:col-span-6 flex flex-col h-full min-h-0 gap-3 overflow-hidden">
+      {/* Main Chat & Conditional Inspector Layout */}
+      <div
+        className={
+          selectedToolKey
+            ? 'flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 gap-3.5 h-full overflow-hidden relative'
+            : 'flex-1 min-h-0 flex flex-col w-full h-full overflow-hidden relative'
+        }
+      >
+        {/* Chat Log & Steer Input */}
+        <div
+          className={
+            selectedToolKey
+              ? 'hidden lg:flex lg:col-span-6 flex-col h-full min-h-0 gap-3 overflow-hidden'
+              : 'w-full flex flex-col h-full min-h-0 gap-3 overflow-hidden'
+          }
+        >
           {/* Transcript Body or State banners */}
-          <div className="flex-1 min-h-0 flex flex-col rounded-lg border border-border bg-card/60 overflow-hidden">
+          <div className="flex-1 min-h-0 flex flex-col rounded-lg border border-border bg-card/60 overflow-hidden relative">
             {loading && !session ? (
               <div className="flex-1 flex flex-col items-center justify-center p-8 space-y-2 text-muted-foreground">
                 <RefreshCw className="size-6 animate-spin text-primary" />
@@ -728,6 +725,8 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
             ) : (
               /* Conversation Transcript Scrollable Container */
               <div
+                ref={transcriptContainerRef}
+                onScroll={handleTranscriptScroll}
                 className="flex-1 overflow-y-auto p-4 space-y-4"
                 data-testid="session-transcript-container"
               >
@@ -958,7 +957,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                                           : 'bg-muted/40 hover:bg-muted/60'
                                       }`}
                                     >
-                                      <div className="flex items-center gap-2 min-w-0">
+                                      <div className="flex items-center gap-2 min-w-0 flex-1">
                                         <button
                                           type="button"
                                           onClick={(e) => {
@@ -977,7 +976,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                                         </button>
                                         <Badge
                                           variant="outline"
-                                          className={`font-mono text-[10px] px-1.5 py-0 ${
+                                          className={`font-mono text-[10px] px-1.5 py-0 shrink-0 ${
                                             isSubagent
                                               ? 'bg-purple-500/10 text-purple-400 border-purple-500/30'
                                               : 'bg-primary/10 text-primary border-primary/20'
@@ -988,12 +987,12 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                                         {isSubagent && subagentAgent && (
                                           <Badge
                                             variant="outline"
-                                            className="font-mono text-[9px] px-1 py-0 bg-primary/10 text-primary border-primary/20"
+                                            className="font-mono text-[9px] px-1 py-0 bg-primary/10 text-primary border-primary/20 shrink-0"
                                           >
                                             {subagentAgent}
                                           </Badge>
                                         )}
-                                        <span className="truncate text-muted-foreground max-w-xs sm:max-w-md">
+                                        <span className="truncate text-muted-foreground min-w-0 flex-1">
                                           {isSubagent && subagentDesc
                                             ? subagentDesc
                                             : inputStr.replace(/\n/g, ' ')}
@@ -1129,6 +1128,22 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                 <div ref={transcriptEndRef} />
               </div>
             )}
+
+            {/* Floating Scroll-to-Bottom Button */}
+            {showScrollBottomBtn && (
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => scrollToBottom(true)}
+                className="absolute bottom-4 right-4 z-20 rounded-full shadow-lg border border-border bg-background/95 hover:bg-muted text-xs font-medium gap-1.5 transition-all animate-in fade-in slide-in-from-bottom-2"
+                data-testid="scroll-to-bottom-btn"
+                aria-label="Scroll to bottom"
+              >
+                <ArrowDown className="size-3.5 text-primary" />
+                <span>Scroll to bottom</span>
+              </Button>
+            )}
           </div>
 
           {/* Smart Steer Input bar */}
@@ -1187,7 +1202,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
               </div>
             )}
 
-            <div className="flex items-end gap-2">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-end gap-2">
               <Textarea
                 id="steer-prompt-input"
                 value={steerPrompt}
@@ -1200,7 +1215,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                 }}
                 placeholder="Type guidance, bug fix details, or command corrections... (Ctrl+Enter to send)"
                 disabled={isSubmittingPrompt || isUnavailable}
-                className="flex-1 min-h-[56px] max-h-28 text-xs font-mono resize-none bg-background placeholder:text-muted-foreground"
+                className="w-full sm:flex-1 min-h-[56px] max-h-28 text-xs font-mono resize-none bg-background placeholder:text-muted-foreground"
                 data-testid="steer-prompt-textarea"
               />
 
@@ -1208,7 +1223,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                 type="submit"
                 disabled={!steerPrompt.trim() || isSubmittingPrompt || isUnavailable}
                 size="sm"
-                className="h-14 px-4 text-xs font-medium gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90 shrink-0"
+                className="h-10 sm:h-14 px-4 text-xs font-medium gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90 shrink-0 self-end sm:self-auto w-full sm:w-auto justify-center"
                 data-testid="send-steer-btn"
               >
                 {isSubmittingPrompt ? (
@@ -1227,11 +1242,12 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
           </form>
         </div>
 
-        {/* Right Pane (Live Tool & Diagnostics Inspector) - 50% / lg:col-span-6 */}
-        <div
-          className="lg:col-span-6 flex flex-col h-full min-h-0 rounded-lg border border-border bg-card/80 overflow-hidden shadow-sm"
-          data-testid="tool-inspector-panel"
-        >
+        {/* Right Pane (Live Tool & Diagnostics Inspector) */}
+        {selectedToolKey && (
+          <div
+            className="w-full lg:col-span-6 flex flex-col h-full min-h-0 rounded-lg border border-border bg-card/95 overflow-hidden shadow-sm"
+            data-testid="tool-inspector-panel"
+          >
           {selectedToolInfo ? (
             (() => {
               const { tc, msg } = selectedToolInfo;
@@ -1310,20 +1326,21 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-1">
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6 text-muted-foreground hover:text-foreground"
-                        onClick={() => setSelectedToolKey(null)}
-                        title="Close / Unselect"
-                        aria-label="Close / Unselect"
-                      >
-                        <X className="size-3.5" />
-                      </Button>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                          onClick={() => setSelectedToolKey(null)}
+                          title="Close Inspector"
+                          aria-label="Close Inspector"
+                          data-testid="close-inspector-header-btn"
+                        >
+                          <X className="size-4" />
+                        </Button>
+                      </div>
                     </div>
-                  </div>
 
                   {/* Sub-tabs toggle: Output vs Input */}
                   <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/60 bg-muted/30 text-xs">
@@ -1434,6 +1451,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                       size="sm"
                       onClick={() => setSelectedToolKey(null)}
                       className="h-7 text-xs font-mono gap-1 text-muted-foreground hover:text-foreground"
+                      data-testid="close-inspector-footer-btn"
                     >
                       <X className="size-3" />
                       <span>Close / Unselect</span>
@@ -1460,49 +1478,9 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                 </div>
               );
             })()
-          ) : (
-            /* Empty state: Overview of tool runs & instructions */
-            <div className="flex-1 flex flex-col items-center justify-center p-6 text-center space-y-4 text-muted-foreground">
-              <div className="p-3.5 rounded-full bg-muted/60 border border-border/70 text-foreground/80">
-                <Layers className="size-7 text-primary" />
-              </div>
-
-              <div className="space-y-1.5 max-w-xs">
-                <h4 className="text-sm font-semibold text-foreground">
-                  Tool &amp; Diagnostics Inspector
-                </h4>
-                <p className="text-xs text-muted-foreground leading-relaxed">
-                  Click on any interactive tool execution or subagent card in the transcript to inspect live stdout, stderr, and inputs here.
-                </p>
-              </div>
-
-              {/* Overview Metrics Card */}
-              <div className="w-full max-w-xs p-3 rounded-lg border border-border bg-background/60 space-y-2 text-left font-mono text-[11px]">
-                <div className="text-[10px] uppercase font-semibold text-muted-foreground tracking-wider border-b border-border/50 pb-1">
-                  Session Execution Summary
-                </div>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div className="p-2 rounded bg-muted/40 border border-border/40">
-                    <span className="text-[10px] text-muted-foreground block">Total Tools</span>
-                    <strong className="text-foreground text-sm">{toolStats.total}</strong>
-                  </div>
-                  <div className="p-2 rounded bg-muted/40 border border-border/40">
-                    <span className="text-[10px] text-muted-foreground block">Succeeded</span>
-                    <strong className="text-emerald-500 text-sm">{toolStats.succeeded}</strong>
-                  </div>
-                  <div className="p-2 rounded bg-muted/40 border border-border/40">
-                    <span className="text-[10px] text-muted-foreground block">Failed / Errs</span>
-                    <strong className="text-rose-500 text-sm">{toolStats.failed}</strong>
-                  </div>
-                  <div className="p-2 rounded bg-muted/40 border border-border/40">
-                    <span className="text-[10px] text-muted-foreground block">Running</span>
-                    <strong className="text-sky-500 text-sm">{toolStats.running}</strong>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
+          ) : null}
         </div>
+      )}
       </div>
     </div>
   );

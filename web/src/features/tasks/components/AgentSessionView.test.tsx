@@ -251,34 +251,41 @@ describe('AgentSessionView Split Two-Pane Inspector', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders split two-pane layout with transcript and inspector panel', async () => {
+  it('by default does not show tool-inspector-panel until a tool card is clicked', async () => {
     vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue(mockSessionData);
 
     render(<AgentSessionView taskId={mockTaskId} />);
 
     await waitFor(() => {
       expect(screen.getByTestId('session-transcript-container')).toBeInTheDocument();
-      expect(screen.getByTestId('tool-inspector-panel')).toBeInTheDocument();
     });
+
+    // Inspector panel should NOT be visible by default
+    expect(screen.queryByTestId('tool-inspector-panel')).not.toBeInTheDocument();
 
     // Transcript messages
     expect(screen.getByTestId('user-message')).toHaveTextContent('Fix the failing test in agent service');
     expect(screen.getByTestId('assistant-message')).toHaveTextContent('I ran the shell command and encountered an issue.');
 
-    // Auto-selects first failed tool (shell, exit 1) into inspector
-    expect(screen.getByTestId('tool-inspector-panel')).toHaveTextContent('shell');
-    expect(screen.getByText('Detected Error')).toBeInTheDocument();
-    expect(screen.getByText(/TestAgentSessionRunner/i)).toBeInTheDocument();
-    expect(screen.getByText('Inspecting in Right Pane')).toBeInTheDocument();
+    // Clicking tool call card opens tool-inspector-panel
+    const toolCards = screen.getAllByTestId('tool-call-card');
+    expect(toolCards.length).toBe(2);
+    fireEvent.click(toolCards[0]);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tool-inspector-panel')).toBeInTheDocument();
+      expect(screen.getByTestId('tool-inspector-panel')).toHaveTextContent('shell');
+      expect(screen.getByText('Detected Error')).toBeInTheDocument();
+    });
   });
 
-  it('allows clicking another tool call card to inspect its output in the right pane', async () => {
+  it('allows clicking another tool call card to inspect its output in the inspector', async () => {
     vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue(mockSessionData);
 
     render(<AgentSessionView taskId={mockTaskId} />);
 
     await waitFor(() => {
-      expect(screen.getByTestId('tool-inspector-panel')).toBeInTheDocument();
+      expect(screen.getByTestId('session-transcript-container')).toBeInTheDocument();
     });
 
     // Click second tool call card ('read')
@@ -287,7 +294,7 @@ describe('AgentSessionView Split Two-Pane Inspector', () => {
 
     fireEvent.click(toolCards[1]);
 
-    // Inspector should now show 'read' and its output
+    // Inspector should open with 'read' and its output
     await waitFor(() => {
       const inspector = screen.getByTestId('tool-inspector-panel');
       expect(inspector).toHaveTextContent('read');
@@ -295,10 +302,84 @@ describe('AgentSessionView Split Two-Pane Inspector', () => {
     });
   });
 
+  it('closes and unselects inspector when clicking Close button', async () => {
+    vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue(mockSessionData);
+
+    render(<AgentSessionView taskId={mockTaskId} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('session-transcript-container')).toBeInTheDocument();
+    });
+
+    // Click tool card to open
+    const toolCards = screen.getAllByTestId('tool-call-card');
+    fireEvent.click(toolCards[0]);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tool-inspector-panel')).toBeInTheDocument();
+    });
+
+    // Click Close / Unselect via footer or header close button
+    const closeBtn = screen.getByTestId('close-inspector-footer-btn');
+    fireEvent.click(closeBtn);
+
+    // Inspector panel should be dismissed
+    expect(screen.queryByTestId('tool-inspector-panel')).not.toBeInTheDocument();
+
+    // Reopen and test header close button as well
+    fireEvent.click(toolCards[0]);
+    await waitFor(() => {
+      expect(screen.getByTestId('tool-inspector-panel')).toBeInTheDocument();
+    });
+    const headerCloseBtn = screen.getByTestId('close-inspector-header-btn');
+    fireEvent.click(headerCloseBtn);
+    expect(screen.queryByTestId('tool-inspector-panel')).not.toBeInTheDocument();
+  });
+
+  it('displays scroll-to-bottom button when scrolled up and jumps to bottom on click', async () => {
+    vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue(mockSessionData);
+    const scrollIntoViewMock = vi.fn();
+    window.HTMLElement.prototype.scrollIntoView = scrollIntoViewMock;
+
+    render(<AgentSessionView taskId={mockTaskId} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('session-transcript-container')).toBeInTheDocument();
+    });
+
+    const container = screen.getByTestId('session-transcript-container');
+
+    // Initially at bottom, scroll button not visible
+    expect(screen.queryByTestId('scroll-to-bottom-btn')).not.toBeInTheDocument();
+
+    // Simulate scrolling up
+    Object.defineProperty(container, 'scrollHeight', { value: 1000, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+    Object.defineProperty(container, 'scrollTop', { value: 200, configurable: true }); // distanceFromBottom = 400 > 100
+
+    fireEvent.scroll(container);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('scroll-to-bottom-btn')).toBeInTheDocument();
+    });
+
+    // Click scroll to bottom button
+    fireEvent.click(screen.getByTestId('scroll-to-bottom-btn'));
+    expect(scrollIntoViewMock).toHaveBeenCalled();
+  });
+
   it('supports "Insert Fix into Steer Input" button to prefill steer prompt', async () => {
     vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue(mockSessionData);
 
     render(<AgentSessionView taskId={mockTaskId} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('session-transcript-container')).toBeInTheDocument();
+    });
+
+    // Open first tool card to access inspector
+    const toolCards = screen.getAllByTestId('tool-call-card');
+    fireEvent.click(toolCards[0]);
 
     await waitFor(() => {
       expect(screen.getByTestId('insert-fix-btn')).toBeInTheDocument();
