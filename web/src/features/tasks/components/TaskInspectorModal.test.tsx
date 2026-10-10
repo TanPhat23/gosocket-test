@@ -207,5 +207,33 @@ describe('TaskInspectorModal Agent Session Tab and Steering', () => {
     rerender(<TaskInspectorModal taskId={null} onClose={handleClose} />);
     expect(screen.queryByText('Controlled Prop Task')).not.toBeInTheDocument();
   });
+
+  it('renders task.prompt using Markdown in the Overview tab and only shows Task Workflow bar when appropriate', () => {
+    // In progress task without PR or PR error should NOT show Task Workflow bar
+    const { unmount } = render(<TaskInspectorModal />);
+
+    // Check Markdown rendering in Overview tab
+    expect(screen.getByText('Prompt & Specification')).toBeInTheDocument();
+    expect(screen.getByText('Implement live agent inspector modal')).toBeInTheDocument();
+
+    // Workflow bar should be absent because task is in_progress and has no PR
+    expect(screen.queryByText('Task Workflow:')).not.toBeInTheDocument();
+
+    unmount();
+
+    // When task is completed, Task Workflow bar appears with Create PR button
+    useTaskStore.setState({
+      tasks: {
+        [mockTask.id]: {
+          ...mockTask,
+          status: 'done',
+        },
+      },
+    });
+
+    render(<TaskInspectorModal />);
+    expect(screen.getByText('Task Workflow:')).toBeInTheDocument();
+    expect(screen.getByTestId('create-pr-btn')).toBeInTheDocument();
+  });
 });
 

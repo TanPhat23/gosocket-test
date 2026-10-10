@@ -39,6 +39,7 @@ import { Markdown } from '@/components/ui/markdown';
 interface AgentSessionViewProps {
   taskId: string;
   defaultSessionId?: string | null;
+  isActive?: boolean;
 }
 
 export interface ParsedMessageData {
@@ -206,7 +207,11 @@ export function parseSessionMessageContent(msg: SessionMessage): ParsedMessageDa
   };
 }
 
-export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defaultSessionId }) => {
+export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
+  taskId,
+  defaultSessionId,
+  isActive = true,
+}) => {
   const [session, setSession] = useState<TaskSessionResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -222,6 +227,10 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
   // Compact state
   const [isCompacting, setIsCompacting] = useState<boolean>(false);
   const [compactMessage, setCompactMessage] = useState<string | null>(null);
+
+  // View toggles for Inspector tabs
+  const [inspectorInputView, setInspectorInputView] = useState<'markdown' | 'raw'>('markdown');
+  const [inspectorOutputView, setInspectorOutputView] = useState<'markdown' | 'raw'>('markdown');
 
   // Selected tool key for inspector: `${msgIdx}-${tcIdx}`
   const [selectedToolKey, setSelectedToolKey] = useState<string | null>(null);
@@ -274,6 +283,18 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
   const prevMessagesCountRef = useRef<number>(0);
 
   const scrollToBottom = (smooth = true) => {
+    const el = transcriptContainerRef.current;
+    if (el) {
+      try {
+        if (typeof el.scrollTo === 'function') {
+          el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
+        } else {
+          el.scrollTop = el.scrollHeight;
+        }
+      } catch {
+        // Fallback if environment (e.g. mock DOM where scrollTop is non-writable property) prevents direct assignment
+      }
+    }
     transcriptEndRef.current?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto' });
   };
 
@@ -318,16 +339,34 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskId]);
 
+  // When isActive becomes true, trigger scrollToBottom with delays (50ms and 150ms) to ensure layout paints
+  useEffect(() => {
+    if (isActive) {
+      const t1 = setTimeout(() => {
+        scrollToBottom(false);
+      }, 50);
+      const t2 = setTimeout(() => {
+        scrollToBottom(false);
+      }, 150);
+      return () => {
+        clearTimeout(t1);
+        clearTimeout(t2);
+      };
+    }
+  }, [isActive]);
+
   // Auto-scroll chat to bottom on initial load and whenever messages arrive
   useEffect(() => {
     const currentCount = session?.messages?.length ?? 0;
     if (currentCount > 0) {
       if (prevMessagesCountRef.current === 0) {
         // Initial load scroll
-        scrollToBottom(false);
+        const t1 = setTimeout(() => scrollToBottom(false), 50);
+        return () => clearTimeout(t1);
       } else if (currentCount > prevMessagesCountRef.current) {
         // New messages arrived
-        scrollToBottom(true);
+        const t2 = setTimeout(() => scrollToBottom(true), 50);
+        return () => clearTimeout(t2);
       }
     }
     prevMessagesCountRef.current = currentCount;
@@ -798,7 +837,9 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                             </span>
                             {timeString && <span className="font-mono">{timeString}</span>}
                           </div>
-                          <p className="whitespace-pre-wrap leading-relaxed font-sans text-xs">{displayPrompt}</p>
+                          <div className="leading-relaxed font-sans text-xs">
+                            <Markdown content={displayPrompt} />
+                          </div>
 
                           {systemContext && (
                             <details className="mt-2 rounded-lg bg-background/80 border border-border/60 p-2 text-foreground/90 font-mono text-[11px] select-none group">
@@ -938,7 +979,14 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                                 return (
                                   <div
                                     key={tcIdx}
-                                    onClick={() => setSelectedToolKey(expandKey)}
+                                    onClick={() => {
+                                      setSelectedToolKey(expandKey);
+                                      if (isSubagent && !tc.output) {
+                                        setInspectorTab('input');
+                                      }
+                                      setInspectorInputView('markdown');
+                                      setInspectorOutputView('markdown');
+                                    }}
                                     className={`rounded-lg border transition-all overflow-hidden font-mono text-[11px] cursor-pointer ${
                                       isSelectedInInspector
                                         ? 'border-cyan-500/80 ring-1 ring-cyan-500/40 bg-cyan-950/10'
@@ -1053,11 +1101,15 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                                             <div className="text-[10px] text-muted-foreground uppercase font-semibold">
                                               {isSubagent ? 'Prompt / Task Brief' : 'Input'}
                                             </div>
-                                            <pre className="p-2 rounded bg-muted/50 text-[10px] overflow-x-auto whitespace-pre-wrap text-foreground max-h-48 font-mono">
-                                              {isSubagent && inputObj?.prompt
-                                                ? String(inputObj.prompt)
-                                                : inputStr}
-                                            </pre>
+                                            {isSubagent && inputObj?.prompt ? (
+                                              <div className="p-2.5 rounded bg-muted/40 border border-border/50 text-[11px] overflow-x-auto text-foreground max-h-56 font-sans">
+                                                <Markdown content={String(inputObj.prompt)} />
+                                              </div>
+                                            ) : (
+                                              <pre className="p-2 rounded bg-muted/50 text-[10px] overflow-x-auto whitespace-pre-wrap text-foreground max-h-48 font-mono">
+                                                {inputStr}
+                                              </pre>
+                                            )}
                                           </div>
                                         )}
 
@@ -1394,12 +1446,42 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                     )}
 
                     {inspectorTab === 'output' ? (
-                      <div className="h-full flex flex-col space-y-1.5">
+                      <div className="h-full flex flex-col space-y-2">
                         <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center justify-between">
-                          <span>Terminal Logs</span>
-                          <span className="font-normal opacity-70">
-                            {outputStr ? `${outputStr.split('\n').length} lines` : '0 lines'}
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <span>Terminal Logs</span>
+                            <span className="font-normal opacity-70">
+                              {outputStr ? `${outputStr.split('\n').length} lines` : '0 lines'}
+                            </span>
+                          </div>
+                          {isSubagent && outputStr && (
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => setInspectorOutputView('markdown')}
+                                className={`px-2 py-0.5 rounded text-[10px] font-mono transition-colors cursor-pointer ${
+                                  inspectorOutputView === 'markdown'
+                                    ? 'bg-primary/15 text-primary border border-primary/30 font-semibold'
+                                    : 'text-muted-foreground hover:text-foreground border border-transparent'
+                                }`}
+                                data-testid="toggle-output-markdown-btn"
+                              >
+                                Formatted Report (Markdown)
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setInspectorOutputView('raw')}
+                                className={`px-2 py-0.5 rounded text-[10px] font-mono transition-colors cursor-pointer ${
+                                  inspectorOutputView === 'raw'
+                                    ? 'bg-primary/15 text-primary border border-primary/30 font-semibold'
+                                    : 'text-muted-foreground hover:text-foreground border border-transparent'
+                                }`}
+                                data-testid="toggle-output-raw-btn"
+                              >
+                                Raw Logs
+                              </button>
+                            </div>
+                          )}
                         </div>
                         {tc.status === 'running' ? (
                           <div className="flex items-center gap-2 p-4 rounded bg-muted/20 border border-border/50 text-xs text-primary">
@@ -1407,15 +1489,21 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                             <span>Execution running in child environment...</span>
                           </div>
                         ) : outputStr ? (
-                          <pre
-                            className={`flex-1 min-h-[260px] p-3.5 rounded-lg overflow-x-auto whitespace-pre-wrap leading-relaxed text-xs font-mono border ${
-                              !isSuccess
-                                ? 'bg-rose-950/20 text-rose-200 border-rose-500/30'
-                                : 'bg-black/40 text-foreground border-border/50'
-                            }`}
-                          >
-                            {outputStr}
-                          </pre>
+                          isSubagent && inspectorOutputView === 'markdown' ? (
+                            <div className="flex-1 min-h-[260px] p-3.5 rounded-lg border border-border/60 bg-muted/20 overflow-x-auto text-xs font-sans">
+                              <Markdown content={outputStr} />
+                            </div>
+                          ) : (
+                            <pre
+                              className={`flex-1 min-h-[260px] p-3.5 rounded-lg overflow-x-auto whitespace-pre-wrap leading-relaxed text-xs font-mono border ${
+                                !isSuccess
+                                  ? 'bg-rose-950/20 text-rose-200 border-rose-500/30'
+                                  : 'bg-black/40 text-foreground border-border/50'
+                              }`}
+                            >
+                              {outputStr}
+                            </pre>
+                          )
                         ) : (
                           <div className="p-4 text-center text-muted-foreground italic text-xs">
                             No terminal output recorded for this tool run.
@@ -1423,17 +1511,74 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                         )}
                       </div>
                     ) : (
-                      <div className="h-full flex flex-col space-y-1.5">
+                      <div className="h-full flex flex-col space-y-2">
+                        {/* If subagent description exists, show card badge */}
+                        {Boolean(inputObj?.description) && (
+                          <div className="p-2.5 rounded-lg bg-purple-500/10 border border-purple-500/20 text-xs font-sans space-y-1">
+                            <div className="font-semibold text-purple-600 dark:text-purple-300 text-[11px] uppercase tracking-wider">
+                              Subagent Objective:
+                            </div>
+                            <div className="text-foreground leading-relaxed">
+                              {String(inputObj?.description)}
+                            </div>
+                          </div>
+                        )}
+
                         <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center justify-between">
-                          <span>Command / Prompt Input</span>
-                          <span className="font-normal opacity-70">
-                            {inputStr ? `${inputStr.split('\n').length} lines` : '0 lines'}
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <span>Command / Prompt Input</span>
+                            <span className="font-normal opacity-70">
+                              {inputStr ? `${inputStr.split('\n').length} lines` : '0 lines'}
+                            </span>
+                          </div>
+                          {(isSubagent || inputObj?.prompt || typeof tc.input === 'string') && inputStr && (
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => setInspectorInputView('markdown')}
+                                className={`px-2 py-0.5 rounded text-[10px] font-mono transition-colors cursor-pointer ${
+                                  inspectorInputView === 'markdown'
+                                    ? 'bg-primary/15 text-primary border border-primary/30 font-semibold'
+                                    : 'text-muted-foreground hover:text-foreground border border-transparent'
+                                }`}
+                                data-testid="toggle-input-markdown-btn"
+                              >
+                                Formatted Brief (Markdown)
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setInspectorInputView('raw')}
+                                className={`px-2 py-0.5 rounded text-[10px] font-mono transition-colors cursor-pointer ${
+                                  inspectorInputView === 'raw'
+                                    ? 'bg-primary/15 text-primary border border-primary/30 font-semibold'
+                                    : 'text-muted-foreground hover:text-foreground border border-transparent'
+                                }`}
+                                data-testid="toggle-input-raw-btn"
+                              >
+                                Raw Input (JSON)
+                              </button>
+                            </div>
+                          )}
                         </div>
+
                         {inputStr ? (
-                          <pre className="flex-1 min-h-[260px] p-3.5 rounded-lg bg-black/40 text-foreground border border-border/50 overflow-x-auto whitespace-pre-wrap leading-relaxed text-xs font-mono">
-                            {inputStr}
-                          </pre>
+                          (isSubagent || inputObj?.prompt || typeof tc.input === 'string') && inspectorInputView === 'markdown' ? (
+                            <div className="flex-1 min-h-[260px] p-3.5 rounded-lg bg-muted/20 border border-border/60 overflow-x-auto text-xs font-sans leading-relaxed">
+                              <Markdown
+                                content={
+                                  inputObj?.prompt
+                                    ? String(inputObj.prompt)
+                                    : typeof tc.input === 'string'
+                                    ? tc.input
+                                    : inputStr
+                                }
+                              />
+                            </div>
+                          ) : (
+                            <pre className="flex-1 min-h-[260px] p-3.5 rounded-lg bg-black/40 text-foreground border border-border/50 overflow-x-auto whitespace-pre-wrap leading-relaxed text-xs font-mono">
+                              {inputStr}
+                            </pre>
+                          )
                         ) : (
                           <div className="p-4 text-center text-muted-foreground italic text-xs">
                             No input arguments provided.

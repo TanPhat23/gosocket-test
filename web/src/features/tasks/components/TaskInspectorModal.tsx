@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button';
 import { TerminalView } from './TerminalView';
 import { DiffViewer } from './DiffViewer';
 import { AgentSessionView } from './AgentSessionView';
+import { Markdown } from '@/components/ui/markdown';
 import {
   Info,
   Terminal as TerminalIcon,
@@ -340,81 +341,83 @@ export const TaskInspectorModal: React.FC<TaskInspectorModalProps> = ({
           </div>
         )}
 
-        {/* Actions Bar for Tasks */}
-        <div className="flex items-center justify-between gap-3 p-2.5 rounded-lg border border-border bg-muted/20">
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="font-medium text-foreground">Task Workflow:</span>
-            <span>Status is <strong className="text-foreground">{task.status}</strong></span>
-          </div>
+        {/* Actions Bar for Tasks (Only shown when PR error or PR action is available) */}
+        {(prError || (isCompleted && !prLink) || prLink) && (
+          <div className="flex items-center justify-between gap-3 p-2.5 rounded-lg border border-border bg-muted/20">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">Task Workflow:</span>
+              <span>Status is <strong className="text-foreground">{task.status}</strong></span>
+            </div>
 
-          <div className="flex items-center gap-2">
-            {/* PR Action: completed and no PR yet */}
-            {isCompleted && !prLink && (
-              <Button
-                size="sm"
-                onClick={handleCreatePR}
-                disabled={isCreatingPR}
-                className="h-7 text-xs gap-1.5 font-medium bg-emerald-600 hover:bg-emerald-700 text-white"
-                data-testid="create-pr-btn"
-              >
-                {isCreatingPR ? (
-                  <>
-                    <Loader2 className="size-3 animate-spin" />
-                    Creating PR...
-                  </>
-                ) : (
-                  <>
-                    <GitPullRequest className="size-3" />
-                    Create Pull Request
-                  </>
-                )}
-              </Button>
-            )}
+            <div className="flex items-center gap-2">
+              {/* PR Action: completed and no PR yet */}
+              {isCompleted && !prLink && (
+                <Button
+                  size="sm"
+                  onClick={handleCreatePR}
+                  disabled={isCreatingPR}
+                  className="h-7 text-xs gap-1.5 font-medium bg-emerald-600 hover:bg-emerald-700 text-white"
+                  data-testid="create-pr-btn"
+                >
+                  {isCreatingPR ? (
+                    <>
+                      <Loader2 className="size-3 animate-spin" />
+                      Creating PR...
+                    </>
+                  ) : (
+                    <>
+                      <GitPullRequest className="size-3" />
+                      Create Pull Request
+                    </>
+                  )}
+                </Button>
+              )}
 
-            {prLink && task.status === 'done' && (
-              <a
-                href={prLink}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 h-7 px-3 text-xs font-mono rounded-md bg-purple-500/15 text-purple-600 dark:text-purple-400 border border-purple-500/30 hover:bg-purple-500/25 transition-colors font-medium"
-                data-testid="view-pr-btn"
-              >
-                <GitMerge className="size-3" />
-                PR Merged ({prLink.split('/').slice(-2).join('/') || 'Link'})
-                <ExternalLink className="size-2.5" />
-              </a>
-            )}
-
-            {prLink && task.status !== 'done' && (
-              <>
+              {prLink && task.status === 'done' && (
                 <a
                   href={prLink}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 h-7 px-3 text-xs font-mono rounded-md bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 transition-colors font-medium"
+                  className="inline-flex items-center gap-1.5 h-7 px-3 text-xs font-mono rounded-md bg-purple-500/15 text-purple-600 dark:text-purple-400 border border-purple-500/30 hover:bg-purple-500/25 transition-colors font-medium"
                   data-testid="view-pr-btn"
                 >
-                  <GitPullRequest className="size-3" />
-                  View PR ({prLink.split('/').slice(-2).join('/') || 'Link'})
+                  <GitMerge className="size-3" />
+                  PR Merged ({prLink.split('/').slice(-2).join('/') || 'Link'})
                   <ExternalLink className="size-2.5" />
                 </a>
+              )}
 
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={handleSyncPR}
-                  disabled={isSyncingPR}
-                  className="h-7 text-xs gap-1.5 font-medium border-border hover:bg-muted"
-                  title="Check if PR has been merged on GitHub"
-                  data-testid="sync-pr-btn"
-                >
-                  <RefreshCw className={cn('size-3', isSyncingPR && 'animate-spin')} />
-                  {isSyncingPR ? 'Checking...' : 'Sync PR Status'}
-                </Button>
-              </>
-            )}
+              {prLink && task.status !== 'done' && (
+                <>
+                  <a
+                    href={prLink}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 h-7 px-3 text-xs font-mono rounded-md bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 transition-colors font-medium"
+                    data-testid="view-pr-btn"
+                  >
+                    <GitPullRequest className="size-3" />
+                    View PR ({prLink.split('/').slice(-2).join('/') || 'Link'})
+                    <ExternalLink className="size-2.5" />
+                  </a>
+
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleSyncPR}
+                    disabled={isSyncingPR}
+                    className="h-7 text-xs gap-1.5 font-medium border-border hover:bg-muted"
+                    title="Check if PR has been merged on GitHub"
+                    data-testid="sync-pr-btn"
+                  >
+                    <RefreshCw className={cn('size-3', isSyncingPR && 'animate-spin')} />
+                    {isSyncingPR ? 'Checking...' : 'Sync PR Status'}
+                  </Button>
+                </>
+              )}
+            </div>
           </div>
-        </div>
+        )}
 
         <Tabs
           value={activeTab}
@@ -449,8 +452,8 @@ export const TaskInspectorModal: React.FC<TaskInspectorModalProps> = ({
               <h4 className="text-xs font-semibold text-foreground uppercase tracking-wider">
                 Prompt &amp; Specification
               </h4>
-              <div className="p-3 rounded-lg border border-border bg-muted/30 font-mono text-xs whitespace-pre-wrap leading-relaxed text-foreground">
-                {task.prompt}
+              <div className="p-3 rounded-lg border border-border bg-muted/30 text-xs leading-relaxed text-foreground">
+                <Markdown content={task.prompt} />
               </div>
             </div>
 
@@ -689,7 +692,11 @@ export const TaskInspectorModal: React.FC<TaskInspectorModalProps> = ({
           {/* Agent Session Tab */}
           <TabsContent value="session" className="flex-1 mt-4 overflow-hidden h-full">
             <div className="h-full w-full min-h-[380px]">
-              <AgentSessionView taskId={task.id} defaultSessionId={task.session_id} />
+              <AgentSessionView
+                taskId={task.id}
+                defaultSessionId={task.session_id}
+                isActive={activeTab === 'session'}
+              />
             </div>
           </TabsContent>
 

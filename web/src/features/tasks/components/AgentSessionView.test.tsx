@@ -353,9 +353,9 @@ describe('AgentSessionView Split Two-Pane Inspector', () => {
     expect(screen.queryByTestId('scroll-to-bottom-btn')).not.toBeInTheDocument();
 
     // Simulate scrolling up
-    Object.defineProperty(container, 'scrollHeight', { value: 1000, configurable: true });
-    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
-    Object.defineProperty(container, 'scrollTop', { value: 200, configurable: true }); // distanceFromBottom = 400 > 100
+    Object.defineProperty(container, 'scrollHeight', { value: 1000, configurable: true, writable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true, writable: true });
+    Object.defineProperty(container, 'scrollTop', { value: 200, configurable: true, writable: true }); // distanceFromBottom = 400 > 100
 
     fireEvent.scroll(container);
 
@@ -407,5 +407,119 @@ describe('AgentSessionView Split Two-Pane Inspector', () => {
 
     const steerTextarea = screen.getByTestId('steer-prompt-textarea');
     expect(steerTextarea).toHaveValue('Fix the failed step and run tests again.');
+  });
+
+  it('renders markdown in Prompt Brief / Input tab and subagent prompt card with toggle', async () => {
+    const subagentSessionData: TaskSessionResponse = {
+      task_id: mockTaskId,
+      session_id: 'ses_atm_subagent_1',
+      status: 'idle',
+      model: 'gemini-3.8-flash',
+      messages: [
+        {
+          id: 'msg_sub_1',
+          type: 'assistant',
+          role: 'assistant',
+          agent: 'coordinator',
+          text: 'Spawning subagent for bounded UI implementation.',
+          tool_calls: [
+            {
+              name: 'subagent',
+              input: {
+                agent: 'frontend',
+                description: 'Implement markdown parsing and inspector enhancements',
+                prompt: '### Subagent Brief\n\n- Fix tab auto-scroll\n- Render markdown in `<Markdown />`',
+              },
+              output: '### Subagent Execution Report\n\nAll tasks verified and tests passing.',
+              status: 'completed',
+              exit_code: 0,
+            },
+          ],
+        },
+      ],
+    };
+
+    vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue(subagentSessionData);
+
+    render(<AgentSessionView taskId={mockTaskId} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('session-transcript-container')).toBeInTheDocument();
+    });
+
+    // Click subagent tool card
+    const toolCards = screen.getAllByTestId('tool-call-card');
+    fireEvent.click(toolCards[0]);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tool-inspector-panel')).toBeInTheDocument();
+    });
+
+    // In output tab, markdown toggle is visible for subagent
+    expect(screen.getByTestId('toggle-output-markdown-btn')).toBeInTheDocument();
+    expect(screen.getByText('Subagent Execution Report')).toBeInTheDocument();
+
+    // Switch to input tab
+    fireEvent.click(screen.getByText('Prompt Brief / Input'));
+
+    // Subagent objective badge/card
+    expect(screen.getByText('Subagent Objective:')).toBeInTheDocument();
+    expect(screen.getAllByText('Implement markdown parsing and inspector enhancements').length).toBeGreaterThan(0);
+
+    // Formatted Brief Markdown view
+    expect(screen.getByTestId('toggle-input-markdown-btn')).toBeInTheDocument();
+    expect(screen.getByText('Subagent Brief')).toBeInTheDocument();
+
+    // Toggle to Raw Input view
+    fireEvent.click(screen.getByTestId('toggle-input-raw-btn'));
+    expect(screen.getByText(/"agent":\s*"frontend"/)).toBeInTheDocument();
+  });
+
+  it('defaults inspectorTab to input when subagent has no output yet', async () => {
+    const runningSubagentSession: TaskSessionResponse = {
+      task_id: mockTaskId,
+      session_id: 'ses_atm_subagent_2',
+      status: 'running',
+      model: 'gemini-3.8-flash',
+      messages: [
+        {
+          id: 'msg_sub_2',
+          type: 'assistant',
+          role: 'assistant',
+          text: 'Dispatching background work...',
+          tool_calls: [
+            {
+              name: 'subagent',
+              input: {
+                agent: 'frontend',
+                description: 'Ongoing work',
+                prompt: '### Active Task Brief',
+              },
+              output: undefined,
+              status: 'running',
+            },
+          ],
+        },
+      ],
+    };
+
+    vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue(runningSubagentSession);
+
+    render(<AgentSessionView taskId={mockTaskId} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('session-transcript-container')).toBeInTheDocument();
+    });
+
+    // Click subagent card
+    const toolCards = screen.getAllByTestId('tool-call-card');
+    fireEvent.click(toolCards[0]);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tool-inspector-panel')).toBeInTheDocument();
+    });
+
+    // Should default to input tab so user immediately sees prompt brief in markdown
+    expect(screen.getByText('Active Task Brief')).toBeInTheDocument();
   });
 });
