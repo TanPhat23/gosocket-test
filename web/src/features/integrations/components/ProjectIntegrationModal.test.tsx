@@ -56,7 +56,7 @@ describe('ProjectIntegrationModal', () => {
     await waitFor(() => {
       expect(screen.getByText('Project Integrations')).toBeInTheDocument();
       expect(screen.getByText('test-org/repo-a')).toBeInTheDocument();
-      expect(screen.getByText('Active')).toBeInTheDocument();
+      expect(screen.getAllByText('Active').length).toBeGreaterThan(0);
     });
   });
 

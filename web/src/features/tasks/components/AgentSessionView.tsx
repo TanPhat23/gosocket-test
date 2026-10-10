@@ -13,6 +13,8 @@ import {
   Zap,
   Send,
   AlertTriangle,
+  AlertCircle,
+  Eye,
   Terminal,
   Bot,
   User,
@@ -664,9 +666,9 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
       </div>
 
       {/* 2-Pane Responsive Grid/Flex Body */}
-      <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 gap-3 h-full overflow-hidden">
-        {/* Left Pane (Transcript & Steer Form) - 60% / lg:col-span-7 */}
-        <div className="lg:col-span-7 flex flex-col h-full min-h-0 gap-3 overflow-hidden">
+      <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 gap-3.5 h-full overflow-hidden">
+        {/* Left Pane (Transcript & Steer Form) - 50% / lg:col-span-6 */}
+        <div className="lg:col-span-6 flex flex-col h-full min-h-0 gap-3 overflow-hidden">
           {/* Transcript Body or State banners */}
           <div className="flex-1 min-h-0 flex flex-col rounded-lg border border-border bg-card/60 overflow-hidden">
             {loading && !session ? (
@@ -846,7 +848,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                           <details className="text-[11px] text-muted-foreground bg-muted/50 rounded-lg p-2.5 border border-border/60 group">
                             <summary className="cursor-pointer font-medium flex items-center justify-between select-none text-muted-foreground hover:text-foreground">
                               <span className="flex items-center gap-1.5">
-                                <span className="text-sm">🧠</span>
+                                <Sparkles className="size-3.5 text-purple-400 shrink-0" />
                                 <span className="font-semibold text-foreground/90">Thought Process</span>
                               </span>
                               <span className="text-[10px] text-muted-foreground opacity-70 group-open:rotate-180 transition-transform">▼</span>
@@ -1001,7 +1003,8 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                                       <div className="flex items-center gap-2 shrink-0">
                                         {isSelectedInInspector && (
                                           <span className="text-[10px] font-sans font-semibold text-cyan-600 dark:text-cyan-400 hidden sm:inline-flex items-center gap-1">
-                                            👉 Inspecting in Right Pane
+                                            <Eye className="size-3 shrink-0" />
+                                            <span>Inspecting in Right Pane</span>
                                           </span>
                                         )}
                                         {tc.status === 'running' ? (
@@ -1224,9 +1227,9 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
           </form>
         </div>
 
-        {/* Right Pane (Live Tool & Diagnostics Inspector) - 40% / lg:col-span-5 */}
+        {/* Right Pane (Live Tool & Diagnostics Inspector) - 50% / lg:col-span-6 */}
         <div
-          className="lg:col-span-5 flex flex-col h-full min-h-0 rounded-lg border border-border bg-card/80 overflow-hidden shadow-sm"
+          className="lg:col-span-6 flex flex-col h-full min-h-0 rounded-lg border border-border bg-card/80 overflow-hidden shadow-sm"
           data-testid="tool-inspector-panel"
         >
           {selectedToolInfo ? (
@@ -1359,23 +1362,23 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                   </div>
 
                   {/* Inspector Content Body */}
-                  <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 font-mono text-[11px]">
+                  <div className="flex-1 min-h-0 overflow-y-auto p-3.5 space-y-3 font-mono text-xs">
                     {/* Detected Error Callout (when exit 1 or failed) */}
                     {!isSuccess && detectedError && (
-                      <div className="rounded-lg p-2.5 bg-rose-500/10 border border-rose-500/30 space-y-1.5">
+                      <div className="rounded-lg p-3 bg-rose-500/10 border border-rose-500/30 space-y-1.5">
                         <div className="flex items-center gap-1.5 text-rose-600 dark:text-rose-400 font-semibold text-xs">
-                          <AlertTriangle className="size-3.5" />
-                          <span>💡 Detected Error</span>
+                          <AlertCircle className="size-3.5 shrink-0" />
+                          <span>Detected Error</span>
                         </div>
-                        <p className="text-[10px] text-muted-foreground font-sans">
+                        <p className="text-[11px] text-muted-foreground font-sans">
                           The tool invocation returned non-zero exit status. Review diagnostic logs below or insert a targeted fix into the steer prompt.
                         </p>
                       </div>
                     )}
 
                     {inspectorTab === 'output' ? (
-                      <div className="h-full flex flex-col space-y-1">
-                        <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center justify-between">
+                      <div className="h-full flex flex-col space-y-1.5">
+                        <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center justify-between">
                           <span>Terminal Logs</span>
                           <span className="font-normal opacity-70">
                             {outputStr ? `${outputStr.split('\n').length} lines` : '0 lines'}
@@ -1388,7 +1391,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                           </div>
                         ) : outputStr ? (
                           <pre
-                            className={`flex-1 min-h-[160px] p-3 rounded-lg overflow-x-auto whitespace-pre-wrap leading-relaxed text-[10.5px] border ${
+                            className={`flex-1 min-h-[260px] p-3.5 rounded-lg overflow-x-auto whitespace-pre-wrap leading-relaxed text-xs font-mono border ${
                               !isSuccess
                                 ? 'bg-rose-950/20 text-rose-200 border-rose-500/30'
                                 : 'bg-black/40 text-foreground border-border/50'
@@ -1403,15 +1406,15 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                         )}
                       </div>
                     ) : (
-                      <div className="h-full flex flex-col space-y-1">
-                        <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center justify-between">
+                      <div className="h-full flex flex-col space-y-1.5">
+                        <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center justify-between">
                           <span>Command / Prompt Input</span>
                           <span className="font-normal opacity-70">
                             {inputStr ? `${inputStr.split('\n').length} lines` : '0 lines'}
                           </span>
                         </div>
                         {inputStr ? (
-                          <pre className="flex-1 min-h-[160px] p-3 rounded-lg bg-black/40 text-foreground border border-border/50 overflow-x-auto whitespace-pre-wrap leading-relaxed text-[10.5px]">
+                          <pre className="flex-1 min-h-[260px] p-3.5 rounded-lg bg-black/40 text-foreground border border-border/50 overflow-x-auto whitespace-pre-wrap leading-relaxed text-xs font-mono">
                             {inputStr}
                           </pre>
                         ) : (

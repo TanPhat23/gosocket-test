@@ -267,9 +267,9 @@ describe('AgentSessionView Split Two-Pane Inspector', () => {
 
     // Auto-selects first failed tool (shell, exit 1) into inspector
     expect(screen.getByTestId('tool-inspector-panel')).toHaveTextContent('shell');
-    expect(screen.getByText('💡 Detected Error')).toBeInTheDocument();
+    expect(screen.getByText('Detected Error')).toBeInTheDocument();
     expect(screen.getByText(/TestAgentSessionRunner/i)).toBeInTheDocument();
-    expect(screen.getByText('👉 Inspecting in Right Pane')).toBeInTheDocument();
+    expect(screen.getByText('Inspecting in Right Pane')).toBeInTheDocument();
   });
 
   it('allows clicking another tool call card to inspect its output in the right pane', async () => {
