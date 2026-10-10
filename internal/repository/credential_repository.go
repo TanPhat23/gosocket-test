@@ -13,6 +13,7 @@ type CredentialRepository interface {
 	ListByTeamID(ctx context.Context, teamID string) ([]models.Credential, error)
 	GetByIDAndTeam(ctx context.Context, id, teamID string) (*models.Credential, error)
 	Create(ctx context.Context, cred *models.Credential) error
+	Update(ctx context.Context, cred *models.Credential) error
 	Delete(ctx context.Context, id, teamID string) error
 }
 
@@ -47,6 +48,10 @@ func (r *credRepo) GetByIDAndTeam(ctx context.Context, id, teamID string) (*mode
 
 func (r *credRepo) Create(ctx context.Context, cred *models.Credential) error {
 	return gorm.G[models.Credential](r.db).Create(ctx, cred)
+}
+
+func (r *credRepo) Update(ctx context.Context, cred *models.Credential) error {
+	return r.db.WithContext(ctx).Save(cred).Error
 }
 
 func (r *credRepo) Delete(ctx context.Context, id, teamID string) error {

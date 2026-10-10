@@ -249,6 +249,16 @@ func TestCredentialRepository(t *testing.T) {
 		t.Fatalf("GetByIDAndTeam failed: %v, got %v", err, gotCred)
 	}
 
+	gotCred.Label = "Updated Secret Label"
+	if err := repo.Update(ctx, gotCred); err != nil {
+		t.Fatalf("Update credential failed: %v", err)
+	}
+
+	updatedCred, err := repo.GetByIDAndTeam(ctx, "cred-1", "team-1")
+	if err != nil || updatedCred.Label != "Updated Secret Label" {
+		t.Fatalf("expected updated label, got %v (err: %v)", updatedCred, err)
+	}
+
 	if err := repo.Delete(ctx, "cred-1", "team-1"); err != nil {
 		t.Fatalf("Delete credential failed: %v", err)
 	}

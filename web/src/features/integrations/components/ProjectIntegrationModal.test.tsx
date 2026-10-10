@@ -236,4 +236,156 @@ describe('ProjectIntegrationModal', () => {
     const repoInput = screen.getByTestId('repo-input') as HTMLInputElement;
     expect(repoInput.value).toBe('test-org/agent-repo');
   });
+
+  it('shows actionable banner on expired token error and switches to PAT edit on click', async () => {
+    vi.spyOn(integrationApi, 'listProjectIntegrations').mockResolvedValue([
+      {
+        id: 'integ-1',
+        project_id: 'proj-1',
+        credential_id: 'cred-1',
+        provider: 'github',
+        external_id: 'test-org/repo-a',
+        external_url: 'https://github.com/test-org/repo-a',
+        enabled: true,
+        config: {},
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    ]);
+    vi.spyOn(credentialApi, 'listCredentials').mockResolvedValue([
+      {
+        id: 'cred-1',
+        team_id: 'team-1',
+        provider: 'github',
+        label: 'Expired Bot PAT',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    ]);
+    vi.spyOn(credentialApi, 'listGitHubRepositories').mockRejectedValue(
+      new Error('invalid or expired github token')
+    );
+
+    render(<ProjectIntegrationModal />);
+
+    fireEvent.click(screen.getByTestId('integrations-trigger-button'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('token-error-banner')).toBeInTheDocument();
+      expect(screen.getByText('Invalid or Expired GitHub Token')).toBeInTheDocument();
+    });
+
+    const fixBtn = screen.getByTestId('fix-token-btn');
+    expect(fixBtn).toBeInTheDocument();
+    fireEvent.click(fixBtn);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('token-edit-form')).toBeInTheDocument();
+      expect(screen.getByTestId('token-secret-input')).toBeInTheDocument();
+    });
+  });
+
+  it('updates an existing token via credentialApi.updateCredential', async () => {
+    vi.spyOn(integrationApi, 'listProjectIntegrations').mockResolvedValue([]);
+    vi.spyOn(credentialApi, 'listCredentials').mockResolvedValue([
+      {
+        id: 'cred-1',
+        team_id: 'team-1',
+        provider: 'github',
+        label: 'Existing Bot PAT',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    ]);
+    vi.spyOn(credentialApi, 'listGitHubRepositories').mockResolvedValue([]);
+
+    const updateSpy = vi.spyOn(credentialApi, 'updateCredential').mockResolvedValue({
+      id: 'cred-1',
+      team_id: 'team-1',
+      provider: 'github',
+      label: 'Updated Bot PAT',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    render(<ProjectIntegrationModal />);
+
+    fireEvent.click(screen.getByTestId('integrations-trigger-button'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tab-pat')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('tab-pat'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('edit-token-btn-cred-1')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('edit-token-btn-cred-1'));
+
+    expect(screen.getByTestId('token-edit-form')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('token-label-input'), {
+      target: { value: 'Updated Bot PAT' },
+    });
+    fireEvent.change(screen.getByTestId('token-secret-input'), {
+      target: { value: 'ghp_brand_new_secret_pat' },
+    });
+
+    fireEvent.click(screen.getByTestId('save-token-btn'));
+
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalledWith('team-1', 'cred-1', {
+        label: 'Updated Bot PAT',
+        secret: 'ghp_brand_new_secret_pat',
+      });
+    });
+  });
+
+  it('tests connection for a token via credentialApi.listGitHubRepositories', async () => {
+    vi.spyOn(integrationApi, 'listProjectIntegrations').mockResolvedValue([]);
+    vi.spyOn(credentialApi, 'listCredentials').mockResolvedValue([
+      {
+        id: 'cred-1',
+        team_id: 'team-1',
+        provider: 'github',
+        label: 'Test Bot PAT',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    ]);
+    const listSpy = vi.spyOn(credentialApi, 'listGitHubRepositories').mockResolvedValue([
+      {
+        id: 1,
+        name: 'test-repo',
+        full_name: 'org/test-repo',
+        private: false,
+        description: '',
+        html_url: 'https://github.com/org/test-repo',
+        default_branch: 'main',
+      },
+    ]);
+
+    render(<ProjectIntegrationModal />);
+
+    fireEvent.click(screen.getByTestId('integrations-trigger-button'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tab-pat')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('tab-pat'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('test-token-btn-cred-1')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('test-token-btn-cred-1'));
+
+    await waitFor(() => {
+      expect(listSpy).toHaveBeenCalledWith('team-1', 'cred-1');
+      expect(screen.getByText(/Token verified successfully! Found 1 accessible repositories/)).toBeInTheDocument();
+    });
+  });
 });

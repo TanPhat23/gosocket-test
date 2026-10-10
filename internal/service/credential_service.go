@@ -41,6 +41,7 @@ func toCredentialDTO(c *models.Credential) dto.CredentialResponseDTO {
 type CredentialService interface {
 	List(ctx context.Context, teamID string) ([]dto.CredentialResponseDTO, error)
 	Create(ctx context.Context, teamID string, req dto.CreateCredentialRequest) (*dto.CredentialResponseDTO, error)
+	Update(ctx context.Context, teamID, credID string, req dto.UpdateCredentialRequest) (*dto.CredentialResponseDTO, error)
 	Delete(ctx context.Context, teamID, credID string) error
 	ListGitHubRepositories(ctx context.Context, teamID, credentialID string) ([]dto.GitHubRepositoryDTO, error)
 }
@@ -111,6 +112,40 @@ func (s *credentialService) Create(ctx context.Context, teamID string, req dto.C
 	}
 
 	if err := s.credRepo.Create(ctx, cred); err != nil {
+		return nil, err
+	}
+
+	dto := toCredentialDTO(cred)
+	return &dto, nil
+}
+
+func (s *credentialService) Update(ctx context.Context, teamID, credID string, req dto.UpdateCredentialRequest) (*dto.CredentialResponseDTO, error) {
+	cred, err := s.credRepo.GetByIDAndTeam(ctx, credID, teamID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrCredentialNotFound
+		}
+		return nil, err
+	}
+
+	if req.Label != nil && *req.Label != "" {
+		cred.Label = *req.Label
+	}
+
+	if req.Secret != nil && *req.Secret != "" {
+		if s.cipher == nil {
+			return nil, errors.New("secret encryption service is not configured")
+		}
+		encryptedData, err := s.cipher.Encrypt(*req.Secret)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encrypt secret: %w", err)
+		}
+		cred.EncryptedData = encryptedData
+		cred.KeyFingerprint = s.cipher.KeyFingerprint()
+	}
+
+	cred.UpdatedAt = time.Now()
+	if err := s.credRepo.Update(ctx, cred); err != nil {
 		return nil, err
 	}
 

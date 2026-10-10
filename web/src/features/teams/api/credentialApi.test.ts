@@ -84,6 +84,34 @@ describe('credentialApi', () => {
     });
   });
 
+  describe('updateCredential', () => {
+    it('unpacks updated credential payload from backend', async () => {
+      vi.spyOn(axiosClient, 'put').mockResolvedValueOnce({
+        data: {
+          credential: {
+            id: 'a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d',
+            team_id: 'b2c3d4e5-f6a7-8b9c-0d1e-2f3a4b5c6d7e',
+            provider: 'github',
+            label: 'Updated PAT',
+            created_at: '2026-10-07T00:00:00Z',
+            updated_at: '2026-10-07T01:00:00Z',
+          },
+        },
+      });
+
+      const result = await credentialApi.updateCredential(
+        'b2c3d4e5-f6a7-8b9c-0d1e-2f3a4b5c6d7e',
+        'a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d',
+        {
+          label: 'Updated PAT',
+          secret: 'ghp_updated_secret',
+        }
+      );
+      expect(result.id).toBe('a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d');
+      expect(result.label).toBe('Updated PAT');
+    });
+  });
+
   describe('listGitHubRepositories', () => {
     it('unpacks { repositories: [...] } payload from backend', async () => {
       vi.spyOn(axiosClient, 'get').mockResolvedValueOnce({

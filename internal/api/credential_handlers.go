@@ -74,6 +74,28 @@ func (h *CredentialHandlers) Create(c fiber.Ctx) error {
 	})
 }
 
+// Update handles PUT/PATCH /api/v1/teams/:team_id/credentials/:credential_id.
+func (h *CredentialHandlers) Update(c fiber.Ctx) error {
+	params, err := parseTeamCredentialParams(c)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	var req dto.UpdateCredentialRequest
+	if err := c.Bind().Body(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	credDTO, err := h.credService.Update(c.Context(), params.TeamID, params.CredentialID, req)
+	if err != nil {
+		return CentralErrorHandler(c, err)
+	}
+
+	return c.JSON(fiber.Map{
+		"credential": credDTO,
+	})
+}
+
 // Delete handles DELETE /api/v1/teams/:team_id/credentials/:credential_id.
 func (h *CredentialHandlers) Delete(c fiber.Ctx) error {
 	params, err := parseTeamCredentialParams(c)

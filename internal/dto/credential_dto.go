@@ -13,6 +13,12 @@ type CreateCredentialRequest struct {
 	Secret   string                    `json:"secret" validate:"required,min=1"`
 }
 
+// UpdateCredentialRequest defines the input payload for updating an existing credential.
+type UpdateCredentialRequest struct {
+	Label  *string `json:"label" validate:"omitempty,min=1,max=100"`
+	Secret *string `json:"secret" validate:"omitempty,min=1"`
+}
+
 // CredentialResponseDTO is the safe response DTO for credentials.
 // Invariant: Never contains raw secrets or EncryptedData ciphertext.
 type CredentialResponseDTO struct {

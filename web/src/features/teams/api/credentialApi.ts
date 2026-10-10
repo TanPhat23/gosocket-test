@@ -32,6 +32,23 @@ export const credentialApi = {
     await axiosClient.delete<void>(`/teams/${encodeURIComponent(teamId)}/credentials/${encodeURIComponent(credentialId)}`);
   },
 
+  async updateCredential(
+    teamId: string,
+    credentialId: string,
+    req: { label?: string; secret?: string }
+  ): Promise<CredentialDTO> {
+    const res = await axiosClient.put<unknown>(
+      `/teams/${encodeURIComponent(teamId)}/credentials/${encodeURIComponent(credentialId)}`,
+      req
+    );
+    const data = res.data;
+    const raw =
+      data && typeof data === 'object' && 'credential' in data
+        ? (data as { credential: unknown }).credential
+        : data;
+    return CredentialResponseSchema.parse(raw);
+  },
+
   async listGitHubRepositories(teamId: string, credentialId: string): Promise<GitHubRepoDTO[]> {
     const res = await axiosClient.get<unknown>(
       `/teams/${encodeURIComponent(teamId)}/credentials/${encodeURIComponent(credentialId)}/github/repos`

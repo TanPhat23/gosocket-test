@@ -1021,6 +1021,10 @@ func (m *mockCredRepoForRunner) GetByIDAndTeam(ctx context.Context, id, teamID s
 func (m *mockCredRepoForRunner) Create(ctx context.Context, cred *models.Credential) error {
 	return nil
 }
+func (m *mockCredRepoForRunner) Update(ctx context.Context, cred *models.Credential) error {
+	m.cred = cred
+	return nil
+}
 func (m *mockCredRepoForRunner) ListByTeamID(ctx context.Context, teamID string) ([]models.Credential, error) {
 	return nil, nil
 }

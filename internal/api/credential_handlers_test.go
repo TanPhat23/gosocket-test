@@ -130,6 +130,8 @@ func TestCredentialHandlers(t *testing.T) {
 	credentialsGroup := teamsGroup.Group("/credentials", api.RequireTeamRole(authService, models.RoleOwner))
 	credentialsGroup.Get("", credHandlers.List)
 	credentialsGroup.Post("", credHandlers.Create)
+	credentialsGroup.Put("/:credential_id", credHandlers.Update)
+	credentialsGroup.Patch("/:credential_id", credHandlers.Update)
 	credentialsGroup.Delete("/:credential_id", credHandlers.Delete)
 	teamsGroup.Get("/credentials/:credential_id/github/repos", api.RequireTeamRole(authService, models.RoleViewer), credHandlers.ListGitHubRepositories)
 
@@ -256,6 +258,41 @@ func TestCredentialHandlers(t *testing.T) {
 			if _, exists := c["secret"]; exists {
 				t.Errorf("secret must not be in list response")
 			}
+		}
+	})
+
+	t.Run("Update credential updates label and encrypted secret", func(t *testing.T) {
+		var cred models.Credential
+		db.First(&cred, "team_id = ?", team.ID)
+
+		payload := map[string]any{
+			"label":  "Updated GitHub PAT",
+			"secret": "ghp_new_updated_token_12345",
+		}
+		bodyBytes, _ := json.Marshal(payload)
+
+		req := httptest.NewRequest("PUT", "/api/v1/teams/team_1/credentials/"+cred.ID, bytes.NewReader(bodyBytes))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(makeAuthCookie(owner.ID))
+
+		resp, err := app.Test(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 OK on update, got %d", resp.StatusCode)
+		}
+
+		var updated models.Credential
+		if err := db.First(&updated, "id = ?", cred.ID).Error; err != nil {
+			t.Fatalf("failed to find updated cred: %v", err)
+		}
+		if updated.Label != "Updated GitHub PAT" {
+			t.Errorf("expected label 'Updated GitHub PAT', got %s", updated.Label)
+		}
+		decrypted, err := cipher.Decrypt(updated.EncryptedData)
+		if err != nil || decrypted != "ghp_new_updated_token_12345" {
+			t.Errorf("expected decrypted secret 'ghp_new_updated_token_12345', got %s (err: %v)", decrypted, err)
 		}
 	})
 

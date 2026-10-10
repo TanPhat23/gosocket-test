@@ -193,6 +193,8 @@ func (s *Server) setupRoutes() {
 	credentialsGroup := teamsGroup.Group("/credentials", RequireTeamRole(s.AuthService, models.RoleOwner))
 	credentialsGroup.Get("", credHandlers.List)
 	credentialsGroup.Post("", credHandlers.Create)
+	credentialsGroup.Put("/:credential_id", credHandlers.Update)
+	credentialsGroup.Patch("/:credential_id", credHandlers.Update)
 	credentialsGroup.Delete("/:credential_id", credHandlers.Delete)
 
 	// GitHub repository list endpoint allows team viewers and above
