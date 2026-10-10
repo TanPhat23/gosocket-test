@@ -1,5 +1,6 @@
 import { queryOptions } from '@tanstack/react-query';
 import { authApi } from './api/authApi';
+import { useAuthStore } from './store/useAuthStore';
 
 export const authQueryOptions = () =>
   queryOptions({
@@ -7,8 +8,10 @@ export const authQueryOptions = () =>
     queryFn: async () => {
       try {
         const res = await authApi.getCurrentUser();
+        useAuthStore.setState({ user: res.user, isLoading: false, isInitialized: true, error: null });
         return res.user;
       } catch {
+        useAuthStore.setState({ user: null, isLoading: false, isInitialized: true, error: null });
         return null;
       }
     },

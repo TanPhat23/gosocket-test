@@ -13,8 +13,11 @@ const loginSchema = z.object({
 
 export const LoginForm: React.FC = () => {
   const login = useAuthStore((state) => state.login);
-  const isLoading = useAuthStore((state) => state.isLoading);
+  const authLoading = useAuthStore((state) => state.isLoading);
   const error = useAuthStore((state) => state.error);
+  const [isSubmitting, setIsSubmitting] = React.useState(false);
+
+  const isBusy = isSubmitting || authLoading;
 
   const form = useForm({
     defaultValues: {
@@ -25,7 +28,18 @@ export const LoginForm: React.FC = () => {
       onSubmit: loginSchema,
     },
     onSubmit: async ({ value }) => {
-      await login({ email: value.email, password: value.password });
+      setIsSubmitting(true);
+      try {
+        await login({ email: value.email, password: value.password });
+        const user = useAuthStore.getState().user;
+        if (user) {
+          const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+          const target = params?.get('redirect') || '/';
+          window.location.href = target;
+        }
+      } finally {
+        setIsSubmitting(false);
+      }
     },
   });
 
@@ -86,7 +100,7 @@ export const LoginForm: React.FC = () => {
                     onBlur={field.handleBlur}
                     onChange={(e) => field.handleChange(e.target.value)}
                     required
-                    disabled={isLoading}
+                    disabled={isBusy}
                     autoComplete="email"
                   />
                   {errorMessage && (
@@ -124,7 +138,7 @@ export const LoginForm: React.FC = () => {
                     onBlur={field.handleBlur}
                     onChange={(e) => field.handleChange(e.target.value)}
                     required
-                    disabled={isLoading}
+                    disabled={isBusy}
                     autoComplete="current-password"
                   />
                   {errorMessage && (
@@ -137,15 +151,18 @@ export const LoginForm: React.FC = () => {
 
           <form.Subscribe
             selector={(state) => [state.isSubmitting]}
-            children={([isSubmitting]) => (
-              <Button
-                type="submit"
-                className="w-full mt-1"
-                disabled={isLoading || isSubmitting}
-              >
-                {isLoading || isSubmitting ? 'Signing in...' : 'Sign In'}
-              </Button>
-            )}
+            children={([formSubmitting]) => {
+              const activeLoading = formSubmitting || isBusy;
+              return (
+                <Button
+                  type="submit"
+                  className="w-full mt-1"
+                  disabled={activeLoading}
+                >
+                  {activeLoading ? 'Signing in...' : 'Sign In'}
+                </Button>
+              );
+            }}
           />
         </form>
 

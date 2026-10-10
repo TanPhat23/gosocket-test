@@ -15,7 +15,7 @@ describe('useAuthStore', () => {
     vi.clearAllMocks();
     useAuthStore.setState({
       user: null,
-      isLoading: true,
+      isLoading: false,
       isInitialized: false,
       error: null,
     });
@@ -24,7 +24,7 @@ describe('useAuthStore', () => {
   it('initializes with default state', () => {
     const state = useAuthStore.getState();
     expect(state.user).toBeNull();
-    expect(state.isLoading).toBe(true);
+    expect(state.isLoading).toBe(false);
     expect(state.isInitialized).toBe(false);
     expect(state.error).toBeNull();
   });
