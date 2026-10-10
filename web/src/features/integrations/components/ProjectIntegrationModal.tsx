@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { useForm } from '@tanstack/react-form';
+import { useForm, useStore } from '@tanstack/react-form';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { z } from 'zod';
 import {
@@ -14,6 +14,16 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import { cn } from 'cn';
+import {
+  Table,
+  TableHeader,
+  TableBody,
+  TableHead,
+  TableRow,
+  TableCell,
+} from '@/components/ui/table';
+import { BranchCommandPicker } from './BranchCommandPicker';
 import {
   useActiveProjectId,
   useProjectsList,
@@ -76,8 +86,8 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
 
   const currentProject = projects.find((p) => p.id === activeProjectId);
 
-  // Tab State
-  const [activeTab, setActiveTab] = useState<'repos' | 'pat'>('repos');
+  // Tab State: 'repos' (Connected Repositories), 'connect' (+ Connect Repository), 'pat' (GitHub Token)
+  const [activeTab, setActiveTab] = useState<'repos' | 'connect' | 'pat'>('repos');
 
   // Local notification banners
   const [actionError, setActionError] = useState<string | null>(null);
@@ -95,8 +105,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
   const [showSecret, setShowSecret] = useState(false);
   const [tokenFormError, setTokenFormError] = useState<string | null>(null);
 
-  // Repositories View State
-  const [showAddRepoForm, setShowAddRepoForm] = useState(false);
+  // Connect View State
   const [repoFilterQuery, setRepoFilterQuery] = useState('');
   const [manualRepoMode, setManualRepoMode] = useState(false);
   const [repoScopeFilter, setRepoScopeFilter] = useState<'all' | 'connected' | 'my'>('all');
@@ -179,6 +188,9 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
     },
   });
 
+  // Reactive subscription to repo field in connectForm
+  const formRepoValue = useStore(connectForm.store, (s) => s.values.repo);
+
   // Query repositories for the selected credential
   const {
     data: queriedRepos,
@@ -227,7 +239,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
   }, [integrationsError, credentialsError]);
 
   // Query branches for newly selected repo
-  const newRepoSlug = connectForm.getFieldValue('repo') || '';
+  const newRepoSlug = formRepoValue || '';
   const shouldFetchNewRepoBranches = Boolean(
     activeTeamId && activeCredId && newRepoSlug.includes('/')
   );
@@ -235,6 +247,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
   const {
     data: queriedBranches,
     isLoading: loadingBranches,
+    refetch: refetchFormBranches,
   } = useQuery({
     ...gitHubBranchesQueryOptions(activeTeamId || '', activeCredId, newRepoSlug),
     enabled: shouldFetchNewRepoBranches,
@@ -260,7 +273,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
       );
       queryClient.invalidateQueries({ queryKey: ['integrations', activeProjectId] });
       connectForm.reset();
-      setShowAddRepoForm(false);
+      setActiveTab('repos');
       setActionSuccess(`Connected ${created.external_id} successfully!`);
     },
     onError: (err) => {
@@ -621,7 +634,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
             <Button
               variant="outline"
               size="sm"
-              className="gap-1.5 h-8 text-xs font-medium"
+              className="gap-1.5 h-8 text-xs font-medium cursor-pointer"
               title="Manage Project Integrations"
               data-testid="integrations-trigger-button"
             >
@@ -678,7 +691,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                 <Button
                   size="xs"
                   variant="destructive"
-                  className="h-7 text-xs font-medium gap-1"
+                  className="h-7 text-xs font-medium gap-1 cursor-pointer"
                   onClick={() => {
                     setActiveTab('pat');
                     if (credentials.length > 0) {
@@ -722,28 +735,37 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
           </div>
         )}
 
-        {/* Tab Navigation */}
+        {/* Tab Navigation: 3 Dedicated Tabs */}
         <Tabs
           value={activeTab}
-          onValueChange={(val) => setActiveTab(val as 'repos' | 'pat')}
+          onValueChange={(val) => setActiveTab(val as 'repos' | 'connect' | 'pat')}
           className="w-full space-y-4 pt-1"
         >
-          <TabsList className="grid grid-cols-2 w-full max-w-md h-9">
+          <TabsList className="grid grid-cols-3 w-full max-w-xl h-9">
             <TabsTrigger
               value="repos"
-              className="text-xs flex items-center justify-center gap-2"
+              className="text-xs flex items-center justify-center gap-2 cursor-pointer"
               data-testid="tab-repositories"
             >
               <GitBranch className="size-3.5" />
-              <span>Repositories</span>
+              <span>Connected Repositories</span>
               <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 font-mono font-medium">
                 {integrations.length}
               </Badge>
             </TabsTrigger>
 
             <TabsTrigger
+              value="connect"
+              className="text-xs flex items-center justify-center gap-2 cursor-pointer"
+              data-testid="tab-connect"
+            >
+              <Plus className="size-3.5" />
+              <span>Connect Repository</span>
+            </TabsTrigger>
+
+            <TabsTrigger
               value="pat"
-              className="text-xs flex items-center justify-center gap-2"
+              className="text-xs flex items-center justify-center gap-2 cursor-pointer"
               data-testid="tab-pat"
             >
               <KeyRound className="size-3.5" />
@@ -765,7 +787,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
           </TabsList>
 
           {/* ============================================================ */}
-          {/* TAB 1: REPOSITORIES VIEW */}
+          {/* TAB 1: CONNECTED REPOSITORIES TABLE VIEW */}
           {/* ============================================================ */}
           <TabsContent value="repos" className="space-y-4 mt-2">
             <div className="flex items-center justify-between">
@@ -780,19 +802,17 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
 
               <Button
                 size="xs"
-                variant={showAddRepoForm ? 'secondary' : 'default'}
-                onClick={() => {
-                  setShowAddRepoForm((prev) => !prev);
-                }}
-                className="h-7 text-xs gap-1"
+                variant="default"
+                onClick={() => setActiveTab('connect')}
+                className="h-7 text-xs gap-1 cursor-pointer"
                 data-testid="toggle-connect-repo-btn"
               >
                 <Plus className="size-3" />
-                {showAddRepoForm ? 'Close Form' : 'Connect GitHub Repository'}
+                <span>+ Connect Repository</span>
               </Button>
             </div>
 
-            {/* Repositories List */}
+            {/* Repositories Table / Empty State */}
             {loading ? (
               <div className="p-8 text-center text-xs text-muted-foreground">
                 <RefreshCw className="size-4 animate-spin mx-auto mb-2 text-muted-foreground" />
@@ -803,211 +823,403 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                 <GitBranch className="size-7 mx-auto text-muted-foreground/60" />
                 <p className="font-medium text-foreground">No GitHub repositories connected yet</p>
                 <p className="max-w-md mx-auto">
-                  Click "Connect GitHub Repository" to link a repo. Make sure your GitHub Personal Access Token is configured first.
+                  Click "+ Connect Repository" to link a repo. Make sure your GitHub Personal Access Token is configured first.
                 </p>
-                {credentials.length === 0 && (
+                <div className="flex items-center justify-center gap-2 pt-1">
                   <Button
                     size="xs"
-                    variant="outline"
-                    onClick={() => setActiveTab('pat')}
-                    className="mt-2 text-xs gap-1.5"
+                    variant="default"
+                    onClick={() => setActiveTab('connect')}
+                    className="text-xs gap-1"
                   >
-                    <KeyRound className="size-3 text-primary" />
-                    Configure GitHub Token (PAT)
+                    <Plus className="size-3" />
+                    <span>Connect Repository</span>
                   </Button>
-                )}
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {integrations.map((item) => (
-                  <div
-                    key={item.id}
-                    className="flex items-center justify-between gap-3 p-3 rounded-lg border border-border bg-card shadow-xs hover:border-border/80 transition-colors"
-                    data-testid={`integration-row-${item.id}`}
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="size-8 rounded-md bg-muted/60 flex items-center justify-center shrink-0">
-                        <GitBranch className="size-4 text-primary" />
-                      </div>
-                      <div className="min-w-0 space-y-1">
-                        <div className="flex items-center gap-2">
-                          <span className="font-semibold text-xs text-foreground font-mono truncate">
-                            {item.external_id}
-                          </span>
-                          {item.enabled ? (
-                            <Badge className="bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 text-[10px] font-mono py-0 h-4">
-                              Active
-                            </Badge>
-                          ) : (
-                            <Badge variant="outline" className="text-[10px] font-mono py-0 h-4">
-                              Disabled
-                            </Badge>
-                          )}
-                        </div>
-
-                        <div className="flex items-center gap-3 flex-wrap">
-                          {item.external_url && (
-                            <a
-                              href={item.external_url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-[11px] text-muted-foreground hover:text-primary flex items-center gap-1 truncate"
-                            >
-                              <span className="truncate">{item.external_url}</span>
-                              <ExternalLink className="size-2.5 shrink-0" />
-                            </a>
-                          )}
-
-                          {/* Live Branch Selector & Fetcher */}
-                          <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground font-mono">
-                            <GitBranch className="size-3 text-primary shrink-0" />
-                            <span>Branch:</span>
-                            {loadingBranchesForInteg[item.id] ? (
-                              <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                                <RefreshCw className="size-2.5 animate-spin text-primary" />
-                                <span>Fetching...</span>
-                              </span>
-                            ) : (
-                              <select
-                                value={String(item.config?.base_branch || 'main')}
-                                onChange={(e) => handleUpdateIntegrationBranch(item, e.target.value)}
-                                disabled={updatingBranchIntegId === item.id}
-                                className="h-5 text-[11px] font-mono rounded border border-border/70 bg-background px-1.5 outline-none focus:border-ring cursor-pointer hover:border-primary transition-colors"
-                                title="Change base branch"
-                                data-testid={`branch-select-${item.id}`}
-                              >
-                                {(connectedRepoBranches[item.id] && connectedRepoBranches[item.id].length > 0
-                                  ? connectedRepoBranches[item.id]
-                                  : [String(item.config?.base_branch || 'main')]
-                                ).map((b) => (
-                                  <option key={b} value={b}>
-                                    {b}
-                                  </option>
-                                ))}
-                              </select>
-                            )}
-
-                            <button
-                              type="button"
-                              onClick={() => fetchBranchesForIntegration(item)}
-                              className="text-muted-foreground hover:text-foreground text-[10px] flex items-center gap-0.5 p-0.5 rounded hover:bg-muted cursor-pointer"
-                              title="Fetch all branches from GitHub"
-                              data-testid={`fetch-branches-btn-${item.id}`}
-                            >
-                              <RefreshCw
-                                className={`size-2.5 ${loadingBranchesForInteg[item.id] ? 'animate-spin' : ''}`}
-                              />
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2 shrink-0">
-                      <Button
-                        size="icon-xs"
-                        variant="ghost"
-                        onClick={() => handleDeleteIntegration(item.id)}
-                        className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer"
-                        title="Disconnect repository"
-                        data-testid={`delete-integration-${item.id}`}
-                      >
-                        <Trash2 className="size-3.5" />
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Connect Repository Form Drawer */}
-            {showAddRepoForm && (
-              <div
-                className="p-4 rounded-lg border border-primary/30 bg-muted/15 space-y-4 animate-in fade-in-50 duration-150"
-                data-testid="connect-repo-form"
-              >
-                <div className="flex items-center justify-between pb-3 border-b border-border/60">
-                  <div className="flex items-center gap-2">
-                    <GitBranch className="size-4 text-primary" />
-                    <h5 className="text-xs font-semibold text-foreground">
-                      Connect a GitHub Repository
-                    </h5>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setManualRepoMode(!manualRepoMode)}
-                    className="text-[11px] text-primary hover:underline font-medium cursor-pointer"
-                    data-testid="toggle-manual-repo"
-                  >
-                    {manualRepoMode ? 'Browse accessible repos' : 'Enter owner/repo manually'}
-                  </button>
-                </div>
-
-                {/* Token Notice */}
-                {credentials.length > 0 ? (
-                  <div className="flex items-center justify-between px-3 py-2 rounded-md bg-muted/40 border border-border/60 text-xs">
-                    <div className="flex items-center gap-2 text-muted-foreground">
-                      <KeyRound className="size-3.5 text-primary shrink-0" />
-                      <span>
-                        Using PAT:{' '}
-                        <b className="text-foreground font-mono">
-                          {credentials.find((c) => c.id === (connectForm.getFieldValue('credential_id') || activeCredId))?.label ||
-                            credentials[0].label}
-                        </b>
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab('pat')}
-                      className="text-[11px] text-primary hover:underline font-medium cursor-pointer"
-                    >
-                      Change or update token
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex items-center justify-between p-3 rounded-md bg-amber-500/10 border border-amber-500/20 text-xs text-amber-700 dark:text-amber-400">
-                    <div className="flex items-center gap-2">
-                      <AlertTriangle className="size-4 shrink-0" />
-                      <span>No GitHub Personal Access Token configured.</span>
-                    </div>
+                  {credentials.length === 0 && (
                     <Button
                       size="xs"
                       variant="outline"
                       onClick={() => setActiveTab('pat')}
-                      className="h-6 text-[11px]"
+                      className="text-xs gap-1.5"
                     >
-                      Configure Token Now
+                      <KeyRound className="size-3 text-primary" />
+                      Configure GitHub Token (PAT)
                     </Button>
-                  </div>
-                )}
-
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    connectForm.handleSubmit();
-                  }}
-                  className="space-y-4"
-                >
-                  <connectForm.Field
-                    name="repo"
-                    children={(repoField) => {
-                      const repoError = repoField.state.meta.errors[0]
-                        ? (typeof repoField.state.meta.errors[0] === 'string'
-                            ? repoField.state.meta.errors[0]
-                            : (repoField.state.meta.errors[0] as { message?: string })?.message)
-                        : undefined;
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-md border border-border bg-card overflow-hidden">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-[30%]">Repository</TableHead>
+                      <TableHead className="w-[12%]">Status</TableHead>
+                      <TableHead className="w-[28%]">Base Branch</TableHead>
+                      <TableHead className="w-[12%]">Auto PR</TableHead>
+                      <TableHead className="w-[18%] text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {integrations.map((item) => {
+                      const branches = connectedRepoBranches[item.id] || [];
+                      const isFetchingBranches = loadingBranchesForInteg[item.id] || false;
+                      const currentBranch = String(item.config?.base_branch || 'main');
 
                       return (
-                        <div className="space-y-2">
-                          {manualRepoMode ? (
-                            <div className="space-y-1">
-                              <label htmlFor="repo-input" className="text-xs font-medium text-foreground">
-                                Repository (owner/repo) *
+                        <TableRow
+                          key={item.id}
+                          className="hover:bg-muted/40 transition-colors"
+                          data-testid={`integration-row-${item.id}`}
+                        >
+                          {/* Column 1: Repository */}
+                          <TableCell className="font-medium">
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <div className="size-7 rounded-md bg-muted/60 flex items-center justify-center shrink-0">
+                                <GitBranch className="size-3.5 text-primary" />
+                              </div>
+                              <div className="min-w-0 space-y-0.5">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="font-semibold text-xs font-mono text-foreground truncate">
+                                    {item.external_id}
+                                  </span>
+                                  {item.external_url && (
+                                    <a
+                                      href={item.external_url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="text-muted-foreground hover:text-primary transition-colors inline-flex"
+                                      title="Open repository on GitHub"
+                                    >
+                                      <ExternalLink className="size-3 shrink-0" />
+                                    </a>
+                                  )}
+                                </div>
+                                {Boolean(item.config?.filter_label) && (
+                                  <p className="text-[10px] text-muted-foreground font-mono">
+                                    Label: {String(item.config?.filter_label)}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          </TableCell>
+
+                          {/* Column 2: Status */}
+                          <TableCell>
+                            {item.enabled ? (
+                              <Badge className="bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 text-[10px] font-mono py-0 h-4">
+                                Active
+                              </Badge>
+                            ) : (
+                              <Badge variant="outline" className="text-[10px] font-mono py-0 h-4 text-muted-foreground">
+                                Disabled
+                              </Badge>
+                            )}
+                          </TableCell>
+
+                          {/* Column 3: Base Branch (shadcn Command Branch Picker) */}
+                          <TableCell>
+                            <div className="flex items-center gap-1.5">
+                              <BranchCommandPicker
+                                value={currentBranch}
+                                branches={branches}
+                                isLoading={isFetchingBranches}
+                                disabled={updatingBranchIntegId === item.id}
+                                onSelect={(b) => handleUpdateIntegrationBranch(item, b)}
+                                onRefresh={() => fetchBranchesForIntegration(item)}
+                                testId={`branch-select-${item.id}`}
+                              />
+                            </div>
+                          </TableCell>
+
+                          {/* Column 4: Auto PR */}
+                          <TableCell>
+                            {item.config?.auto_pr !== false ? (
+                              <Badge variant="secondary" className="text-[10px] font-mono py-0 h-4">
+                                Enabled
+                              </Badge>
+                            ) : (
+                              <Badge variant="outline" className="text-[10px] font-mono py-0 h-4 text-muted-foreground">
+                                Off
+                              </Badge>
+                            )}
+                          </TableCell>
+
+                          {/* Column 5: Actions */}
+                          <TableCell className="text-right">
+                            <div className="flex items-center justify-end gap-1">
+                              <Button
+                                size="icon-xs"
+                                variant="ghost"
+                                onClick={() => fetchBranchesForIntegration(item)}
+                                disabled={isFetchingBranches}
+                                className="text-muted-foreground hover:text-foreground cursor-pointer"
+                                title="Refresh branches from GitHub"
+                                data-testid={`fetch-branches-btn-${item.id}`}
+                              >
+                                <RefreshCw className={cn('size-3', isFetchingBranches && 'animate-spin')} />
+                              </Button>
+
+                              <Button
+                                size="icon-xs"
+                                variant="ghost"
+                                onClick={() => handleDeleteIntegration(item.id)}
+                                className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer"
+                                title="Disconnect repository"
+                                data-testid={`delete-integration-${item.id}`}
+                              >
+                                <Trash2 className="size-3.5" />
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </TabsContent>
+
+          {/* ============================================================ */}
+          {/* TAB 2: CONNECT REPOSITORY VIEW */}
+          {/* ============================================================ */}
+          <TabsContent value="connect" className="space-y-4 mt-2">
+            <div
+              className="p-4 rounded-lg border border-border bg-card shadow-xs space-y-4"
+              data-testid="connect-repo-form"
+            >
+              <div className="flex items-center justify-between pb-3 border-b border-border/60">
+                <div className="flex items-center gap-2">
+                  <GitBranch className="size-4 text-primary" />
+                  <h5 className="text-xs font-semibold text-foreground">
+                    Connect a GitHub Repository
+                  </h5>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setManualRepoMode(!manualRepoMode)}
+                  className="text-[11px] text-primary hover:underline font-medium cursor-pointer"
+                  data-testid="toggle-manual-repo"
+                >
+                  {manualRepoMode ? 'Browse accessible repos' : 'Enter owner/repo manually'}
+                </button>
+              </div>
+
+              {/* Token Notice */}
+              {credentials.length > 0 ? (
+                <div className="flex items-center justify-between px-3 py-2 rounded-md bg-muted/40 border border-border/60 text-xs">
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <KeyRound className="size-3.5 text-primary shrink-0" />
+                    <span>
+                      Using PAT:{' '}
+                      <b className="text-foreground font-mono">
+                        {credentials.find((c) => c.id === (connectForm.getFieldValue('credential_id') || activeCredId))?.label ||
+                          credentials[0].label}
+                      </b>
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('pat')}
+                    className="text-[11px] text-primary hover:underline font-medium cursor-pointer"
+                  >
+                    Change or update token
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between p-3 rounded-md bg-amber-500/10 border border-amber-500/20 text-xs text-amber-700 dark:text-amber-400">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="size-4 shrink-0" />
+                    <span>No GitHub Personal Access Token configured.</span>
+                  </div>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    onClick={() => setActiveTab('pat')}
+                    className="h-6 text-[11px] cursor-pointer"
+                  >
+                    Configure Token Now
+                  </Button>
+                </div>
+              )}
+
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  connectForm.handleSubmit();
+                }}
+                className="space-y-4"
+              >
+                <connectForm.Field
+                  name="repo"
+                  children={(repoField) => {
+                    const repoError = repoField.state.meta.errors[0]
+                      ? (typeof repoField.state.meta.errors[0] === 'string'
+                          ? repoField.state.meta.errors[0]
+                          : (repoField.state.meta.errors[0] as { message?: string })?.message)
+                      : undefined;
+
+                    return (
+                      <div className="space-y-2">
+                        {manualRepoMode ? (
+                          <div className="space-y-1">
+                            <label htmlFor="repo-input" className="text-xs font-medium text-foreground">
+                              Repository (owner/repo) *
+                            </label>
+                            <Input
+                              id="repo-input"
+                              placeholder="e.g. facebook/react or octocat/hello-world"
+                              value={repoField.state.value}
+                              onBlur={repoField.handleBlur}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                repoField.handleChange(val);
+                              }}
+                              className="font-mono text-xs h-8"
+                              data-testid="repo-input"
+                            />
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            {/* Scope Filter Options */}
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <button
+                                type="button"
+                                onClick={() => setRepoScopeFilter('connected')}
+                                className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer ${
+                                  repoScopeFilter === 'connected'
+                                    ? 'bg-primary text-primary-foreground shadow-xs'
+                                    : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'
+                                }`}
+                                data-testid="scope-connected-repos"
+                              >
+                                Connected in Project ({integrations.length})
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setRepoScopeFilter('my')}
+                                className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer ${
+                                  repoScopeFilter === 'my'
+                                    ? 'bg-primary text-primary-foreground shadow-xs'
+                                    : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'
+                                }`}
+                                data-testid="scope-my-repos"
+                              >
+                                My Account Repos
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setRepoScopeFilter('all')}
+                                className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer ${
+                                  repoScopeFilter === 'all'
+                                    ? 'bg-primary text-primary-foreground shadow-xs'
+                                    : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'
+                                }`}
+                                data-testid="scope-all-repos"
+                              >
+                                All Accessible ({gitHubRepos.length})
+                              </button>
+                            </div>
+
+                            <div className="relative">
+                              <Search className="size-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                              <Input
+                                placeholder="Filter repositories..."
+                                value={repoFilterQuery}
+                                onChange={(e) => setRepoFilterQuery(e.target.value)}
+                                className="pl-8 text-xs h-8"
+                                data-testid="repo-search-input"
+                              />
+                            </div>
+
+                            {loadingRepos ? (
+                              <div className="p-6 rounded-md border border-border bg-card text-center text-xs text-muted-foreground">
+                                <RefreshCw className="size-4 animate-spin mx-auto mb-1.5 text-muted-foreground" />
+                                Fetching repositories from GitHub...
+                              </div>
+                            ) : gitHubRepos.length === 0 ? (
+                              <div className="p-4 rounded-md border border-dashed border-border bg-card text-center text-xs text-muted-foreground space-y-1">
+                                <p>No repositories returned from GitHub.</p>
+                                <button
+                                  type="button"
+                                  onClick={() => setManualRepoMode(true)}
+                                  className="text-[11px] text-primary hover:underline font-medium cursor-pointer"
+                                >
+                                  Enter repository name manually
+                                </button>
+                              </div>
+                            ) : (
+                              <div
+                                className="max-h-48 overflow-y-auto rounded-md border border-border bg-card divide-y divide-border/60"
+                                data-testid="repo-picker-list"
+                              >
+                                {filteredRepositories.length === 0 ? (
+                                  <div className="p-3 text-center text-xs text-muted-foreground">
+                                    No matching repositories found.
+                                  </div>
+                                ) : (
+                                  filteredRepositories.map((item) => {
+                                    const isSelected = repoField.state.value === item.full_name;
+                                    const isAlreadyConnected = integrations.some(
+                                      (i) => i.external_id === item.full_name
+                                    );
+
+                                    return (
+                                      <button
+                                        key={item.id}
+                                        type="button"
+                                        onClick={() => handleSelectRepository(item)}
+                                        className={`w-full text-left p-2.5 transition-colors flex items-center justify-between gap-3 text-xs cursor-pointer ${
+                                          isSelected
+                                            ? 'bg-primary/10 text-foreground font-medium'
+                                            : 'hover:bg-muted/50 text-foreground'
+                                        }`}
+                                        data-testid={`repo-item-${item.full_name}`}
+                                      >
+                                        <div className="min-w-0 flex-1">
+                                          <div className="flex items-center gap-1.5 font-mono text-xs">
+                                            {item.private && (
+                                              <Lock className="size-3 text-muted-foreground shrink-0" />
+                                            )}
+                                            <span className="truncate">{item.full_name}</span>
+                                            <Badge
+                                              variant="secondary"
+                                              className="text-[10px] px-1 py-0 h-4 font-mono font-normal ml-1"
+                                            >
+                                              {item.default_branch}
+                                            </Badge>
+                                            {isAlreadyConnected && (
+                                              <Badge className="bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 text-[9px] font-mono py-0 h-4 ml-1">
+                                                Connected
+                                              </Badge>
+                                            )}
+                                          </div>
+                                          {item.description && (
+                                            <p className="text-[11px] text-muted-foreground truncate mt-0.5">
+                                              {item.description}
+                                            </p>
+                                          )}
+                                        </div>
+                                        {isSelected && (
+                                          <Check className="size-4 text-primary shrink-0" />
+                                        )}
+                                      </button>
+                                    );
+                                  })
+                                )}
+                              </div>
+                            )}
+
+                            {/* Selected repository input */}
+                            <div className="pt-1">
+                              <label htmlFor="repo-input" className="text-[11px] font-medium text-foreground block mb-1">
+                                Selected Repository *
                               </label>
                               <Input
                                 id="repo-input"
-                                placeholder="e.g. facebook/react or octocat/hello-world"
+                                placeholder="owner/repo (or click repository in list above)"
                                 value={repoField.state.value}
                                 onBlur={repoField.handleBlur}
                                 onChange={(e) => {
@@ -1018,367 +1230,223 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                                 data-testid="repo-input"
                               />
                             </div>
-                          ) : (
-                            <div className="space-y-2">
-                              {/* Scope Filter Options: Connected vs My Repos vs All */}
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                <button
-                                  type="button"
-                                  onClick={() => setRepoScopeFilter('connected')}
-                                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer ${
-                                    repoScopeFilter === 'connected'
-                                      ? 'bg-primary text-primary-foreground shadow-xs'
-                                      : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'
-                                  }`}
-                                  data-testid="scope-connected-repos"
-                                >
-                                  Connected in Project ({integrations.length})
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setRepoScopeFilter('my')}
-                                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer ${
-                                    repoScopeFilter === 'my'
-                                      ? 'bg-primary text-primary-foreground shadow-xs'
-                                      : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'
-                                  }`}
-                                  data-testid="scope-my-repos"
-                                >
-                                  My Account Repos
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setRepoScopeFilter('all')}
-                                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer ${
-                                    repoScopeFilter === 'all'
-                                      ? 'bg-primary text-primary-foreground shadow-xs'
-                                      : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'
-                                  }`}
-                                  data-testid="scope-all-repos"
-                                >
-                                  All Accessible ({gitHubRepos.length})
-                                </button>
-                              </div>
+                          </div>
+                        )}
 
-                              <div className="relative">
-                                <Search className="size-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
-                                <Input
-                                  placeholder="Filter repositories..."
-                                  value={repoFilterQuery}
-                                  onChange={(e) => setRepoFilterQuery(e.target.value)}
-                                  className="pl-8 text-xs h-8"
-                                  data-testid="repo-search-input"
-                                />
-                              </div>
-
-                              {loadingRepos ? (
-                                <div className="p-6 rounded-md border border-border bg-card text-center text-xs text-muted-foreground">
-                                  <RefreshCw className="size-4 animate-spin mx-auto mb-1.5 text-muted-foreground" />
-                                  Fetching repositories from GitHub...
-                                </div>
-                              ) : gitHubRepos.length === 0 ? (
-                                <div className="p-4 rounded-md border border-dashed border-border bg-card text-center text-xs text-muted-foreground space-y-1">
-                                  <p>No repositories returned from GitHub.</p>
-                                  <button
-                                    type="button"
-                                    onClick={() => setManualRepoMode(true)}
-                                    className="text-[11px] text-primary hover:underline font-medium cursor-pointer"
-                                  >
-                                    Enter repository name manually
-                                  </button>
-                                </div>
-                              ) : (
-                                <div
-                                  className="max-h-48 overflow-y-auto rounded-md border border-border bg-card divide-y divide-border/60"
-                                  data-testid="repo-picker-list"
-                                >
-                                  {filteredRepositories.length === 0 ? (
-                                    <div className="p-3 text-center text-xs text-muted-foreground">
-                                      No matching repositories found.
-                                    </div>
-                                  ) : (
-                                    filteredRepositories.map((item) => {
-                                      const isSelected = repoField.state.value === item.full_name;
-                                      const isAlreadyConnected = integrations.some(
-                                        (i) => i.external_id === item.full_name
-                                      );
-
-                                      return (
-                                        <button
-                                          key={item.id}
-                                          type="button"
-                                          onClick={() => handleSelectRepository(item)}
-                                          className={`w-full text-left p-2.5 transition-colors flex items-center justify-between gap-3 text-xs cursor-pointer ${
-                                            isSelected
-                                              ? 'bg-primary/10 text-foreground font-medium'
-                                              : 'hover:bg-muted/50 text-foreground'
-                                          }`}
-                                          data-testid={`repo-item-${item.full_name}`}
-                                        >
-                                          <div className="min-w-0 flex-1">
-                                            <div className="flex items-center gap-1.5 font-mono text-xs">
-                                              {item.private && (
-                                                <Lock className="size-3 text-muted-foreground shrink-0" />
-                                              )}
-                                              <span className="truncate">{item.full_name}</span>
-                                              <Badge
-                                                variant="secondary"
-                                                className="text-[10px] px-1 py-0 h-4 font-mono font-normal ml-1"
-                                              >
-                                                {item.default_branch}
-                                              </Badge>
-                                              {isAlreadyConnected && (
-                                                <Badge className="bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 text-[9px] font-mono py-0 h-4 ml-1">
-                                                  Connected
-                                                </Badge>
-                                              )}
-                                            </div>
-                                            {item.description && (
-                                              <p className="text-[11px] text-muted-foreground truncate mt-0.5">
-                                                {item.description}
-                                              </p>
-                                            )}
-                                          </div>
-                                          {isSelected && (
-                                            <Check className="size-4 text-primary shrink-0" />
-                                          )}
-                                        </button>
-                                      );
-                                    })
-                                  )}
-                                </div>
-                              )}
-
-                              {/* Manual input fallback always accessible */}
-                              <div className="pt-1">
-                                <label htmlFor="repo-input" className="text-[11px] font-medium text-foreground block mb-1">
-                                  Selected Repository *
-                                </label>
-                                <Input
-                                  id="repo-input"
-                                  placeholder="owner/repo (or click repository in list above)"
-                                  value={repoField.state.value}
-                                  onBlur={repoField.handleBlur}
-                                  onChange={(e) => {
-                                    const val = e.target.value;
-                                    repoField.handleChange(val);
-                                  }}
-                                  className="font-mono text-xs h-8"
-                                  data-testid="repo-input"
-                                />
-                              </div>
-                            </div>
-                          )}
-
-                          {repoError && (
-                            <p className="text-[11px] text-destructive font-medium">{repoError}</p>
-                          )}
-                        </div>
-                      );
-                    }}
-                  />
-
-                  {/* Webhook Configuration Snippet */}
-                  <div className="p-3 rounded-lg border border-border bg-card space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                        GitHub Webhook Setup
-                      </span>
-                      <span className="text-[11px] text-muted-foreground font-mono">
-                        Payload URL &amp; Secret
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-muted-foreground leading-relaxed">
-                      In your GitHub Repo &gt; <b>Settings &gt; Webhooks &gt; Add webhook</b>, set Payload URL to the URL below, content type to <code className="font-mono text-foreground">application/json</code>, and trigger on <code className="font-mono text-foreground">Issues</code>.
-                    </p>
-
-                    <div className="space-y-1.5 pt-1">
-                      <label className="text-[11px] font-medium text-foreground">Payload URL</label>
-                      <div className="flex items-center gap-1.5">
-                        <Input
-                          readOnly
-                          value={webhookUrl}
-                          className="font-mono text-[11px] h-7 bg-muted/50 select-all"
-                          data-testid="webhook-url-input"
-                        />
-                        <Button
-                          type="button"
-                          size="icon-xs"
-                          variant="outline"
-                          onClick={handleCopyWebhook}
-                          className="h-7 w-7 shrink-0 cursor-pointer"
-                          title="Copy Payload URL"
-                          data-testid="copy-webhook-btn"
-                        >
-                          {copiedWebhook ? (
-                            <Check className="size-3 text-emerald-500" />
-                          ) : (
-                            <Copy className="size-3" />
-                          )}
-                        </Button>
+                        {repoError && (
+                          <p className="text-[11px] text-destructive font-medium">{repoError}</p>
+                        )}
                       </div>
-                    </div>
+                    );
+                  }}
+                />
 
-                    <connectForm.Field
-                      name="webhook_secret"
-                      children={(field) => (
-                        <div className="space-y-1.5 pt-1">
-                          <div className="flex items-center justify-between">
-                            <label htmlFor="webhook-secret-input" className="text-[11px] font-medium text-foreground">
-                              Webhook Secret (Optional)
-                            </label>
-                            {field.state.value && (
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="xs"
-                                onClick={() => handleCopySecret(field.state.value || '')}
-                                className="h-5 text-[10px] text-muted-foreground gap-1 px-1 cursor-pointer"
-                              >
-                                {copiedSecret ? <Check className="size-2.5 text-emerald-500" /> : <Copy className="size-2.5" />}
-                                Copy
-                              </Button>
-                            )}
-                          </div>
-                          <Input
-                            id="webhook-secret-input"
-                            placeholder="Enter secret configured in GitHub repo webhook"
-                            value={field.state.value || ''}
-                            onBlur={field.handleBlur}
-                            onChange={(e) => field.handleChange(e.target.value)}
-                            className="font-mono text-[11px] h-7"
-                            data-testid="webhook-secret-input"
-                          />
-                        </div>
-                      )}
-                    />
+                {/* Webhook Configuration Snippet */}
+                <div className="p-3 rounded-lg border border-border bg-card space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      GitHub Webhook Setup
+                    </span>
+                    <span className="text-[11px] text-muted-foreground font-mono">
+                      Payload URL &amp; Secret
+                    </span>
                   </div>
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    In your GitHub Repo &gt; <b>Settings &gt; Webhooks &gt; Add webhook</b>, set Payload URL to the URL below, content type to <code className="font-mono text-foreground">application/json</code>, and trigger on <code className="font-mono text-foreground">Issues</code>.
+                  </p>
 
-                  {/* Branch and Auto-PR Settings */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                    <connectForm.Field
-                      name="base_branch"
-                      children={(field) => (
-                        <div className="space-y-1">
-                          <div className="flex items-center justify-between">
-                            <label htmlFor="base-branch-input" className="text-xs font-medium text-foreground flex items-center gap-1">
-                              <GitBranch className="size-3 text-primary" />
-                              <span>Base Branch *</span>
-                            </label>
-                            {loadingBranches ? (
-                              <span className="text-[10px] text-muted-foreground flex items-center gap-1">
-                                <RefreshCw className="size-2.5 animate-spin text-primary" />
-                                <span>Fetching branches...</span>
-                              </span>
-                            ) : availableBranches.length > 0 ? (
-                              <span className="text-[10px] text-muted-foreground font-mono">
-                                {availableBranches.length} branches found
-                              </span>
-                            ) : null}
-                          </div>
-
-                          {availableBranches.length > 0 ? (
-                            <select
-                              id="base-branch-select"
-                              value={field.state.value}
-                              onChange={(e) => field.handleChange(e.target.value)}
-                              className="w-full text-xs h-8 font-mono rounded-md border border-input bg-background px-2.5 outline-none focus:border-ring focus:ring-1 focus:ring-ring cursor-pointer"
-                              data-testid="base-branch-select"
-                            >
-                              {availableBranches.map((b) => (
-                                <option key={b} value={b}>
-                                  {b}
-                                </option>
-                              ))}
-                            </select>
-                          ) : (
-                            <Input
-                              id="base-branch-input"
-                              placeholder="main"
-                              value={field.state.value}
-                              onBlur={field.handleBlur}
-                              onChange={(e) => field.handleChange(e.target.value)}
-                              className="text-xs h-8 font-mono"
-                              data-testid="base-branch-input"
-                            />
-                          )}
-                        </div>
-                      )}
-                    />
-
-                    <connectForm.Field
-                      name="filter_label"
-                      children={(field) => (
-                        <div className="space-y-1">
-                          <label htmlFor="filter-label-input" className="text-xs font-medium text-foreground">
-                            Filter Label (Optional)
-                          </label>
-                          <Input
-                            id="filter-label-input"
-                            placeholder="e.g. agent or auto-task"
-                            value={field.state.value || ''}
-                            onBlur={field.handleBlur}
-                            onChange={(e) => field.handleChange(e.target.value)}
-                            className="text-xs h-8 font-mono"
-                            data-testid="filter-label-input"
-                          />
-                        </div>
-                      )}
-                    />
+                  <div className="space-y-1.5 pt-1">
+                    <label className="text-[11px] font-medium text-foreground">Payload URL</label>
+                    <div className="flex items-center gap-1.5">
+                      <Input
+                        readOnly
+                        value={webhookUrl}
+                        className="font-mono text-[11px] h-7 bg-muted/50 select-all"
+                        data-testid="webhook-url-input"
+                      />
+                      <Button
+                        type="button"
+                        size="icon-xs"
+                        variant="outline"
+                        onClick={handleCopyWebhook}
+                        className="h-7 w-7 shrink-0 cursor-pointer"
+                        title="Copy Payload URL"
+                        data-testid="copy-webhook-btn"
+                      >
+                        {copiedWebhook ? (
+                          <Check className="size-3 text-emerald-500" />
+                        ) : (
+                          <Copy className="size-3" />
+                        )}
+                      </Button>
+                    </div>
                   </div>
 
                   <connectForm.Field
-                    name="auto_pr"
+                    name="webhook_secret"
                     children={(field) => (
-                      <div className="flex items-center gap-2 pt-1">
-                        <input
-                          type="checkbox"
-                          id="auto-pr-checkbox"
-                          checked={field.state.value}
-                          onChange={(e) => field.handleChange(e.target.checked)}
-                          className="size-4 rounded border-input text-primary focus:ring-ring cursor-pointer"
-                          data-testid="auto-pr-checkbox"
+                      <div className="space-y-1.5 pt-1">
+                        <div className="flex items-center justify-between">
+                          <label htmlFor="webhook-secret-input" className="text-[11px] font-medium text-foreground">
+                            Webhook Secret (Optional)
+                          </label>
+                          {field.state.value && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="xs"
+                              onClick={() => handleCopySecret(field.state.value || '')}
+                              className="h-5 text-[10px] text-muted-foreground gap-1 px-1 cursor-pointer"
+                            >
+                              {copiedSecret ? <Check className="size-2.5 text-emerald-500" /> : <Copy className="size-2.5" />}
+                              Copy
+                            </Button>
+                          )}
+                        </div>
+                        <Input
+                          id="webhook-secret-input"
+                          placeholder="Enter secret configured in GitHub repo webhook"
+                          value={field.state.value || ''}
+                          onBlur={field.handleBlur}
+                          onChange={(e) => field.handleChange(e.target.value)}
+                          className="font-mono text-[11px] h-7"
+                          data-testid="webhook-secret-input"
                         />
-                        <label htmlFor="auto-pr-checkbox" className="text-xs text-foreground cursor-pointer">
-                          Auto-create Pull Request upon task completion
-                        </label>
+                      </div>
+                    )}
+                  />
+                </div>
+
+                {/* Branch and Auto-PR Settings */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  <connectForm.Field
+                    name="base_branch"
+                    children={(field) => (
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <label htmlFor="base-branch-input" className="text-xs font-medium text-foreground flex items-center gap-1">
+                            <GitBranch className="size-3 text-primary" />
+                            <span>Base Branch *</span>
+                          </label>
+                          {loadingBranches ? (
+                            <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                              <RefreshCw className="size-2.5 animate-spin text-primary" />
+                              <span>Fetching branches...</span>
+                            </span>
+                          ) : availableBranches.length > 0 ? (
+                            <span className="text-[10px] text-muted-foreground font-mono">
+                              {availableBranches.length} branches found
+                            </span>
+                          ) : null}
+                        </div>
+
+                        {availableBranches.length > 0 ? (
+                          <div className="space-y-1">
+                            <BranchCommandPicker
+                              value={field.state.value || 'main'}
+                              branches={availableBranches}
+                              isLoading={loadingBranches}
+                              onSelect={(b) => field.handleChange(b)}
+                              onRefresh={() => refetchFormBranches()}
+                              testId="base-branch-picker"
+                              triggerClassName="w-full h-8"
+                            />
+                            {/* Hidden/accessible fallback for compatibility with existing tests */}
+                            <input
+                              type="hidden"
+                              id="base-branch-input"
+                              data-testid="base-branch-input"
+                              value={field.state.value || ''}
+                              readOnly
+                            />
+                          </div>
+                        ) : (
+                          <Input
+                            id="base-branch-input"
+                            placeholder="main"
+                            value={field.state.value}
+                            onBlur={field.handleBlur}
+                            onChange={(e) => field.handleChange(e.target.value)}
+                            className="text-xs h-8 font-mono"
+                            data-testid="base-branch-input"
+                          />
+                        )}
                       </div>
                     )}
                   />
 
-                  {/* Form Footer */}
-                  <div className="flex items-center justify-end gap-2 pt-2 border-t border-border/40">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setShowAddRepoForm(false)}
-                      className="text-xs cursor-pointer"
-                    >
-                      Cancel
-                    </Button>
-                    <connectForm.Subscribe
-                      selector={(state) => [state.isSubmitting]}
-                      children={([isSubmitting]) => (
-                        <Button
-                          type="submit"
-                          size="sm"
-                          disabled={isSubmitting || createIntegrationMutation.isPending}
-                          className="text-xs font-medium cursor-pointer"
-                          data-testid="connect-submit-btn"
-                        >
-                          {isSubmitting || createIntegrationMutation.isPending ? 'Connecting...' : 'Connect Repository'}
-                        </Button>
-                      )}
-                    />
-                  </div>
-                </form>
-              </div>
-            )}
+                  <connectForm.Field
+                    name="filter_label"
+                    children={(field) => (
+                      <div className="space-y-1">
+                        <label htmlFor="filter-label-input" className="text-xs font-medium text-foreground">
+                          Filter Label (Optional)
+                        </label>
+                        <Input
+                          id="filter-label-input"
+                          placeholder="e.g. agent or auto-task"
+                          value={field.state.value || ''}
+                          onBlur={field.handleBlur}
+                          onChange={(e) => field.handleChange(e.target.value)}
+                          className="text-xs h-8 font-mono"
+                          data-testid="filter-label-input"
+                        />
+                      </div>
+                    )}
+                  />
+                </div>
+
+                <connectForm.Field
+                  name="auto_pr"
+                  children={(field) => (
+                    <div className="flex items-center gap-2 pt-1">
+                      <input
+                        type="checkbox"
+                        id="auto-pr-checkbox"
+                        checked={field.state.value}
+                        onChange={(e) => field.handleChange(e.target.checked)}
+                        className="size-4 rounded border-input text-primary focus:ring-ring cursor-pointer"
+                        data-testid="auto-pr-checkbox"
+                      />
+                      <label htmlFor="auto-pr-checkbox" className="text-xs text-foreground cursor-pointer">
+                        Auto-create Pull Request upon task completion
+                      </label>
+                    </div>
+                  )}
+                />
+
+                {/* Form Footer */}
+                <div className="flex items-center justify-end gap-2 pt-2 border-t border-border/40">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setActiveTab('repos')}
+                    className="text-xs cursor-pointer"
+                  >
+                    Cancel
+                  </Button>
+                  <connectForm.Subscribe
+                    selector={(state) => [state.isSubmitting]}
+                    children={([isSubmitting]) => (
+                      <Button
+                        type="submit"
+                        size="sm"
+                        disabled={isSubmitting || createIntegrationMutation.isPending}
+                        className="text-xs font-medium cursor-pointer"
+                        data-testid="connect-submit-btn"
+                      >
+                        {isSubmitting || createIntegrationMutation.isPending ? 'Connecting...' : 'Connect Repository'}
+                      </Button>
+                    )}
+                  />
+                </div>
+              </form>
+            </div>
           </TabsContent>
 
           {/* ============================================================ */}
-          {/* TAB 2: GITHUB AUTHENTICATION & PAT MANAGEMENT */}
+          {/* TAB 3: GITHUB AUTHENTICATION & PAT MANAGEMENT */}
           {/* ============================================================ */}
           <TabsContent value="pat" className="space-y-4 mt-2">
             <div className="flex items-center justify-between">

@@ -390,4 +390,146 @@ describe('ProjectIntegrationModal', () => {
       expect(screen.getByText(/Token verified successfully! Found 1 accessible repositories/)).toBeInTheDocument();
     });
   });
+
+  it('renders table columns correctly for connected repositories', async () => {
+    vi.spyOn(integrationApi, 'listProjectIntegrations').mockResolvedValue([
+      {
+        id: 'integ-1',
+        project_id: 'proj-1',
+        credential_id: 'cred-1',
+        provider: 'github',
+        external_id: 'acme/webapp',
+        external_url: 'https://github.com/acme/webapp',
+        enabled: true,
+        config: { base_branch: 'develop', auto_pr: true },
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    ]);
+    vi.spyOn(credentialApi, 'listCredentials').mockResolvedValue([
+      {
+        id: 'cred-1',
+        team_id: 'team-1',
+        provider: 'github',
+        label: 'Default PAT',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    ]);
+    vi.spyOn(credentialApi, 'listGitHubBranches').mockResolvedValue(['main', 'develop', 'feat/login']);
+
+    render(<ProjectIntegrationModal />);
+
+    fireEvent.click(screen.getByTestId('integrations-trigger-button'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('integration-row-integ-1')).toBeInTheDocument();
+    });
+
+    // Check table headers
+    expect(screen.getByText('Repository')).toBeInTheDocument();
+    expect(screen.getByText('Status')).toBeInTheDocument();
+    expect(screen.getByText('Base Branch')).toBeInTheDocument();
+    expect(screen.getByText('Auto PR')).toBeInTheDocument();
+    expect(screen.getByText('Actions')).toBeInTheDocument();
+
+    // Check row data
+    expect(screen.getByText('acme/webapp')).toBeInTheDocument();
+    expect(screen.getAllByText('Active').length).toBeGreaterThan(0);
+    expect(screen.getByText('Enabled')).toBeInTheDocument();
+    expect(screen.getByTestId('branch-select-integ-1')).toBeInTheDocument();
+    expect(screen.getByTestId('fetch-branches-btn-integ-1')).toBeInTheDocument();
+    expect(screen.getByTestId('delete-integration-integ-1')).toBeInTheDocument();
+  });
+
+  it('navigates between Connected Repositories and Connect Repository tabs', async () => {
+    vi.spyOn(integrationApi, 'listProjectIntegrations').mockResolvedValue([]);
+    vi.spyOn(credentialApi, 'listCredentials').mockResolvedValue([]);
+
+    render(<ProjectIntegrationModal />);
+
+    fireEvent.click(screen.getByTestId('integrations-trigger-button'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tab-repositories')).toBeInTheDocument();
+      expect(screen.getByTestId('tab-connect')).toBeInTheDocument();
+      expect(screen.getByTestId('tab-pat')).toBeInTheDocument();
+    });
+
+    // Switch to Connect tab via top navigation
+    fireEvent.click(screen.getByTestId('tab-connect'));
+    await waitFor(() => {
+      expect(screen.getByTestId('connect-repo-form')).toBeInTheDocument();
+    });
+
+    // Switch back to Repositories tab
+    fireEvent.click(screen.getByTestId('tab-repositories'));
+    await waitFor(() => {
+      expect(screen.getByText('No GitHub repositories connected yet')).toBeInTheDocument();
+    });
+  });
+
+  it('updates base branch when selecting a new branch from BranchCommandPicker', async () => {
+    const updateSpy = vi.spyOn(integrationApi, 'updateProjectIntegration').mockResolvedValue({
+      id: 'integ-1',
+      project_id: 'proj-1',
+      credential_id: 'cred-1',
+      provider: 'github',
+      external_id: 'acme/webapp',
+      external_url: 'https://github.com/acme/webapp',
+      enabled: true,
+      config: { base_branch: 'staging' },
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    vi.spyOn(integrationApi, 'listProjectIntegrations').mockResolvedValue([
+      {
+        id: 'integ-1',
+        project_id: 'proj-1',
+        credential_id: 'cred-1',
+        provider: 'github',
+        external_id: 'acme/webapp',
+        external_url: 'https://github.com/acme/webapp',
+        enabled: true,
+        config: { base_branch: 'main' },
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    ]);
+    vi.spyOn(credentialApi, 'listCredentials').mockResolvedValue([
+      {
+        id: 'cred-1',
+        team_id: 'team-1',
+        provider: 'github',
+        label: 'Default PAT',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    ]);
+    vi.spyOn(credentialApi, 'listGitHubBranches').mockResolvedValue(['main', 'staging', 'dev']);
+
+    render(<ProjectIntegrationModal />);
+
+    fireEvent.click(screen.getByTestId('integrations-trigger-button'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('branch-select-integ-1')).toBeInTheDocument();
+    });
+
+    // Open branch combobox popover
+    fireEvent.click(screen.getByTestId('branch-select-integ-1'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('branch-select-integ-1-item-staging')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('branch-select-integ-1-item-staging'));
+
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalledWith('proj-1', 'integ-1', {
+        base_branch: 'staging',
+      });
+    });
+  });
 });

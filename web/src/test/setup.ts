@@ -79,3 +79,21 @@ if (typeof window !== 'undefined' && (!window.localStorage || typeof window.loca
     writable: true,
   });
 }
+
+// Polyfill ResizeObserver for JSDOM test environments (used by cmdk / base-ui)
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  class MockResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  globalThis.ResizeObserver = MockResizeObserver as any;
+  if (typeof window !== 'undefined') {
+    (window as any).ResizeObserver = MockResizeObserver;
+  }
+}
+
+// Polyfill Element.prototype.scrollIntoView for JSDOM test environments (used by cmdk)
+if (typeof Element !== 'undefined' && typeof Element.prototype.scrollIntoView !== 'function') {
+  Element.prototype.scrollIntoView = () => {};
+}
