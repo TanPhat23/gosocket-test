@@ -97,6 +97,16 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
   const [loadingRepos, setLoadingRepos] = useState(false);
   const [repoFilterQuery, setRepoFilterQuery] = useState('');
   const [manualRepoMode, setManualRepoMode] = useState(false);
+  const [repoScopeFilter, setRepoScopeFilter] = useState<'all' | 'connected' | 'my'>('all');
+
+  // Branch Management State
+  const [connectedRepoBranches, setConnectedRepoBranches] = useState<Record<string, string[]>>({});
+  const [loadingBranchesForInteg, setLoadingBranchesForInteg] = useState<Record<string, boolean>>({});
+  const [updatingBranchIntegId, setUpdatingBranchIntegId] = useState<string | null>(null);
+
+  // New Repo Branches
+  const [availableBranches, setAvailableBranches] = useState<string[]>([]);
+  const [loadingBranches, setLoadingBranches] = useState(false);
 
   const [copiedWebhook, setCopiedWebhook] = useState(false);
   const [copiedSecret, setCopiedSecret] = useState(false);
@@ -144,6 +154,62 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
     },
   });
 
+  const fetchBranchesForIntegration = useCallback(
+    async (integ: IntegrationDTO) => {
+      if (!activeTeamId || !integ.credential_id || !integ.external_id) return;
+      setLoadingBranchesForInteg((prev) => ({ ...prev, [integ.id]: true }));
+      try {
+        const branches = await credentialApi.listGitHubBranches(
+          activeTeamId,
+          integ.credential_id,
+          integ.external_id
+        );
+        setConnectedRepoBranches((prev) => ({ ...prev, [integ.id]: branches }));
+      } catch (err) {
+        console.warn('Failed to fetch branches for integration:', err);
+      } finally {
+        setLoadingBranchesForInteg((prev) => ({ ...prev, [integ.id]: false }));
+      }
+    },
+    [activeTeamId]
+  );
+
+  const handleUpdateIntegrationBranch = async (integ: IntegrationDTO, newBranch: string) => {
+    if (!activeProjectId) return;
+    setUpdatingBranchIntegId(integ.id);
+    try {
+      const updated = await integrationApi.updateProjectIntegration(activeProjectId, integ.id, {
+        base_branch: newBranch,
+      });
+      setIntegrations((prev) => prev.map((item) => (item.id === integ.id ? updated : item)));
+      setActionSuccess(`Updated ${integ.external_id} base branch to ${newBranch}!`);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to update base branch');
+    } finally {
+      setUpdatingBranchIntegId(null);
+    }
+  };
+
+  const fetchBranchesForNewRepo = useCallback(
+    async (repoSlug: string, credId: string) => {
+      if (!activeTeamId || !credId || !repoSlug.includes('/')) return;
+      setLoadingBranches(true);
+      try {
+        const branches = await credentialApi.listGitHubBranches(activeTeamId, credId, repoSlug);
+        setAvailableBranches(branches);
+        if (branches.length > 0) {
+          connectForm.setFieldValue('base_branch', branches[0]);
+        }
+      } catch (err) {
+        console.warn('Failed to fetch branches for new repo:', err);
+        setAvailableBranches([]);
+      } finally {
+        setLoadingBranches(false);
+      }
+    },
+    [activeTeamId, connectForm]
+  );
+
   const fetchReposForCredential = useCallback(async (teamId: string, credId: string) => {
     if (!teamId || !credId) return;
     setLoadingRepos(true);
@@ -173,6 +239,10 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
         activeTeamId ? credentialApi.listCredentials(activeTeamId) : Promise.resolve([]),
       ]);
       setIntegrations(integs);
+      // Fetch branches for each connected integration
+      integs.forEach((i) => {
+        if (i.enabled) fetchBranchesForIntegration(i);
+      });
       const ghCreds = creds.filter((c) => c.provider === 'github');
       setCredentials(ghCreds);
 
@@ -331,18 +401,35 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
   const handleSelectRepository = (item: GitHubRepoDTO) => {
     connectForm.setFieldValue('repo', item.full_name);
     connectForm.setFieldValue('base_branch', item.default_branch || 'main');
+    const credId = connectForm.getFieldValue('credential_id');
+    if (credId) {
+      fetchBranchesForNewRepo(item.full_name, credId);
+    }
   };
 
   const filteredRepositories = useMemo(() => {
+    let list = gitHubRepos;
+    if (repoScopeFilter === 'connected') {
+      const connectedSlugs = new Set(integrations.map((i) => i.external_id));
+      list = list.filter((r) => connectedSlugs.has(r.full_name));
+    } else if (repoScopeFilter === 'my') {
+      const connectedOwner = integrations.length > 0 ? integrations[0].external_id.split('/')[0] : '';
+      const firstOwner = gitHubRepos.length > 0 ? gitHubRepos[0].full_name.split('/')[0] : '';
+      const owner = connectedOwner || firstOwner;
+      if (owner) {
+        list = list.filter((r) => r.full_name.startsWith(owner + '/'));
+      }
+    }
+
     const q = repoFilterQuery.trim().toLowerCase();
-    if (!q) return gitHubRepos;
-    return gitHubRepos.filter(
+    if (!q) return list;
+    return list.filter(
       (r) =>
         r.name.toLowerCase().includes(q) ||
         r.full_name.toLowerCase().includes(q) ||
         (r.description && r.description.toLowerCase().includes(q))
     );
-  }, [gitHubRepos, repoFilterQuery]);
+  }, [gitHubRepos, repoFilterQuery, repoScopeFilter, integrations]);
 
   const handleCopyWebhook = () => {
     navigator.clipboard.writeText(webhookUrl);
@@ -595,7 +682,7 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                       <div className="size-8 rounded-md bg-muted/60 flex items-center justify-center shrink-0">
                         <GitBranch className="size-4 text-primary" />
                       </div>
-                      <div className="min-w-0">
+                      <div className="min-w-0 space-y-1">
                         <div className="flex items-center gap-2">
                           <span className="font-semibold text-xs text-foreground font-mono truncate">
                             {item.external_id}
@@ -610,17 +697,62 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                             </Badge>
                           )}
                         </div>
-                        {item.external_url && (
-                          <a
-                            href={item.external_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-[11px] text-muted-foreground hover:text-primary flex items-center gap-1 mt-0.5 truncate"
-                          >
-                            <span className="truncate">{item.external_url}</span>
-                            <ExternalLink className="size-2.5 shrink-0" />
-                          </a>
-                        )}
+
+                        <div className="flex items-center gap-3 flex-wrap">
+                          {item.external_url && (
+                            <a
+                              href={item.external_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[11px] text-muted-foreground hover:text-primary flex items-center gap-1 truncate"
+                            >
+                              <span className="truncate">{item.external_url}</span>
+                              <ExternalLink className="size-2.5 shrink-0" />
+                            </a>
+                          )}
+
+                          {/* Live Branch Selector & Fetcher */}
+                          <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground font-mono">
+                            <GitBranch className="size-3 text-primary shrink-0" />
+                            <span>Branch:</span>
+                            {loadingBranchesForInteg[item.id] ? (
+                              <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                                <RefreshCw className="size-2.5 animate-spin text-primary" />
+                                <span>Fetching...</span>
+                              </span>
+                            ) : (
+                              <select
+                                value={String(item.config?.base_branch || 'main')}
+                                onChange={(e) => handleUpdateIntegrationBranch(item, e.target.value)}
+                                disabled={updatingBranchIntegId === item.id}
+                                className="h-5 text-[11px] font-mono rounded border border-border/70 bg-background px-1.5 outline-none focus:border-ring cursor-pointer hover:border-primary transition-colors"
+                                title="Change base branch"
+                                data-testid={`branch-select-${item.id}`}
+                              >
+                                {(connectedRepoBranches[item.id] && connectedRepoBranches[item.id].length > 0
+                                  ? connectedRepoBranches[item.id]
+                                  : [String(item.config?.base_branch || 'main')]
+                                ).map((b) => (
+                                  <option key={b} value={b}>
+                                    {b}
+                                  </option>
+                                ))}
+                              </select>
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => fetchBranchesForIntegration(item)}
+                              className="text-muted-foreground hover:text-foreground text-[10px] flex items-center gap-0.5 p-0.5 rounded hover:bg-muted"
+                              title="Fetch all branches from GitHub"
+                              data-testid={`fetch-branches-btn-${item.id}`}
+                            >
+                              <RefreshCw
+                                className={`size-2.5 ${loadingBranchesForInteg[item.id] ? 'animate-spin' : ''}`}
+                              />
+                            </button>
+                          </div>
+                        </div>
                       </div>
                     </div>
 
@@ -731,13 +863,60 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                                 placeholder="e.g. facebook/react or octocat/hello-world"
                                 value={repoField.state.value}
                                 onBlur={repoField.handleBlur}
-                                onChange={(e) => repoField.handleChange(e.target.value)}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  repoField.handleChange(val);
+                                  const credId = connectForm.getFieldValue('credential_id');
+                                  if (credId && val.includes('/')) {
+                                    fetchBranchesForNewRepo(val.trim(), credId);
+                                  }
+                                }}
                                 className="font-mono text-xs h-8"
                                 data-testid="repo-input"
                               />
                             </div>
                           ) : (
                             <div className="space-y-2">
+                              {/* Scope Filter Options: Connected vs My Repos vs All */}
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <button
+                                  type="button"
+                                  onClick={() => setRepoScopeFilter('connected')}
+                                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer ${
+                                    repoScopeFilter === 'connected'
+                                      ? 'bg-primary text-primary-foreground shadow-xs'
+                                      : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'
+                                  }`}
+                                  data-testid="scope-connected-repos"
+                                >
+                                  Connected in Project ({integrations.length})
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setRepoScopeFilter('my')}
+                                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer ${
+                                    repoScopeFilter === 'my'
+                                      ? 'bg-primary text-primary-foreground shadow-xs'
+                                      : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'
+                                  }`}
+                                  data-testid="scope-my-repos"
+                                >
+                                  My Account Repos
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setRepoScopeFilter('all')}
+                                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer ${
+                                    repoScopeFilter === 'all'
+                                      ? 'bg-primary text-primary-foreground shadow-xs'
+                                      : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'
+                                  }`}
+                                  data-testid="scope-all-repos"
+                                >
+                                  All Accessible ({gitHubRepos.length})
+                                </button>
+                              </div>
+
                               <div className="relative">
                                 <Search className="size-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
                                 <Input
@@ -777,6 +956,10 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                                   ) : (
                                     filteredRepositories.map((item) => {
                                       const isSelected = repoField.state.value === item.full_name;
+                                      const isAlreadyConnected = integrations.some(
+                                        (i) => i.external_id === item.full_name
+                                      );
+
                                       return (
                                         <button
                                           key={item.id}
@@ -801,6 +984,11 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                                               >
                                                 {item.default_branch}
                                               </Badge>
+                                              {isAlreadyConnected && (
+                                                <Badge className="bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 text-[9px] font-mono py-0 h-4 ml-1">
+                                                  Connected
+                                                </Badge>
+                                              )}
                                             </div>
                                             {item.description && (
                                               <p className="text-[11px] text-muted-foreground truncate mt-0.5">
@@ -828,7 +1016,14 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                                   placeholder="owner/repo (or click repository in list above)"
                                   value={repoField.state.value}
                                   onBlur={repoField.handleBlur}
-                                  onChange={(e) => repoField.handleChange(e.target.value)}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    repoField.handleChange(val);
+                                    const credId = connectForm.getFieldValue('credential_id');
+                                    if (credId && val.includes('/')) {
+                                      fetchBranchesForNewRepo(val.trim(), credId);
+                                    }
+                                  }}
                                   className="font-mono text-xs h-8"
                                   data-testid="repo-input"
                                 />
@@ -926,18 +1121,48 @@ export const ProjectIntegrationModal: React.FC<ProjectIntegrationModalProps> = (
                       name="base_branch"
                       children={(field) => (
                         <div className="space-y-1">
-                          <label htmlFor="base-branch-input" className="text-xs font-medium text-foreground">
-                            Base Branch
-                          </label>
-                          <Input
-                            id="base-branch-input"
-                            placeholder="main"
-                            value={field.state.value}
-                            onBlur={field.handleBlur}
-                            onChange={(e) => field.handleChange(e.target.value)}
-                            className="text-xs h-8 font-mono"
-                            data-testid="base-branch-input"
-                          />
+                          <div className="flex items-center justify-between">
+                            <label htmlFor="base-branch-input" className="text-xs font-medium text-foreground flex items-center gap-1">
+                              <GitBranch className="size-3 text-primary" />
+                              <span>Base Branch *</span>
+                            </label>
+                            {loadingBranches ? (
+                              <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                                <RefreshCw className="size-2.5 animate-spin text-primary" />
+                                <span>Fetching branches...</span>
+                              </span>
+                            ) : availableBranches.length > 0 ? (
+                              <span className="text-[10px] text-muted-foreground font-mono">
+                                {availableBranches.length} branches found
+                              </span>
+                            ) : null}
+                          </div>
+
+                          {availableBranches.length > 0 ? (
+                            <select
+                              id="base-branch-select"
+                              value={field.state.value}
+                              onChange={(e) => field.handleChange(e.target.value)}
+                              className="w-full text-xs h-8 font-mono rounded-md border border-input bg-background px-2.5 outline-none focus:border-ring focus:ring-1 focus:ring-ring cursor-pointer"
+                              data-testid="base-branch-select"
+                            >
+                              {availableBranches.map((b) => (
+                                <option key={b} value={b}>
+                                  {b}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <Input
+                              id="base-branch-input"
+                              placeholder="main"
+                              value={field.state.value}
+                              onBlur={field.handleBlur}
+                              onChange={(e) => field.handleChange(e.target.value)}
+                              className="text-xs h-8 font-mono"
+                              data-testid="base-branch-input"
+                            />
+                          )}
                         </div>
                       )}
                     />

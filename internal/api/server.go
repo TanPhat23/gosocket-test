@@ -197,6 +197,7 @@ func (s *Server) setupRoutes() {
 	credentialsGroup.Patch("/:credential_id", credHandlers.Update)
 	credentialsGroup.Delete("/:credential_id", credHandlers.Delete)
 
-	// GitHub repository list endpoint allows team viewers and above
+	// GitHub repository and branch endpoints allow team viewers and above
 	teamsGroup.Get("/credentials/:credential_id/github/repos", RequireTeamRole(s.AuthService, models.RoleViewer), credHandlers.ListGitHubRepositories)
+	teamsGroup.Get("/credentials/:credential_id/github/branches", RequireTeamRole(s.AuthService, models.RoleViewer), credHandlers.ListGitHubBranches)
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,6 +135,7 @@ func TestCredentialHandlers(t *testing.T) {
 	credentialsGroup.Patch("/:credential_id", credHandlers.Update)
 	credentialsGroup.Delete("/:credential_id", credHandlers.Delete)
 	teamsGroup.Get("/credentials/:credential_id/github/repos", api.RequireTeamRole(authService, models.RoleViewer), credHandlers.ListGitHubRepositories)
+	teamsGroup.Get("/credentials/:credential_id/github/branches", api.RequireTeamRole(authService, models.RoleViewer), credHandlers.ListGitHubBranches)
 
 	makeAuthCookie := func(userID string) *http.Cookie {
 		claims := auth.SessionClaims{UserID: userID, ExpiresAt: time.Now().Add(1 * time.Hour)}
@@ -346,27 +348,37 @@ func TestCredentialHandlers(t *testing.T) {
 
 		// Create mock HTTP server simulating GitHub API
 		ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/user/repos" {
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
 			if r.Header.Get("Authorization") != "Bearer ghp_valid_test_token" {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
-			repos := []map[string]any{
-				{
-					"id":             999,
-					"name":           "my-repo",
-					"full_name":      "team/my-repo",
-					"private":        false,
-					"description":    "Test repo",
-					"html_url":       "https://github.com/team/my-repo",
-					"default_branch": "main",
-				},
+			if r.URL.Path == "/user/repos" {
+				repos := []map[string]any{
+					{
+						"id":             999,
+						"name":           "my-repo",
+						"full_name":      "team/my-repo",
+						"private":        false,
+						"description":    "Test repo",
+						"html_url":       "https://github.com/team/my-repo",
+						"default_branch": "main",
+					},
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(repos)
+				return
 			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(repos)
+			if strings.HasSuffix(r.URL.Path, "/branches") {
+				branches := []map[string]any{
+					{"name": "main"},
+					{"name": "develop"},
+					{"name": "feat/autonomous"},
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(branches)
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
 		}))
 		defer ghServer.Close()
 
@@ -380,6 +392,7 @@ func TestCredentialHandlers(t *testing.T) {
 
 		tg := appWithGH.Group("/api/v1/teams/:team_id", api.RequireAuth(authService, sm))
 		tg.Get("/credentials/:credential_id/github/repos", api.RequireTeamRole(authService, models.RoleViewer), customHandlers.ListGitHubRepositories)
+		tg.Get("/credentials/:credential_id/github/branches", api.RequireTeamRole(authService, models.RoleViewer), customHandlers.ListGitHubBranches)
 
 		// 1. Team Viewer gets 200 OK and repositories
 		req := httptest.NewRequest("GET", "/api/v1/teams/team_1/credentials/cred_gh_test/github/repos", nil)
@@ -395,6 +408,19 @@ func TestCredentialHandlers(t *testing.T) {
 		_ = json.NewDecoder(resp.Body).Decode(&respData)
 		if len(respData["repositories"]) != 1 || respData["repositories"][0]["name"] != "my-repo" {
 			t.Fatalf("unexpected repositories in response: %+v", respData)
+		}
+
+		// 1b. Team Viewer gets branches for a repository
+		reqBranches := httptest.NewRequest("GET", "/api/v1/teams/team_1/credentials/cred_gh_test/github/branches?repo=team/my-repo", nil)
+		reqBranches.AddCookie(makeAuthCookie(viewer.ID))
+		respB, err := appWithGH.Test(reqBranches)
+		if err != nil || respB.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 OK on branches, got %d (err: %v)", respB.StatusCode, err)
+		}
+		var branchData map[string][]string
+		_ = json.NewDecoder(respB.Body).Decode(&branchData)
+		if len(branchData["branches"]) != 3 || branchData["branches"][0] != "main" {
+			t.Fatalf("unexpected branches in response: %+v", branchData)
 		}
 
 		// 2. Outsider gets 403 Forbidden

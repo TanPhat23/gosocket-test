@@ -169,4 +169,26 @@ describe('credentialApi', () => {
       expect(repos).toEqual([]);
     });
   });
+
+  describe('listGitHubBranches', () => {
+    it('unpacks { branches: [...] } payload from backend', async () => {
+      vi.spyOn(axiosClient, 'get').mockResolvedValueOnce({
+        data: {
+          branches: ['main', 'develop', 'release/v1.0'],
+        },
+      });
+
+      const branches = await credentialApi.listGitHubBranches('team-1', 'cred-1', 'test-org/repo');
+      expect(branches).toEqual(['main', 'develop', 'release/v1.0']);
+    });
+
+    it('handles direct array of branches defensively', async () => {
+      vi.spyOn(axiosClient, 'get').mockResolvedValueOnce({
+        data: ['main', 'master'],
+      });
+
+      const branches = await credentialApi.listGitHubBranches('team-1', 'cred-1', 'test-org/repo');
+      expect(branches).toEqual(['main', 'master']);
+    });
+  });
 });

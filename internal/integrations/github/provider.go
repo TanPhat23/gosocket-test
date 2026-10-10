@@ -436,3 +436,47 @@ func (p *Provider) ListRepositories(ctx context.Context, token string) ([]dto.Gi
 
 	return repos, nil
 }
+
+// ListBranches lists all branches for a given repository.
+func (p *Provider) ListBranches(ctx context.Context, token, owner, repo string) ([]string, error) {
+	if token == "" {
+		return nil, errors.New("github token cannot be empty")
+	}
+	if owner == "" || repo == "" {
+		return nil, errors.New("owner and repo cannot be empty")
+	}
+
+	endpoint := fmt.Sprintf("/repos/%s/%s/branches?per_page=100", url.PathEscape(owner), url.PathEscape(repo))
+	resp, err := p.doRequest(ctx, http.MethodGet, endpoint, token, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, errors.New("invalid or expired github token")
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, errors.New("repository not found or token lacks access")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("github list branches returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	type ghBranchItem struct {
+		Name string `json:"name"`
+	}
+	var ghBranches []ghBranchItem
+	if err := json.NewDecoder(resp.Body).Decode(&ghBranches); err != nil {
+		return nil, fmt.Errorf("failed to decode github branches: %w", err)
+	}
+
+	branches := make([]string, 0, len(ghBranches))
+	for _, b := range ghBranches {
+		if b.Name != "" {
+			branches = append(branches, b.Name)
+		}
+	}
+	return branches, nil
+}

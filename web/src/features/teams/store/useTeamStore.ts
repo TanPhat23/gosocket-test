@@ -10,6 +10,7 @@ interface TeamState {
   isLoading: boolean;
   error: string | null;
 
+  setTeamsData: (teams: Team[]) => void;
   fetchTeams: () => Promise<void>;
   selectTeam: (teamId: string) => void;
   fetchProjects: (teamId?: string) => Promise<void>;
@@ -26,6 +27,17 @@ export const useTeamStore = create<TeamState>((set, get) => ({
   activeProjectId: null,
   isLoading: false,
   error: null,
+
+  setTeamsData: (teams: Team[]) => {
+    const currentActiveTeamId = get().activeTeamId;
+    const activeTeamId = currentActiveTeamId && teams.some((t) => t.id === currentActiveTeamId)
+      ? currentActiveTeamId
+      : (teams.length > 0 ? teams[0].id : null);
+    set({ teams, activeTeamId, isLoading: false, error: null });
+    if (activeTeamId && get().projects.length === 0) {
+      get().fetchProjects(activeTeamId);
+    }
+  },
 
   fetchTeams: async () => {
     set({ isLoading: true, error: null });

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"agent-task-manager/internal/common"
@@ -21,9 +22,10 @@ var ErrCredentialNotFound = errors.New("credential not found")
 // ErrInvalidProvider indicates that the credential is not for the expected provider.
 var ErrInvalidProvider = errors.New("credential provider must be github")
 
-// GitHubRepoLister provides an interface to list repositories from GitHub.
+// GitHubRepoLister provides an interface to list repositories and branches from GitHub.
 type GitHubRepoLister interface {
 	ListRepositories(ctx context.Context, token string) ([]dto.GitHubRepositoryDTO, error)
+	ListBranches(ctx context.Context, token, owner, repo string) ([]string, error)
 }
 
 func toCredentialDTO(c *models.Credential) dto.CredentialResponseDTO {
@@ -44,6 +46,7 @@ type CredentialService interface {
 	Update(ctx context.Context, teamID, credID string, req dto.UpdateCredentialRequest) (*dto.CredentialResponseDTO, error)
 	Delete(ctx context.Context, teamID, credID string) error
 	ListGitHubRepositories(ctx context.Context, teamID, credentialID string) ([]dto.GitHubRepositoryDTO, error)
+	ListGitHubBranches(ctx context.Context, teamID, credentialID, repoSlug string) ([]string, error)
 }
 
 type credentialService struct {
@@ -198,4 +201,47 @@ func (s *credentialService) ListGitHubRepositories(ctx context.Context, teamID, 
 	}
 
 	return repos, nil
+}
+
+func (s *credentialService) ListGitHubBranches(ctx context.Context, teamID, credentialID, repoSlug string) ([]string, error) {
+	if s.cipher == nil {
+		return nil, errors.New("secret encryption service is not configured")
+	}
+
+	cred, err := s.credRepo.GetByIDAndTeam(ctx, credentialID, teamID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrCredentialNotFound
+		}
+		return nil, err
+	}
+
+	if cred.Provider != models.ProviderGitHub {
+		return nil, ErrInvalidProvider
+	}
+
+	decryptedToken, err := s.cipher.Decrypt(cred.EncryptedData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt credential secret: %w", err)
+	}
+
+	parts := strings.Split(strings.TrimSpace(repoSlug), "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return nil, errors.New("invalid repo format, expected owner/repo")
+	}
+
+	ghProvider := s.githubProvider
+	if ghProvider == nil {
+		ghProvider = github.NewProvider()
+	}
+
+	branches, err := ghProvider.ListBranches(ctx, decryptedToken, parts[0], parts[1])
+	decryptedToken = ""
+	_ = decryptedToken
+
+	if err != nil {
+		return nil, err
+	}
+
+	return branches, nil
 }

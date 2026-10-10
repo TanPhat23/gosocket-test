@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { App } from './App';
 import { ThemeProvider } from '@/components/theme/ThemeProvider';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { getQueryClient } from '@/lib/queryClient';
 import { useAuthStore } from '@/features/auth/store/useAuthStore';
 import { useTaskStore } from '@/features/tasks/store/useTaskStore';
 import { useTeamStore } from '@/features/teams/store/useTeamStore';
@@ -12,7 +14,12 @@ vi.mock('@/features/tasks/hooks/useTaskSubscription', () => ({
 }));
 
 const renderWithProviders = (ui: React.ReactElement) => {
-  return render(<ThemeProvider>{ui}</ThemeProvider>);
+  const queryClient = getQueryClient();
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <ThemeProvider>{ui}</ThemeProvider>
+    </QueryClientProvider>
+  );
 };
 
 describe('App Auth Gateway', () => {

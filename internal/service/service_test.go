@@ -295,7 +295,8 @@ func TestCredentialService_EncryptionAndSecurityInvariants(t *testing.T) {
 }
 
 type mockGitHubRepoLister struct {
-	fn func(ctx context.Context, token string) ([]dto.GitHubRepositoryDTO, error)
+	fn         func(ctx context.Context, token string) ([]dto.GitHubRepositoryDTO, error)
+	branchesFn func(ctx context.Context, token, owner, repo string) ([]string, error)
 }
 
 func (m *mockGitHubRepoLister) ListRepositories(ctx context.Context, token string) ([]dto.GitHubRepositoryDTO, error) {
@@ -303,6 +304,13 @@ func (m *mockGitHubRepoLister) ListRepositories(ctx context.Context, token strin
 		return m.fn(ctx, token)
 	}
 	return nil, nil
+}
+
+func (m *mockGitHubRepoLister) ListBranches(ctx context.Context, token, owner, repo string) ([]string, error) {
+	if m.branchesFn != nil {
+		return m.branchesFn(ctx, token, owner, repo)
+	}
+	return []string{"main", "develop"}, nil
 }
 
 func TestWebhookService_GitHubHMACAndIdempotency(t *testing.T) {

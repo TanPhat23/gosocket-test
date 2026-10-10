@@ -124,3 +124,23 @@ func (h *CredentialHandlers) ListGitHubRepositories(c fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{"repositories": repos})
 }
+
+// ListGitHubBranches handles GET /api/v1/teams/:team_id/credentials/:credential_id/github/branches?repo=owner/repo.
+func (h *CredentialHandlers) ListGitHubBranches(c fiber.Ctx) error {
+	params, err := parseTeamCredentialParams(c)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	repo := c.Query("repo")
+	if repo == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "repo query parameter is required (e.g. ?repo=owner/repo)"})
+	}
+
+	branches, err := h.credService.ListGitHubBranches(c.Context(), params.TeamID, params.CredentialID, repo)
+	if err != nil {
+		return CentralErrorHandler(c, err)
+	}
+
+	return c.JSON(fiber.Map{"branches": branches})
+}

@@ -1,9 +1,12 @@
 import React, { useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useAuthStore } from '@/features/auth/store/useAuthStore';
 import { LoginForm } from '@/features/auth/components/LoginForm';
 import { useTaskStore } from '@/features/tasks/store/useTaskStore';
 import { useTeamStore, useActiveProjectId } from '@/features/teams/store/useTeamStore';
 import { useTaskSubscription } from '@/features/tasks/hooks/useTaskSubscription';
+import { tasksQueryOptions } from '@/features/tasks/queries';
+import { teamsQueryOptions } from '@/features/teams/queries';
 import { AppSidebar } from '@/components/layout/AppSidebar';
 import { Header } from '@/components/layout/Header';
 import { Footer } from '@/components/layout/Footer';
@@ -14,8 +17,27 @@ import { Loader2 } from 'lucide-react';
 
 export const WorkspaceView: React.FC = () => {
   const fetchTasks = useTaskStore((state) => state.fetchTasks);
+  const setTasksData = useTaskStore((state) => state.setTasksData);
   const fetchTeams = useTeamStore((state) => state.fetchTeams);
+  const setTeamsData = useTeamStore((state) => state.setTeamsData);
   const activeProjectId = useActiveProjectId();
+
+  // Consume TanStack Query cache loaded by router loader
+  const { data: cachedTeams } = useQuery(teamsQueryOptions());
+  const { data: cachedTasks } = useQuery(tasksQueryOptions());
+
+  // Sync loader/query data into Zustand store on initial load
+  useEffect(() => {
+    if (cachedTeams && cachedTeams.length > 0) {
+      setTeamsData(cachedTeams);
+    }
+  }, [cachedTeams, setTeamsData]);
+
+  useEffect(() => {
+    if (cachedTasks && cachedTasks.length > 0) {
+      setTasksData(cachedTasks);
+    }
+  }, [cachedTasks, setTasksData]);
 
   // Maintain real-time task status updates across the Kanban board
   useTaskSubscription();

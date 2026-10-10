@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useTaskStore } from '../store/useTaskStore';
 import { taskApi } from '../api/taskApi';
-import { useProjectsList, useActiveProjectId } from '@/features/teams/store/useTeamStore';
+import { useProjectsList, useActiveProjectId, useActiveTeamId } from '@/features/teams/store/useTeamStore';
 import { CreateTaskRequestSchema } from '../schemas/taskSchemas';
 import {
   Dialog,
@@ -22,8 +22,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Plus, Check, Sparkles, Server, Wrench, AlertCircle, Cpu, GitBranch, FolderGit2 } from 'lucide-react';
+import { Plus, Check, Sparkles, Server, Wrench, AlertCircle, Cpu, GitBranch, FolderGit2, RefreshCw } from 'lucide-react';
 import { integrationApi } from '@/features/integrations/api/integrationApi';
+import { credentialApi } from '@/features/teams/api/credentialApi';
 import type { IntegrationDTO } from '@/features/integrations/schemas/integrationSchemas';
 import {
   useWorkspaceSettingsStore,
@@ -60,6 +61,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
   const createTask = useTaskStore((state) => state.createTask);
   const projects = useProjectsList();
   const activeProjectId = useActiveProjectId();
+  const activeTeamId = useActiveTeamId();
 
   const defaultModel = useWorkspaceSettingsStore((state) => state.defaultModel);
   const defaultPriority = useWorkspaceSettingsStore((state) => state.defaultPriority);
@@ -79,6 +81,13 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
   const [selectedMcps, setSelectedMcps] = useState<string[]>([]);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Repository & Branch Selection State
+  const [projectIntegrations, setProjectIntegrations] = useState<IntegrationDTO[]>([]);
+  const [selectedIntegrationId, setSelectedIntegrationId] = useState<string>('');
+  const [repoBranches, setRepoBranches] = useState<string[]>([]);
+  const [selectedBranch, setSelectedBranch] = useState<string>('');
+  const [loadingBranches, setLoadingBranches] = useState<boolean>(false);
 
   // Sync with workspace settings defaults when opening
   React.useEffect(() => {
@@ -113,9 +122,6 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
 
   const effectiveProjectId = selectedProjectId || activeProjectId || (projects.length > 0 ? projects[0].id : '');
 
-  const [projectIntegrations, setProjectIntegrations] = useState<IntegrationDTO[]>([]);
-  const [selectedIntegrationId, setSelectedIntegrationId] = useState<string>('');
-
   React.useEffect(() => {
     if (!effectiveProjectId) {
       setProjectIntegrations([]);
@@ -145,7 +151,44 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
         setProjectIntegrations([]);
         setSelectedIntegrationId('');
       });
-  }, [effectiveProjectId]);
+  }, [effectiveProjectId, selectedRepoId, defaultRepoId]);
+
+  // When selected repository changes, fetch branches from GitHub using credentialApi.listGitHubBranches
+  React.useEffect(() => {
+    const selectedInteg = projectIntegrations.find((i) => i.id === selectedIntegrationId);
+    if (!selectedInteg) {
+      setRepoBranches([]);
+      setSelectedBranch('');
+      return;
+    }
+
+    const defaultBase = String(selectedInteg.config?.base_branch || 'main');
+    setSelectedBranch(defaultBase);
+
+    if (activeTeamId && selectedInteg.credential_id && selectedInteg.external_id) {
+      setLoadingBranches(true);
+      credentialApi
+        .listGitHubBranches(activeTeamId, selectedInteg.credential_id, selectedInteg.external_id)
+        .then((branches) => {
+          if (branches && branches.length > 0) {
+            setRepoBranches(branches);
+            if (!branches.includes(defaultBase)) {
+              setSelectedBranch(branches[0]);
+            }
+          } else {
+            setRepoBranches([defaultBase]);
+          }
+        })
+        .catch(() => {
+          setRepoBranches([defaultBase]);
+        })
+        .finally(() => {
+          setLoadingBranches(false);
+        });
+    } else {
+      setRepoBranches([defaultBase]);
+    }
+  }, [selectedIntegrationId, projectIntegrations, activeTeamId]);
 
   const toggleSkill = (skill: string) => {
     setSelectedSkills((prev) =>
@@ -167,12 +210,29 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
     setSelectedSkills([]);
     setSelectedMcps([]);
     setSelectedIntegrationId('');
+    setSelectedBranch('');
+    setRepoBranches([]);
     setErrors({});
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrors({});
+
+    // If a branch was customized, ensure integration config base_branch reflects the selected branch
+    if (effectiveProjectId && selectedIntegrationId && selectedBranch) {
+      const selectedInteg = projectIntegrations.find((i) => i.id === selectedIntegrationId);
+      const currentIntegBranch = String(selectedInteg?.config?.base_branch || 'main');
+      if (selectedBranch !== currentIntegBranch) {
+        try {
+          await integrationApi.updateProjectIntegration(effectiveProjectId, selectedIntegrationId, {
+            base_branch: selectedBranch,
+          });
+        } catch (err) {
+          console.warn('Failed to update integration base_branch before dispatch:', err);
+        }
+      }
+    }
 
     const rawData = {
       project_id: effectiveProjectId.trim(),
@@ -286,11 +346,11 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
 
           {/* Target Repository Selection (when project has connected GitHub repos) */}
           {projectIntegrations.length > 0 && (
-            <div className="space-y-2 p-2.5 rounded-lg border border-border/70 bg-muted/20">
+            <div className="space-y-3 p-3 rounded-lg border border-border/70 bg-muted/20">
               <div className="flex items-center justify-between">
                 <label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
                   <GitBranch className="size-3.5 text-primary" />
-                  Target Repository
+                  Target Repository &amp; Base Branch
                 </label>
                 <Badge variant="outline" className="text-[9px] font-mono">
                   {projectIntegrations.length} connected
@@ -301,9 +361,6 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
                 <div className="flex items-center gap-2 text-xs font-mono text-muted-foreground bg-background px-2.5 py-1.5 rounded border border-border/50">
                   <span className="size-1.5 rounded-full bg-emerald-500 shrink-0" />
                   <span className="text-foreground font-medium">{projectIntegrations[0].external_id}</span>
-                  <span className="text-[10px] text-muted-foreground/70">
-                    ({String(projectIntegrations[0].config?.base_branch || 'main')})
-                  </span>
                 </div>
               ) : (
                 <div className="space-y-1.5">
@@ -328,7 +385,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
                           <div className="min-w-0 flex-1 truncate">
                             <div className="font-mono text-xs truncate text-foreground">{integ.external_id}</div>
                             <div className="text-[10px] text-muted-foreground truncate">
-                              Branch: {String(integ.config?.base_branch || 'main')}
+                              Configured: {String(integ.config?.base_branch || 'main')}
                             </div>
                           </div>
                           {isSelected && (
@@ -340,6 +397,63 @@ export const TaskModal: React.FC<TaskModalProps> = ({ trigger }) => {
                   </div>
                 </div>
               )}
+
+              {/* Base Branch Selection for the chosen repository */}
+              <div className="space-y-1.5 pt-1 border-t border-border/40">
+                <div className="flex items-center justify-between">
+                  <label htmlFor="target-base-branch" className="text-xs font-medium text-foreground flex items-center gap-1.5">
+                    <GitBranch className="size-3 text-primary" />
+                    <span>Base Branch</span>
+                  </label>
+                  {loadingBranches ? (
+                    <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                      <RefreshCw className="size-2.5 animate-spin text-primary" />
+                      <span>Fetching branches from GitHub...</span>
+                    </span>
+                  ) : repoBranches.length > 0 ? (
+                    <span className="text-[10px] text-muted-foreground font-mono">
+                      {repoBranches.length} branches found
+                    </span>
+                  ) : null}
+                </div>
+
+                {repoBranches.length > 0 ? (
+                  <Select
+                    value={selectedBranch || repoBranches[0]}
+                    onValueChange={(val) => {
+                      if (typeof val === 'string') {
+                        setSelectedBranch(val);
+                      }
+                    }}
+                  >
+                    <SelectTrigger
+                      id="target-base-branch"
+                      size="sm"
+                      className="w-full bg-background text-xs font-mono"
+                      aria-label="Base Branch"
+                      data-testid="target-branch-select"
+                    >
+                      <SelectValue placeholder="Select branch..." />
+                    </SelectTrigger>
+                    <SelectContent align="start">
+                      {repoBranches.map((branch) => (
+                        <SelectItem key={branch} value={branch} className="font-mono text-xs">
+                          {branch}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Input
+                    id="target-base-branch"
+                    value={selectedBranch}
+                    onChange={(e) => setSelectedBranch(e.target.value)}
+                    placeholder="main"
+                    className="text-xs font-mono h-8 bg-background"
+                    data-testid="target-branch-input"
+                  />
+                )}
+              </div>
             </div>
           )}
 

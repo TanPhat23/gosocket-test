@@ -10,6 +10,7 @@ interface TaskState {
   isLoading: boolean;
   error: string | null;
 
+  setTasksData: (taskList: Task[]) => void;
   fetchTasks: (projectId?: string) => Promise<void>;
   createTask: (req: CreateTaskRequest) => Promise<Task>;
   updateTask: (task: Task) => void;
@@ -24,6 +25,16 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   selectedTaskId: null,
   isLoading: false,
   error: null,
+
+  setTasksData: (taskList: Task[]) => {
+    const tasks: Record<string, Task> = {};
+    const taskIds: string[] = [];
+    for (const t of taskList) {
+      tasks[t.id] = t;
+      taskIds.push(t.id);
+    }
+    set({ tasks, taskIds, isLoading: false, error: null });
+  },
 
   fetchTasks: async (projectId) => {
     set({ isLoading: true, error: null });

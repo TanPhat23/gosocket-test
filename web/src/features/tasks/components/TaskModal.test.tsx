@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { TaskModal } from './TaskModal';
 import { useTaskStore } from '../store/useTaskStore';
+import { useTeamStore } from '@/features/teams/store/useTeamStore';
+import { integrationApi } from '@/features/integrations/api/integrationApi';
+import { credentialApi } from '@/features/teams/api/credentialApi';
 
 describe('TaskModal', () => {
   beforeEach(() => {
@@ -109,5 +112,45 @@ describe('TaskModal', () => {
     await waitFor(() => {
       expect(createTaskSpy).toHaveBeenCalled();
     });
+  });
+
+  it('fetches branches for connected repository and allows selecting branch', async () => {
+    useTeamStore.setState({
+      activeProjectId: 'proj-1',
+      activeTeamId: 'team-1',
+      projects: [{ id: 'proj-1', team_id: 'team-1', name: 'Project 1' }],
+    });
+
+    vi.spyOn(integrationApi, 'listProjectIntegrations').mockResolvedValue([
+      {
+        id: 'integ-1',
+        project_id: 'proj-1',
+        credential_id: 'cred-1',
+        provider: 'github',
+        external_id: 'org/repo-demo',
+        external_url: 'https://github.com/org/repo-demo',
+        enabled: true,
+        config: { base_branch: 'main' },
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    ]);
+
+    const branchSpy = vi.spyOn(credentialApi, 'listGitHubBranches').mockResolvedValue([
+      'main',
+      'feature/branch-x',
+      'develop',
+    ]);
+
+    render(<TaskModal />);
+
+    fireEvent.click(screen.getByRole('button', { name: /new task/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('org/repo-demo')).toBeInTheDocument();
+      expect(branchSpy).toHaveBeenCalledWith('team-1', 'cred-1', 'org/repo-demo');
+    });
+
+    expect(screen.getByTestId('target-branch-select')).toBeInTheDocument();
   });
 });

@@ -61,4 +61,18 @@ export const credentialApi = {
       : [];
     return rawList.map((item) => GitHubRepoSchema.parse(item));
   },
+
+  async listGitHubBranches(teamId: string, credentialId: string, repo: string): Promise<string[]> {
+    const res = await axiosClient.get<unknown>(
+      `/teams/${encodeURIComponent(teamId)}/credentials/${encodeURIComponent(credentialId)}/github/branches`,
+      { params: { repo } }
+    );
+    const data = res.data;
+    const rawList = Array.isArray(data)
+      ? data
+      : data && typeof data === 'object' && 'branches' in data && Array.isArray((data as { branches: unknown[] }).branches)
+      ? (data as { branches: unknown[] }).branches
+      : [];
+    return rawList.map(String);
+  },
 };
