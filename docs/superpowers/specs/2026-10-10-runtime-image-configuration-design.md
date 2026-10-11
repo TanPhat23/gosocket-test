@@ -90,9 +90,14 @@ Optional manifest placed at repository root, defining desired runtime version bi
   1. Base OS image pinned by immutable container digest (`debian:bookworm-slim@sha256:...`, exact digest pinned at implementation).
   2. Operating system dependencies pinned via package snapshot or immutable version archives, avoiding floating upstream package indexes.
   3. Language runtimes extracted from pinned, checksum-verified distribution archives into isolated paths (using the approved catalog versions: Go 1.27.2, Node 24.21.0, Python 3.11.17; Java 25.0.4.1+1, Rust 1.99.0, .NET 10.0.401).
-  4. Pinned OpenCode distribution binary and assets verified by cryptographic checksum.
+  4. Pinned OpenCode distribution artifact:
+     - Following user review and approval, the candidate OpenCode artifact pin is the official OpenCode GHCR OCI image manifest digest rather than requiring a standalone binary checksum:
+       - GHCR Tag: `ghcr.io/anomalyco/opencode:2.0.26`
+       - OCI Index Digest: `sha256:15b62c742c702b9750b7636cf3979823c653ef212e66ab217376ca0f32c1ca71`
+       - Candidate Linux/amd64 Manifest Pin: `sha256:ea6c5d68d8d230923d2627bc793e7fa6a03f8e47c253b50397eb92bbde6db255`
+     - *Qualification Status:* This digest is adopted strictly as a candidate content pin. Full image composition and provenance are not yet qualified (see Section 7.2).
   5. Zero host volume bind mounts; in-container clone destinations initialized during runtime container setup.
-- **Fingerprinting:** Tag format `atm-runtime:<full_sha256>`, where `<full_sha256>` is the 64-character lowercase SHA256 hash of the normalized JSON string containing: target platform (`linux/amd64`), pinned base image digest, control-plane template revision, checksums of native packages and pinned OpenCode distribution, and the resolved 6-runtime version/disabled map.
+- **Fingerprinting:** Tag format `atm-runtime:<full_sha256>`, where `<full_sha256>` is the 64-character lowercase SHA256 hash of the normalized JSON string containing: target platform (`linux/amd64`), pinned base image digest, control-plane template revision, checksums of native packages and pinned candidate OpenCode distribution artifact digest, and the resolved 6-runtime version/disabled map.
 - **Build Coalescing & Cancellation:** Identical pending builds share a single in-flight build. Cancellation detaches the waiter; the shared build proceeds as long as at least one waiter remains.
 
 ---
@@ -137,27 +142,27 @@ Optional manifest placed at repository root, defining desired runtime version bi
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 5.2 Verified OpenCode Auth Contract (Official v2.0.23 Source)
+### 5.2 Verified OpenCode Auth Contract (Official v2.0.26 Source)
 
-Authentication mechanics have been verified directly against official OpenCode tag `v2.0.23` source code ([anomalyco/opencode](https://github.com/anomalyco/opencode)):
+Authentication mechanics have been verified directly against official OpenCode tag `v2.0.26` source code ([anomalyco/opencode](https://github.com/anomalyco/opencode)):
 
 1. **Server Password Configuration (`OPENCODE_PASSWORD`):**
-   The HTTP server password is read from the `OPENCODE_PASSWORD` environment variable (the legacy variable `OPENCODE_SERVER_PASSWORD` is also accepted as fallback) via [packages/cli/src/env.ts:10-13](https://github.com/anomalyco/opencode/blob/v2.0.23/packages/cli/src/env.ts#L10-L13).
+   The HTTP server password is read from the `OPENCODE_PASSWORD` environment variable (the legacy variable `OPENCODE_SERVER_PASSWORD` is also accepted as fallback) via [packages/cli/src/env.ts](https://github.com/anomalyco/opencode/blob/v2.0.26/packages/cli/src/env.ts).
 2. **Server Password Initialization in `opencode serve`:**
    When `opencode serve` executes:
    - If `OPENCODE_PASSWORD` is supplied in the environment, the server adopts that explicit password.
    - If no password is provided in the environment or service configuration, `opencode serve` generates a random 32-byte cryptographic password via `randomBytes(32).toString("base64url")`.
-   - Verified in [packages/cli/src/server-process.ts:82-88](https://github.com/anomalyco/opencode/blob/v2.0.23/packages/cli/src/server-process.ts#L82-L88).
+   - Verified in [packages/cli/src/server-process.ts](https://github.com/anomalyco/opencode/blob/v2.0.26/packages/cli/src/server-process.ts).
 3. **HTTP Basic Authentication Scheme (`opencode:<password>`):**
    The HTTP server authenticates inbound requests using HTTP Basic Auth.
-   - The required username is strictly `opencode` (verified in [packages/server/src/auth.ts:20](https://github.com/anomalyco/opencode/blob/v2.0.23/packages/server/src/auth.ts#L20)).
-   - Inbound credentials are decoded from the `Authorization: Basic <base64>` header or the query parameter `?auth_token=<base64>` (verified in [packages/server/src/middleware/authorization.ts:31-37](https://github.com/anomalyco/opencode/blob/v2.0.23/packages/server/src/middleware/authorization.ts#L31-L37)).
+   - The required username is strictly `opencode` (verified in [packages/server/src/auth.ts](https://github.com/anomalyco/opencode/blob/v2.0.26/packages/server/src/auth.ts)).
+   - Inbound credentials are decoded from the `Authorization: Basic <base64>` header or the query parameter `?auth_token=<base64>` (verified in [packages/server/src/middleware/authorization.ts](https://github.com/anomalyco/opencode/blob/v2.0.26/packages/server/src/middleware/authorization.ts)).
 4. **Correction of Pairing Mechanics (`/api/pair` vs `/auth/connect/:code`):**
    - Earlier claims that `/api/pair` is a public/unauthenticated bootstrap endpoint are **INCORRECT**.
-   - `/api/pair` is part of `ServerGroup` and **requires prior authentication** under the `Authorization` middleware (verified in [packages/protocol/src/groups/server.ts:53-62](https://github.com/anomalyco/opencode/blob/v2.0.23/packages/protocol/src/groups/server.ts#L53-L62) and [packages/server/src/middleware/authorization.ts:77-91](https://github.com/anomalyco/opencode/blob/v2.0.23/packages/server/src/middleware/authorization.ts#L77-L91)).
-   - Only the redemption route `/auth/connect/:code` (tested via `isPairingConnectURL`) skips credential checks in the authorization layer because the connect handler consumes and validates the single-use pairing code (verified in [packages/server/src/middleware/authorization.ts:83](https://github.com/anomalyco/opencode/blob/v2.0.23/packages/server/src/middleware/authorization.ts#L83) and [packages/protocol/src/groups/server.ts:36-38](https://github.com/anomalyco/opencode/blob/v2.0.23/packages/protocol/src/groups/server.ts#L36-L38)).
-   - Pairing codes are generated via `randomBytes(16).toString("base64url")`, cached in memory with a 5-minute TTL, and single-use (invalidated on consume) (verified in [packages/server/src/pairing.ts:7-32](https://github.com/anomalyco/opencode/blob/v2.0.23/packages/server/src/pairing.ts#L7-L32)).
-   - Redeeming a code via `/auth/connect/:code` returns a signed stateless session token (`<expires>.<hmac>`) valid for 30 days (`SESSION_TTL_SECONDS = 30 * 24 * 60 * 60`). Rotating the server password immediately invalidates all active session tokens because the HMAC key is derived from the password (verified in [packages/server/src/auth.ts:16-56](https://github.com/anomalyco/opencode/blob/v2.0.23/packages/server/src/auth.ts#L16-L56)).
+   - `/api/pair` is part of `ServerGroup` and **requires prior authentication** under the `Authorization` middleware (verified in [packages/protocol/src/groups/server.ts](https://github.com/anomalyco/opencode/blob/v2.0.26/packages/protocol/src/groups/server.ts) and [packages/server/src/middleware/authorization.ts](https://github.com/anomalyco/opencode/blob/v2.0.26/packages/server/src/middleware/authorization.ts)).
+   - Only the redemption route `/auth/connect/:code` (tested via `isPairingConnectURL`) skips credential checks in the authorization layer because the connect handler consumes and validates the single-use pairing code (verified in [packages/server/src/middleware/authorization.ts](https://github.com/anomalyco/opencode/blob/v2.0.26/packages/server/src/middleware/authorization.ts) and [packages/protocol/src/groups/server.ts](https://github.com/anomalyco/opencode/blob/v2.0.26/packages/protocol/src/groups/server.ts)).
+   - Pairing codes are generated via `randomBytes(16).toString("base64url")`, cached in memory with a 5-minute TTL, and single-use (invalidated on consume) (verified in [packages/server/src/pairing.ts](https://github.com/anomalyco/opencode/blob/v2.0.26/packages/server/src/pairing.ts)).
+   - Redeeming a code via `/auth/connect/:code` returns a signed stateless session token (`<expires>.<hmac>`) valid for 30 days (`SESSION_TTL_SECONDS = 30 * 24 * 60 * 60`). Rotating the server password immediately invalidates all active session tokens because the HMAC key is derived from the password (verified in [packages/server/src/auth.ts](https://github.com/anomalyco/opencode/blob/v2.0.26/packages/server/src/auth.ts)).
 5. **OpenAPI `security: []` Annotations vs. Global Process Dispatch Middleware:**
    - In OpenCode's protocol schema definitions, individual endpoint declarations (such as those in `packages/protocol/src/groups/`) frequently omit security schemes or produce OpenAPI specs that display `security: []`.
    - However, the HTTP server process dispatch (`packages/server/src/process.ts` and `@opencode/protocol/src/api.ts`) mounts `Authorization` middleware globally across all endpoint groups (`HttpApiGroup.addMiddleware`).
@@ -215,20 +220,28 @@ The following items are unresolved architectural decisions and active implementa
    Running with `--read-only` rootfs requires identifying all directories that toolchains and OpenCode require for temporary scratch space (e.g. `/tmp`, `/var/tmp`, `/var/lib/opencode/tmp`, `/run`) and establishing bounded memory limits (`tmpfs:size=...`, `noexec`, `nosuid`) that do not exhaust host memory or bypass execution restrictions.
 7. **Strict `no-new-privileges` vs. Explicitly Approved Exceptions:**
    Given the current runtime environment failure (detailed below), the policy must decide whether ATM strictly refuses to run on environments where `no-new-privileges` fails, or if an explicitly configured, user-approved platform exception can ever exist.
+8. **Runtime Base OS and Image Composition (Alpine/musl vs. Debian/glibc multi-stage):**
+   The upstream OpenCode image `ghcr.io/anomalyco/opencode:2.0.26` builds from an Alpine base (`packages/cli/Dockerfile`) and copies a `linux-x64-baseline-musl` OpenCode binary to `/usr/local/bin/opencode`, installing `libgcc`, `libstdc++`, and `ripgrep`. Meanwhile, the existing ATM runtime catalog and sandbox baseline are built on Debian/glibc (`debian:bookworm-slim`).
+   - *Option A (Adopt Alpine Base for ATM Runtime):* Standardize ATM project sandboxes on Alpine, running the musl binary natively with musl-compatible toolchains.
+   - *Option B (Multi-Stage Copy into Debian with ABI/Dependency Qualification):* Extract `/usr/local/bin/opencode` from the GHCR candidate image into the Debian base, but only after qualifying ABI compatibility, runtime C library/dynamic link dependencies (or musl compatibility layers such as `gcompat`/`musl`), and companion tools (e.g. `ripgrep`).
+   - This architectural decision remains open pending ABI and dependency qualification.
 
 ### 7.2 Current Implementation Blockers
 
-1. **Checksum-Verifiable OpenCode V2 Distribution Artifact Unresolved:**
-   ATM requires an official, checksum-verifiable distribution binary/archive for OpenCode V2 on `linux/amd64` to build deterministic container images. The exact pinned release artifact, upstream download URL, cryptographic SHA256 checksum, and container startup handshake test have not yet been satisfied and qualified.
+1. **Candidate OpenCode GHCR Artifact Discovered but Not Fully Qualified:**
+   Following user approval, the official GHCR image digest (`ghcr.io/anomalyco/opencode:2.0.26`, linux/amd64 manifest `sha256:ea6c5d68d8d230923d2627bc793e7fa6a03f8e47c253b50397eb92bbde6db255`) has been selected as the candidate OpenCode content pin rather than requiring a standalone binary checksum. However, full qualification remains an active blocker due to:
+   - *Provenance & Build Identity:* Although a registry-attached SLSA provenance attestation exists referencing source repository `https://github.com/anomalyco/opencode` and commit `5e73d5cb1f788637b1b3d5cf1298ea694cbad0c5` (the parent of release tag `v2.0.26` commit `9b4ec5714d481559990db0a816d5dec19541a814`, differing only by version metadata), its `resolvedDependencies` field is false and builder ID is empty. It cannot be characterized as fully verified provenance or signed publisher identity.
+   - *Dependency Completeness & ABI Composition:* The binary is packaged in Alpine with `musl`, `libgcc`, `libstdc++`, and `ripgrep`. ABI compatibility and runtime dependencies for ATM container composition are not yet verified.
+   - *Runtime Handshake & Auth Smoke:* Container startup handshake, `OPENCODE_PASSWORD` authentication smoke tests, and command-line execution validation have not yet been run and qualified.
 2. **Docker/Snap Environment Incompatibility with `no-new-privileges`:**
    On the target Linux host running Docker Engine 29.8.0 via Snap, executing containers with `--security-opt no-new-privileges` currently fails with:
    ```text
    docker run --rm --security-opt no-new-privileges debian:bookworm-slim /bin/sh -c "echo hello"
    exec /bin/sh: operation not permitted (exit status 255)
    ```
-   Because our security contract requires **failing closed** if `no-new-privileges` cannot be enforced, strict sandbox qualification cannot pass in this environment until Docker AppArmor/Snap confinement profiles are reconciled or a native Docker Engine is provided.
+   Because our security contract requires **failing closed** if `no-new-privileges` cannot be enforced, strict sandbox qualification cannot pass in this environment until Docker AppArmor/Snap confinement profiles are reconciled or a native Docker Engine is provided. Pinned image updates do not alter this host runtime restriction.
 3. **Gate D Provider Credential Validation Blocked:**
-   Validating and testing model provider credential injection into containerized OpenCode servers is blocked until the exact OpenCode V2 container binary is qualified and runnable with the required security options.
+   Validating and testing model provider credential injection into containerized OpenCode servers is blocked until the candidate OpenCode container artifact is qualified, dependency/ABI composition is resolved, and the container is runnable with the required security options.
 
 ---
 
