@@ -1,180 +1,110 @@
-# ⚠️ DO NOT EXECUTE / SUPERSEDED DRAFT — ARCHITECTURE CONFLICT & IMPLEMENTATION BLOCKED
-
-> **CRITICAL NOTICE: DO NOT EXECUTE THIS IMPLEMENTATION PLAN.**
->
-> 1. **Fundamental Architectural Conflict:**
->    This implementation plan assumes a **task-scoped container and task-scoped server architecture** (`atm-task-<task_id>`, `/workspace:rw` host worktree bind-mounts, task-scoped OpenCode background server instances). This model directly conflicts with the proposed project-scoped container runtime architecture specified in `docs/superpowers/specs/2026-10-10-runtime-image-configuration-design.md`, which defines hard security boundaries strictly at the project level (`atm-project-<project_id>`) with in-container cloning and zero host bind-mounts.
-> 2. **Unapproved Spec & Open Design Decisions:**
->    The governing specification (`docs/superpowers/specs/2026-10-10-runtime-image-configuration-design.md`) remains in status `PROPOSED Revision (Awaiting User Review & Approval — Not Implemented)`. Multiple major architectural decisions (multi-repo manifest reconciliation, OpenCode server process topology inside project containers, safe git clone credential delivery, bounded writable tmpfs layout, base OS musl/glibc ABI qualification) and implementation blockers remain open and unresolved.
-> 3. **Execution Prohibition:**
->    This historical draft must **not** be executed. An aligned implementation plan will be authored only after the proposed project-scoped specification is reviewed, updated, and approved by the user. This addendum is an informational status record and **is not an aligned or executable implementation plan**.
-> 4. **Runtime Security Blocker Status (`no-new-privileges`):**
->    - **Default Host Daemon (Failure):** Testing on the target Linux host running Docker Engine 29.8.0 via Snap (rev 3613, containerd 2.3.4, runc 1.5.1) confirmed that minimal isolated containers (`--network none --read-only --cap-drop=ALL --user 65534:65534 --pids-limit 16 --memory 64m --cpus 0.5`) fail execution when `--security-opt no-new-privileges:true` is enabled: `exec /bin/sh: operation not permitted` (exit status 255). An otherwise identical control probe with only NNP omitted succeeded (`NoNewPrivs: 0`, exit status 0).
->    - **Docker Desktop Daemon (Informational VM Pass):** Comparative testing on Docker Desktop 29.2.1 (runc 1.3.4) succeeded with NNP enabled (`NoNewPrivs: 1`, exit status 0). However, Docker Desktop runs inside a separate Linux VM guest kernel; this does **not** prove compatibility or qualify a native Linux Docker Engine deployment or ATM OpenCode runtime.
->    - **Qualification Limits:** The probe localized failure to NNP interaction on the Snap-backed daemon, but did not test workspace mounts, OpenCode server execution, authentication handshakes, provider credentials, or network egress filtering. Dropping NNP, weakening AppArmor, or disabling Seccomp is strictly prohibited. ATM security enforcement requires failing closed.
->
-> **Canonical Specification Reference:** `docs/superpowers/specs/2026-10-10-runtime-image-configuration-design.md`
-
----
-
-# Project-Scoped Runtime Image Configuration & Task-Scoped Container Server Architecture Implementation Plan
+# Project-Scoped Runtime Container & Sandboxed OpenCode Server Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Provide isolated, reproducible, content-addressed cached per-project runtime environments for Go, Node, Python, Java, Rust, and .NET on `linux/amd64`, paired with task-scoped containerized OpenCode servers, fail-closed execution, zero host fallback, immutable static snapshot persistence (versioned per task with unique monotonically increasing `SnapshotVersion`) for stopped/completed/canceled tasks, and no host dependency installation.
+**Goal:** Provide reproducible, content-addressed cached per-project runtime container environments on `linux/amd64` with sandboxed OpenCode server execution, fail-closed privilege controls (`no-new-privileges:true`), zero host fallback, in-container cloning without host bind mounts, union-based multi-repository runtime resolution, and strict inter-project isolation.
 
-**Architecture:**
-1. Task runtime configuration resolves deterministically via `RuntimeResolver` using the worktree manifest (`.atm-runtime.json`), project DB override (`models.Project.RuntimeConfig`), and a strictly vetted 6-runtime catalog qualified from official upstream distribution archives.
-2. Images are built dynamically from a control-plane Dockerfile template and cached with content-addressed tags (`atm-runtime:<full_sha256>`) via `RuntimeImageBuilder` using in-flight build coalescing.
-3. `TaskSandboxManager` manages container lifecycles on a dedicated user-defined Docker bridge network with `CapDrop: ALL`, `no-new-privileges: true`, resource/PID limits, single-writer state volumes (`atm-task-data-<task_id>`), and task-scoped OpenCode background server instances.
-4. An explicit task session broker `TaskSessionBroker` manages active task-scoped `OpenCodeClient` instances (created via `NewTaskOpenCodeClient(endpointURL, token, httpClient)` without host Unix socket interception). All active task interactions—including active transcript reads in `GetTaskSession`, `PromptTaskSession`, `CompactTaskSession`, `CancelTask`, `watchSteeringTurn`, child session polling, and PR/status reconciliation—acquire context-bound leases via `AcquireActiveClient(ctx, taskID)` or `EnsureServer(ctx, taskID)`. No unleased raw client pointers and no global host `openCodeClient` remain.
-5. Member follow-up steering or compaction on a stopped task re-resolves the project runtime profile and starts a container server attached to the task worktree and retained volume (`atm-task-data-<task_id>`). A client lease is held during the steering turn; upon lease release, the container stops only when the session turn has completed and no active task execution or other leases remain.
-6. Viewer inspection of tasks without an active container (completed, failed, cancelled, review, backlog) reads from immutable snapshots (`models.TaskSessionSnapshot` with unique `(TaskID, SnapshotVersion)`, optional nullable `AttemptID`, and bounded JSON object map `{ "messages": [...] }`) without starting containers or triggering models.
-7. Authorization enforces RBAC before reaching `TaskSessionBroker` or configuration APIs: catalog reads require authentication (`RequireAuth`, no team role required as it returns public catalog metadata); snapshot reads require `RoleViewer` (10)+; prompt steering, follow-ups, and cancellations require `RoleMember` (20)+; project runtime overrides require `RoleAdmin` (30) or `RoleOwner` (40).
-8. Cancellation initiates a bounded best-effort interrupt of the root session and active child subagents via the task's leased client from `TaskSessionBroker`, captures an immediate transcript snapshot, and bounds force stop (`ContainerStop` timeout fallback to `ContainerRemove`). Retained volumes and latest captured transcripts are preserved, but uncommitted in-container state is not guaranteed to flush if processes hang. Cancellation of one task never interrupts another.
+**Architecture:** One isolated Docker container per ATM project (`atm-project-<project_id>`) hosting a long-lived OpenCode server communicating via internal container IP with HTTP Basic authentication (`opencode:<OPENCODE_PASSWORD>`). Repositories and task-specific Git worktrees reside strictly in persistent project volumes (`atm-project-data-<project_id>:/workspaces` and `atm-project-state-<project_id>:/var/lib/opencode`) without host volume bind mounts; control-plane tasks execute against in-container worktree paths with manual data retention and an automated 24-hour idle container stop lifecycle.
 
-**Tech Stack:** Go 1.27, Docker Engine SDK (`github.com/docker/docker v27.5.1+incompatible`), GORM v2, PostgreSQL/SQLite, Fiber v3, TypeScript, React 19, Tailwind CSS v4, Vitest.
+**Tech Stack:** Go 1.27, Docker Engine SDK (`github.com/docker/docker v27.5.1+incompatible`), GORM v2, PostgreSQL / SQLite, Fiber v3, OpenCode Server v2.0.26, TypeScript, React 19, Tailwind CSS v4.
 
-**Spec Reference:** `docs/superpowers/specs/2026-10-10-runtime-image-configuration-design.md` (Commit: `d15b9e0`)
+**Spec:** `docs/superpowers/specs/2026-10-10-runtime-image-configuration-design.md`
 
 ---
 
 ## Global Constraints
 
-- **Platform Target:** Exclusively `linux/amd64` (per specification baseline).
-- **Zero Host Execution:** All compilation, dependency installation, agent turns, child subagents, and tool runs must execute inside the sandbox. `runOnHost` and host-level `InstallDependencies` must be eliminated.
-- **Fail-Closed Validation:** Invalid JSON syntax, unknown runtime keys, or uncataloged versions in `.atm-runtime.json` fail the task attempt immediately; UI overrides never forgive or mask an invalid manifest.
-- **Strict Content-Addressing:** Image tags are `atm-runtime:<full_sha256>` computed from the canonical normalized JSON of target platform, base image digest, template revision, native package checksums, OpenCode binary checksum, and the 6 resolved runtimes.
-- **Daemon-Validated Internal Routing Only & No Global Host Client:** `OpenCodeClient` endpoints for active tasks must be server-owned mappings (`taskID -> containerID, networkID, observed internal IP:port, generation`) derived exclusively from Docker daemon inspection on the task network. Instances must be created using `NewTaskOpenCodeClient(endpointURL, token, httpClient)` to guarantee no host Unix socket hijacking occurs. Arbitrary user-supplied `serverEndpoint` values are strictly prohibited. IP string validation alone is NOT declared sufficient for SSRF defense.
-- **Package Layering & Acyclic Broker Architecture:** `internal/runner` defines `TaskSandboxManager`, `TaskSessionBroker`, `ClientLease`, and `NewTaskOpenCodeClient`. `internal/service` imports `internal/runner` to consume `TaskSessionBroker`. `internal/runner` does NOT import `internal/service`. Wiring is performed in `cmd/server/main.go`. All service callsites route through leases (`AcquireActiveClient` or `EnsureServer`); raw unleased client pointers are prohibited to prevent races with container stop or route teardown.
-- **Container Network Topology & Host Privileges:**
-  - Sandbox containers execute on a dedicated user-defined Docker bridge network without published host ports, with outbound NAT for LLM provider APIs and package downloads.
-  - Sandbox containers run without `/var/run/docker.sock` and with dropped privileges (`CapDrop: ALL`, `no-new-privileges: true`).
-  - Host control-plane runner still requires access to `/var/run/docker.sock` to manage containers.
-  - Mount no host user config, shared state, or host credentials into the container (`no /root/.config/opencode` or `/root/.local/share/opencode` host mounts).
-- **Deterministic Single-Writer Volumes & Immutable Snapshots:** Dedicated Docker volume `atm-task-data-<task_id>` per task session; retained after completion for follow-up turns. Historical transcript inspection for tasks without active containers must be served from persisted `TaskSessionSnapshot` records (keyed by unique composite `(task_id, snapshot_version)`), not by invoking dead container endpoints or triggering models. Because multiple steering turns can share an attempt, snapshots are immutable, versioned per task monotonically, serialized transactionally per task, never upserted or overwritten, and store an optional nullable `attempt_id` for attribution.
-- **RBAC & Multi-Tenant Authorization:**
-  - Catalog Metadata (`GET /api/v1/runtimes/catalog`): Protected by `RequireAuth` (authenticated session required, no team role needed; tests verify 401 unauthenticated and 200 authenticated).
-  - Snapshot Reads: `RoleViewer` (10)+ (static snapshot only; never triggers model invocation).
-  - Steer Prompts, Follow-ups, Cancellations: `RoleMember` (20)+.
-  - Project Runtime Overrides (`GET/PUT /api/v1/projects/:id/runtime`): Read requires `RoleViewer` (10)+, update requires `RoleAdmin` (30)+ or `RoleOwner` (40).
-  - All project operations must resolve project team membership and enforce cross-team IDOR isolation.
-- **Preservation of Cancellation Work:** Preserve the existing 9 dirty working tree files from task cancellation (`internal/runner/task_runner.go`, `internal/runner/opencode_client.go`, etc.). Do not overwrite or discard their interruption and child session traversal logic.
-- **Code Quality:** All Go code must pass `make check` (`go vet`, `staticcheck`, and unit tests). All TypeScript/React code must pass `npm test --prefix web -- --run` and `npx tsc -b`.
+- **Platform & Host Baseline:** Target runtime is strictly `linux/amd64`. Production deployment targets a native non-Snap Linux Docker Engine (or dedicated native Linux VM) qualified via an explicit zero-mount, zero-credential NNP probe.
+- **Fail-Closed Privilege Security (`no-new-privileges:true`):** Container execution requires `--security-opt no-new-privileges:true` and `CapDrop: ALL`. If the runtime rejects NNP, the control plane fails closed immediately; disabling, relaxing, or bypassing NNP or softening AppArmor/seccomp profiles is strictly forbidden.
+- **Docker Socket Isolation:** Project containers never mount `/var/run/docker.sock` or any daemon socket. Only the trusted ATM control-plane runner communicates with the Docker daemon.
+- **Host Mount Elimination:** Zero host filesystem bind mounts. Host source trees, control-plane directories, host Git caches, and host tool configurations (`~/.config/opencode`) are never mounted into containers.
+- **Single Trust Boundary per Project (Shared Intra-Project Boundary):** Security isolation is container-enforced strictly between different ATM projects (`atm-project-<project_id>`). Repositories and tasks within the same project share a single security trust boundary and filesystem volume; worktrees provide branch operational concurrency only, not task security isolation.
+- **Deterministic Multi-Repository Runtime Resolution:** Resolves project runtime profiles via the union of all declared repository `.atm-runtime.json` manifests. Exact conflicting versions across repos fail closed immediately unless resolved by an explicit project UI/DB override. UI/DB overrides take precedence over valid manifests, but invalid manifests (syntax error, schemaVersion != 1, or uncataloged versions) fail closed immediately and cannot be bypassed. Repo-level `false` indicates that repo does not require the runtime; positive requirements from other repos win in union; an explicit project-level `false` override disables the runtime project-wide.
+- **Read-Only Root & Scratch Hygiene:** Container root filesystems are read-only (`--read-only`). Writable paths are restricted to persistent project Docker volumes (`atm-project-data-<project_id>` and `atm-project-state-<project_id>`) and bounded `tmpfs` mounts (`/tmp:rw,noexec,nosuid,size=512m`). Per-task scratch directories in `tmpfs` are cleared upon task completion. Task and worktree retention in persistent volumes is strictly manual; there is no task-delete API or automatic deletion.
+- **Container Idle Lifecycle (24h Inactivity):** Containers stop after 24 consecutive hours with zero running tasks and zero active OpenCode requests, retaining persistent volumes and OpenCode state. Stop operations must be coordinated to prevent races with active tasks or in-flight requests.
+- **Credential Separation & Safe Sync:** Raw GitHub tokens stay solely in the trusted ATM control plane and are never exposed into container environments, worktree Git configs, files, command arguments, or prompt contexts. Initial repo cloning and sync into container volumes must pass the credential-safe qualification gate.
+- **Outbound Egress Default-Deny:** Containers execute on isolated user-defined Docker bridge networks without published host ports. Default-deny outbound egress must explicitly block private host/control-plane subnets, Docker bridges, IPv4/IPv6 link-local addresses, and cloud provider metadata (`169.254.169.254` and `[fd00:ec2::254]`).
+- **Zero Host Execution Fallback:** All compilation, dependency installation, tool runs, and agent steps execute exclusively inside the sandbox container. `runOnHost` and host-level dependency installation in `dependencies.go` must be completely removed.
+- **Preservation of Existing Work:** Preserve the existing task cancellation and session tree interruption logic (`InterruptSessionTree`, bounded timeout handling).
+- **Isolated Build & Test Execution:** All repo dependency installation, Go tests, builds, and verification must run in an approved isolated container/CI environment, never on the host.
 
 ---
 
 ## Review Focus
 
-1. **Host Fallback Elimination:** Verify that no code path in `task_runner.go` or `dependencies.go` invokes commands, tool runs, or package installations on the host. Container initialization failure must fail the attempt fail-closed.
-2. **SSRF & Network Boundary Defense:** Verify `OpenCodeClient` routes only via server-managed endpoints belonging to the daemon-inspected task bridge network. Ensure the container has no access to host docker.sock or host control-plane loopback services, and ensure client instances for tasks do not fall back to host socket discovery (`opencode.sock`).
-3. **Session Broker Leased Routing & Service Isolation:** Verify that `TaskService` routes all live operations (GetTaskSession active reads, Prompt, Compact, Cancel, watchSteeringTurn, child session polling, PR/status reconciliation) exclusively through leased broker calls (`AcquireActiveClient` or `EnsureServer`) for the specific task ID, completely removing the single global host `openCodeClient` in service options. Verify cancellation of Task A never interrupts Task B.
-4. **Member Follow-up vs. Viewer Static Reads:** Verify that when a member issues a steer prompt/follow-up on a stopped task, the broker ensures a container server is started with the retained volume and active worktree. Verify that a viewer reading session transcripts never starts a container server or triggers model execution.
-5. **Snapshot Persistence & Schema Type Safety:** Verify that `TaskSessionSnapshot` uses a composite unique constraint on `(TaskID, SnapshotVersion)` with monotonically increasing `SnapshotVersion`, an optional nullable `AttemptID` for attribution, embeds messages within a valid `JSONMap` object `{ "messages": [...] }`, enforces bounded byte limits (max 10MB; sets `IsComplete = false` if capped or truncated), prevents any update/upsert of prior snapshots, orders `GetLatestSnapshot` by version descending, and ensures capture failures during cancellation never block or delay container force stop.
-6. **Cancellation Semantics:** Verify cancellation implements bounded best-effort interruption and transcript snapshotting with a bounded force-stop timeout fallback. Do not claim flushed state or graceful termination is guaranteed if an in-container process hangs.
-7. **Volume Hygiene & Purging Lifecycle:** Verify volume retention and purge policy gates.
-8. **Secret Defense:** Verify no host credentials, host configs, or raw API tokens are written into container images or logged. Verify the secret source gate before implementing runner container startup.
-9. **Concurrent Build Coalescing:** Verify that concurrent tasks requesting the identical runtime hash share a single in-flight build channel without duplicate builds.
+1. **Gate Enforcement & Implementation Prohibition:** Verify that Tasks 1 through 9 remain strictly blocked and cannot be implemented until all qualification gates (Gates 0A through 0D) pass written sign-off and approval.
+2. **Credential Leakage Prevention during Sync:** Verify that no Git credentials, HTTP authorization headers, or personal access tokens are stored in the persistent project volume, `.git/config`, environment variables, or container logs.
+3. **Multi-Repo Manifest Conflict Fail-Closed:** Verify that when Repo A specifies `go: "1.27.2"` and Repo B specifies an alternate valid catalog version `go: "1.26.0"` (registered in test fixtures to isolate union conflicts from catalog validation), `RuntimeResolver` fails closed immediately with a descriptive conflict error unless an explicit project-level override exists in `models.Project.RuntimeConfig`. Ensure uncataloged invalid versions are separately rejected by schema/catalog validation.
+4. **Host Fallback and Bind Mount Prohibition:** Verify that zero host bind mounts exist in container configurations, that `runOnHost` is deleted from `task_runner.go`, and that host package executions (`npm install`, `go mod download`) in `dependencies.go` are completely eradicated.
+5. **Idle Container Stopping Concurrency & Leases:** Verify that the 24-hour idle stop coordinator checks both active task execution leases (`AcquireTaskLease`) and in-flight OpenCode HTTP request leases (`AcquireRequestLease`) before stopping, ensuring no in-flight turn or long-running task is interrupted.
+6. **Egress Default-Deny Filtering:** Verify that user-defined project container bridge networks apply default-deny outbound filtering rules (blocking private subnets, host bridge interfaces, link-local, and cloud metadata `169.254.169.254` / `[fd00:ec2::254]`) qualified in Gate 0D.
 
 ---
 
-## Pre-Implementation Architecture Decision Gates
+## Pre-Implementation Qualification & Architecture Decision Gates
 
-> **IMPORTANT:** Tasks 1 through 9 cannot proceed to production code until each gate below is explicitly qualified and resolved. Tasks depending on unresolved gates must remain blocked.
+> **HARD STOP RULE:** Tasks 1 through 9 cannot proceed to production code until each gate below is explicitly qualified and resolved. Tasks depending on unresolved gates must remain blocked.
 
-### Gate A: Runtime Catalog Sourcing & Candidate Review
+### Gate 0A: Native Non-Snap Linux Docker Host Qualification & Mandatory `no-new-privileges` Probe
+
 - **Status:** Mandatory Pre-Implementation Gate (Open / Unresolved).
-- **Current Baseline Fact:** Live inspection of the existing environment confirms Go 1.27.1, Node 18.20.4, and Python 3.11.2 on `linux/amd64`. These versions represent the observed baseline but are not yet a fully qualified distribution catalog.
-- **Requirements:**
-  1. For all six language runtimes (`go`, `node`, `python`, `java`, `rust`, `dotnet`), identify official vendor-maintained `linux/amd64` distribution archives, official release checksums, license, architecture, exact version, and EOL/security support status.
-  2. All downloads and checksum sources must use official HTTPS endpoints; verify checksums cryptographically before extracting or executing any archive. No downloaded data or archives may be stored in the repository.
-  3. Perform qualification discovery inside a disposable execution container staged with the verified archives. Run qualification with `--network none`, no host directory or socket mounts, `--security-opt=no-new-privileges`, dropped capabilities (`--cap-drop=ALL`), non-root user execution, and strict memory/CPU resource limits.
-  4. Require actual toolchain build/test smoke verification for each verified archive, not just `--version`:
-     - Go: hello-world compile and run (`go build` / `go run`).
-     - Node: syntax validation with `node --check` and script execution (`node -e`).
-     - Python: bytecode compilation with `python3 -m py_compile` and script execution (`python3 -c`).
-     - Java: source compilation with `javac` and class execution with `java`.
-     - Rust: single-file compilation with `rustc` and binary execution (or `cargo` offline test).
-     - .NET: local console build and execution (`dotnet build --no-restore` / `dotnet run --no-restore`) without external package restore.
-  5. EOL Baseline Governance: Check official EOL / security support status against release dates. If an observed baseline version (e.g., Node 18.20.4 or Python 3.11.2) is unsupported or past security EOL by the target release date, present recommended upgrade candidates and explicitly obtain user approval to change the baseline. Do NOT silently make EOL versions selectable or silently change the baseline.
-  6. Explicitly distinguish between candidate versions (unverified/pending approval) and user-approved catalog entries. Maintain user approval gate after all discovery findings before codifying the catalog in Task 1.
-  7. **Strict Ban:** No fabricated, placeholder, or estimated SHA256 hashes, digests, or archive URLs may be committed to code or tests.
+- **Background & Context:** Testing on the host running Docker Engine 29.8.0 via Snap (rev 3613, containerd 2.3.4, runc 1.5.1) confirmed that running containers with mandatory `--security-opt no-new-privileges:true` fails execution during container launch:
+  ```text
+  docker run --rm --pull=never --network none --read-only --cap-drop=ALL --security-opt no-new-privileges:true --user 65534:65534 --pids-limit 16 --memory 64m --cpus 0.5 --entrypoint /bin/sh alpine:latest -c 'grep "^NoNewPrivs:" /proc/self/status; exec /bin/true'
+  exec /bin/sh: operation not permitted (exit status 255)
+  ```
+  A control probe with NNP omitted succeeded (`NoNewPrivs: 0`, exit status 0). An informational test on Docker Desktop 29.2.1 passed (`NoNewPrivs: 1`, exit status 0), but Docker Desktop executes inside an isolated VM guest kernel and does not qualify a native host.
+- **Probe Specification:**
+  - Execute only on a pre-provisioned native non-Snap Linux Docker host (or dedicated native Linux VM).
+  - Use an existing local Alpine image (`--pull=never`). Zero host mounts, zero environment credentials, zero published ports, `--network none`.
+  - Command:
+    ```bash
+    docker run --rm --pull=never --network none --read-only --cap-drop=ALL \
+      --security-opt no-new-privileges:true --user 65534:65534 \
+      --pids-limit 16 --memory 64m --cpus 0.5 \
+      --entrypoint /bin/sh alpine:latest \
+      -c 'grep "^NoNewPrivs:" /proc/self/status; grep -q "^NoNewPrivs:[[:space:]]*1$" /proc/self/status; exec /bin/true'
+    ```
+- **Qualification Criteria:** Exit status 0, output contains `NoNewPrivs: 1`. Modifying the current host packages/services is strictly prohibited. If NNP fails, the platform fails closed; AppArmor/seccomp softening or NNP omission is strictly banned.
 
-### Gate B: OpenCode V2 Binary Auth & Container Handshake Qualification
+### Gate 0B: OpenCode Candidate Image Provenance, Base OS ABI & Handshake Qualification
+
 - **Status:** Mandatory Pre-Implementation Gate (Open / Unresolved).
-- **Current Baseline Fact:** Local binary is `opencode v2.0.23`. `opencode serve --help` exposes `--hostname string`, `--port integer`, `--cors string`, `--service`, and `--stdio`. No flags for credential authentication or handshake tokens are documented on CLI help.
-- **Requirements:**
-  1. Inspect the pinned OpenCode v2 binary and test `opencode serve` behavior locally to determine if it supports an HTTP authorization header, bearer token, API key, or internal authentication mechanism.
-  2. If OpenCode v2 provides an authentication mechanism, specify the exact handshake contract between `OpenCodeClient` and the task container.
-  3. If OpenCode v2 does NOT provide safe container-level authentication, document the confinement model: the server listens exclusively on the task-dedicated internal container network (with no published host port) and is accessible only to the control plane runner. If this is insufficient, halt and require coordinator/user approval before exposing the container network.
-  4. Qualify task routing handles: the control-plane runner must maintain an internal mapping (`taskID -> {containerID, networkID, observedInternalIP, port, generation}`) strictly derived from Docker daemon inspection. Reject any arbitrary or user-supplied endpoints. IP string validation alone is NOT declared sufficient for SSRF defense.
+- **Candidate Artifact:**
+  - GHCR Tag: `ghcr.io/anomalyco/opencode:2.0.26`
+  - Manifest Digest: `sha256:ea6c5d68d8d230923d2627bc793e7fa6a03f8e47c253b50397eb92bbde6db255`
+- **Architecture Questions:**
+  1. *Base OS Selection:* The candidate OpenCode binary is built for Alpine/musl (`linux-x64-baseline-musl`) with `libgcc`, `libstdc++`, and `ripgrep`. Determine whether to standardize ATM sandbox images on Alpine (`Option A`) or use multi-stage copy into Debian bookworm-slim (`Option B`) with verified musl/gcompat runtime compatibility.
+  2. *Provenance Attestation:* Verify upstream SLSA provenance attestation and document limitations (empty builder ID, resolvedDependencies=false).
+  3. *Startup & Auth Smoke Test:* Qualify in a test container that `opencode serve --hostname 0.0.0.0 --port 4096` starts cleanly, honors `OPENCODE_PASSWORD`, and responds with 401 Unauthorized without auth and 200 OK with `Authorization: Basic <base64(opencode:password)>` on `/api/info` and `/api/session`.
 
-### Gate C: Task State Volume Retention & Task Deletion Operation
-- **Status:** Mandatory Pre-Implementation Decision Gate (Open / Unresolved).
-- **Current Baseline Fact:** Codebase audit reveals NO task delete route, service method, or repository method currently exists (`grep DeleteTask` matches only the Asynq queue inspector).
-- **Unresolved Decision Needed Before Implementation:**
-  - **Option 1 (Recommended):** Add an authenticated, authorized task deletion operation (`DELETE /api/v1/tasks/:id`, requiring `RoleAdmin` or `RoleOwner` of the task's project team) that cancels any active task, removes its records, and purges its dedicated Docker volume `atm-task-data-<task_id>`.
-  - **Option 2:** Defer task deletion endpoint to a future specification; retain `atm-task-data-<task_id>` volumes under a manual operator retention/cleanup CLI or script.
-- **Constraint:** This is a blocking user decision gate. The plan MUST NOT claim to implement or execute a task deletion route until the user explicitly resolves Gate C. If Option 2 is selected, Task 6 will omit task deletion and rely on manual volume retention.
+### Gate 0C: Credential-Safe Repository Clone, Sync & Push Data Transfer Mechanism
 
-### Gate D: Model Provider Credential Source Qualification
 - **Status:** Mandatory Pre-Implementation Gate (Open / Unresolved).
-- **Current Baseline Fact:** `internal/models/enums.go` defines `CredentialProvider` only as `github`, `jira`, `trello`, `oidc`, and `generic`. The current runner injects environment variables by reading host environment / host configs (`/root/.config/opencode`). No team-level or project-level LLM provider credential storage currently exists in ATM.
-- **Requirements:**
-  1. Identify the approved LLM provider credential source for tasks (e.g., control-plane environment variables passed down via task execution context vs. dedicated secure secret store).
-  2. Verify how the pinned OpenCode server inside the container consumes credentials (e.g., standard provider env vars `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) without persisting host secrets or mounting host configuration directories.
-  3. Never claim encrypted team LLM credentials already exist in the database. If a new credential-management subsystem is required, stop and ask the user before writing code.
-  4. Never print or log secrets in tests or runner output. Route security review for Docker configuration and secret isolation.
+- **Problem Statement:** Host bind mounts are eliminated. Raw GitHub personal access tokens remain solely in the ATM control plane and must never be placed inside the project container, `/workspaces`, `.git/config`, or task-visible environment variables.
+- **Deliverable:**
+  - Design and qualify an exact mechanism to transfer repository data and perform authenticated fetch/push operations between the control plane and persistent volume `atm-project-data-<project_id>`.
+  - Evaluate candidates: control-plane daemon-driven archive streaming (`docker cp` / tar stream over Docker SDK), dedicated transient control-plane Git credential helper pipe, or authenticated proxy sidecar on an internal network.
+  - Require formal security review and coordinator sign-off before proceeding to implementation tasks (specifically blocking Task 5 `WorkspaceManager` and dependent tasks).
+
+### Gate 0D: Container Egress Filtering Mechanism & Endpoint Allowlisting
+
+- **Status:** Mandatory Pre-Implementation Gate (Open / Unresolved).
+- **Problem Statement:** Project sandbox containers must enforce default-deny egress, explicitly blocking access to host/control-plane private networks (RFC 1918, RFC 6598), Docker bridge gateways, IPv4/IPv6 link-local addresses, and cloud provider metadata (`169.254.169.254`, `[fd00:ec2::254]`).
+- **Deliverable:**
+  - Qualify the filtering implementation: host-managed iptables/nftables rules applied to the project Docker bridge network vs. container egress proxy sidecar.
+  - Document specific allowed external destinations: LLM model provider endpoints (Anthropic, OpenAI) and approved public package registries.
+  - Require formal security review and coordinator sign-off before proceeding to implementation tasks (specifically blocking Task 4 `ProjectSandboxManager` and dependent tasks).
 
 ---
 
 ## Detailed Task Implementation Order
 
-### Task 0: Catalog Qualification & Discovery (Architecture Prerequisite)
+> **Note on Environment Execution:** All repository dependency installation, Go unit/integration tests, builds, and linting must be executed inside an approved isolated container/CI environment, never on the bare development host.
 
-**Goal:** Qualify vendor distribution archives for all 6 language runtimes on `linux/amd64` with grounded smoke testing, and test OpenCode serve handshake with strict isolation and official endpoint probing.
+### Task 1: Runtime Model, Migration & Pinned Catalog Codification
 
-**Files:**
-- Discovery & Qualification only (no code edits, no code commits, no downloaded data in repo).
-- Output: Candidate catalog specification with verified vendor URLs, verified SHA256 checksums, build/smoke test results, EOL status notes, and OpenCode auth probe results ready for user approval.
-
-- [ ] **Step 1: Discover, stage, and smoke-test upstream archives for 6 runtimes**
-  - Download official release artifacts and checksum manifests via official HTTPS endpoints for Go, Node.js, Python, Java (OpenJDK), Rust, and .NET on `linux/amd64`. Do not commit downloaded artifacts to the repo.
-  - Verify sha256sum on downloaded archives strictly against vendor-published checksums before extracting or executing.
-  - Stage verified archives into a disposable container running under strict isolation: `--network none`, no host mounts or Docker socket, `--security-opt=no-new-privileges`, `--cap-drop=ALL`, non-root user, and explicit CPU/memory limits.
-  - Record architecture (`linux/amd64`), exact version, license, and EOL/security support status for each runtime candidate.
-  - Execute concrete toolchain build and run smoke tests inside the disposable container (not just `--version`):
-    - Go: hello-world source compile and run (`go build` / `go run`).
-    - Node: syntax validation with `node --check` and execution (`node -e`).
-    - Python: bytecode compilation with `python3 -m py_compile` and execution (`python3 -c`).
-    - Java: source compilation with `javac` and execution with `java`.
-    - Rust: single-source compilation with `rustc` and binary execution (or `cargo` offline).
-    - .NET: local console build and run (`dotnet build --no-restore` / `dotnet run --no-restore`) without external network package restore.
-  - If existing observed versions (e.g. Node 18.20.4 or Python 3.11.2) are past security EOL or unsupported by release date, prepare upgrade candidates and require explicit user approval to change baseline—do not silently make EOL selectable or silently modify the baseline.
-
-- [ ] **Step 2: Grounded OpenCode serve probe and confinement verification**
-  - Ground discovery in official OpenCode V2 OpenAPI specification (`/api/info` operation `server.info` and `/api/session` declare `security: []`). Do NOT use invented endpoints such as `/global/health`.
-  - Check local CLI flags (`opencode serve --help` exposes `--hostname`, `--port`, `--cors`, `--service`, `--stdio`; no auth flags exist). Do NOT invent unsupported configuration such as `OPENCODE_SERVER_PASSWORD`.
-  - Isolate probe environment completely: set temporary throwaway directories for `HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and `XDG_STATE_HOME`. Do not mount or expose host configuration, data, or credentials. Do not execute model prompts or model API calls.
-  - Bind listener strictly to `127.0.0.1` for auth probe (e.g., `opencode serve --hostname 127.0.0.1 --port <port>`).
-  - Probe endpoints: query `GET /api/info` and `GET /api/session`:
-    1. Send request without Authorization header.
-    2. Send request with dummy irrelevant Authorization header (e.g., `Authorization: Bearer test-dummy`).
-    3. Redact all response payload tokens/credentials in probe logs.
-  - If probe confirms API is unauthenticated (matching OpenAPI `security: []`), document outcome as unauthenticated and rely strictly on network isolation:
-    - Container listener must bind only internal container interface on a task-dedicated Docker network with no published host port, accessible exclusively by the control-plane runner.
-    - If task-dedicated network isolation is deemed insufficient, explicitly halt and ask user for guidance before exposing listener or proceeding.
-
-- [ ] **Step 3: User Approval Gate (Gate A & Baseline Sign-Off)**
-  - Present the qualified catalog candidate table (runtimes, versions, verified URLs, verified SHA256 checksums, smoke test results, EOL status, candidate vs user-approved status) and OpenCode auth probe results.
-  - If EOL baseline upgrades are recommended (e.g. Node or Python), explicitly obtain user approval to change the baseline.
-  - Keep Gate A approval strictly enforced after presenting findings before moving to Task 1 implementation.
-
----
-
-### Task 1: Runtime Model, Migration & Catalog Interface
-
-**Goal:** Extend `models.Project` with `RuntimeConfig JSONMap`, update migrations, define catalog data structures, and implement the approved catalog.
+**Goal:** Extend `models.Project` with `RuntimeConfig JSONMap`, update migrations, define catalog data structures, and codify the approved 6-language baseline runtime catalog.
 
 **Files:**
 - Modify: `internal/models/models.go`
@@ -187,14 +117,17 @@
 
 **Interfaces:**
 ```go
-type RuntimeConfigMap map[string]string // runtime -> version or "false"
+// internal/runner/runtime_types.go
+package runner
+
+type RuntimeConfigMap map[string]string // runtime -> version string or "false"
 
 type ResolvedRuntimeProfile struct {
     Platform       string            `json:"platform"`
     BaseImageRef   string            `json:"base_image_ref"`
     TemplateRev    string            `json:"template_rev"`
     Runtimes       map[string]string `json:"runtimes"` // "go", "node", "python", "java", "rust", "dotnet"
-    OpenCodeSHA256 string            `json:"opencode_sha256"`
+    OpenCodeDigest string            `json:"opencode_digest"`
 }
 
 type RuntimeCatalogEntry struct {
@@ -203,37 +136,42 @@ type RuntimeCatalogEntry struct {
     ArchiveURL  string `json:"archive_url"`
     SHA256      string `json:"sha256"`
     ExtractPath string `json:"extract_path"`
+    IsBaseline  bool   `json:"is_baseline"`
 }
 
 type RuntimeCatalog interface {
     Get(runtime, version string) (*RuntimeCatalogEntry, bool)
     GetBaseline(runtime string) (string, bool)
     List() []RuntimeCatalogEntry
+    ValidateVersion(runtime, version string) bool
 }
 ```
 
 - [ ] **Step 1: Write failing tests for models.Project RuntimeConfig and RuntimeCatalog**
-  - Create `internal/runner/runtime_catalog_test.go` testing baseline retrieval, specific version lookup, and rejection of uncataloged versions.
-  - Add test in `internal/models/models_test.go` for `Project.RuntimeConfig` JSON serialization.
+  - Create `internal/runner/runtime_catalog_test.go` asserting baseline versions:
+    - `go`: `"1.27.2"`, `node`: `"24.21.0"`, `python`: `"3.11.17"` (default enabled).
+    - `java`: `"25.0.4.1+1"`, `rust`: `"1.99.0"`, `dotnet`: `"10.0.401"` (default `"false"`).
+  - Add test asserting rejection of unknown versions or invalid keys.
+  - Add test in `internal/models/models_test.go` verifying `Project.RuntimeConfig` JSON serialization and defaults.
 - [ ] **Step 2: Run focused test to verify failure**
-  - Run: `go test -v ./internal/runner -run TestRuntimeCatalog`
+  - Command: `go test -v ./internal/runner -run TestRuntimeCatalog`
   - Expected: FAIL (`undefined: runner.NewDefaultRuntimeCatalog`)
 - [ ] **Step 3: Implement Runtime types, catalog, and Project model update**
-  - Update `internal/models/models.go`: add `RuntimeConfig JSONMap gorm:"type:jsonb;not null;default:'{}'" json:"runtime_config"` to `Project`.
-  - Verify GORM AutoMigrate paths in both `cmd/server/main.go` and `cmd/migrate/main.go`.
-  - Implement `internal/runner/runtime_types.go` and `internal/runner/runtime_catalog.go` using user-approved catalog entries from Gate A.
+  - In `internal/models/models.go`, add `RuntimeConfig JSONMap gorm:"type:jsonb;not null;default:'{}'" json:"runtime_config"` to `Project`.
+  - Update `cmd/server/main.go` and `cmd/migrate/main.go` to include updated model in `modelList`.
+  - Implement `internal/runner/runtime_types.go` and `internal/runner/runtime_catalog.go`.
 - [ ] **Step 4: Run focused tests to verify green**
-  - Run: `go test -v ./internal/runner -run TestRuntimeCatalog`
-  - Run: `go test -v ./internal/models -run TestProject`
+  - Command: `go test -v ./internal/runner -run TestRuntimeCatalog`
+  - Command: `go test -v ./internal/models -run TestProject`
   - Expected: PASS
 - [ ] **Step 5: Commit scoped changes**
-  - Scope: `internal/models/`, `internal/runner/runtime_*`, `cmd/`
+  - Command: `git add internal/models/ internal/runner/runtime_* cmd/ && git commit -m "feat(runtime): add project runtime configuration model and catalog"`
 
 ---
 
-### Task 2: Deterministic Manifest & Override Resolver
+### Task 2: Multi-Repository Manifest & Union Resolver
 
-**Goal:** Parse `.atm-runtime.json`, merge with project DB overrides, enforce fail-closed validation, and compute content-addressed SHA256 cache tags.
+**Goal:** Implement `RuntimeResolver` supporting repository manifest parsing (`.atm-runtime.json`), multi-repo requirement unioning, conflict fail-closed validation, project UI/DB override precedence, and SHA256 cache tag computation.
 
 **Files:**
 - Create: `internal/runner/runtime_resolver.go`
@@ -241,439 +179,429 @@ type RuntimeCatalog interface {
 
 **Interfaces:**
 ```go
+// internal/runner/runtime_resolver.go
+package runner
+
+import (
+    "context"
+    "agent-task-manager/internal/models"
+)
+
+type RepositoryManifest struct {
+    SchemaVersion int                    `json:"schemaVersion"`
+    Runtimes      map[string]interface{} `json:"runtimes"` // string version or bool false
+}
+
 type RuntimeResolver interface {
-    Resolve(ctx context.Context, worktreePath string, project *models.Project) (*ResolvedRuntimeProfile, error)
+    ResolveMultiRepo(ctx context.Context, manifests map[string]*RepositoryManifest, project *models.Project) (*ResolvedRuntimeProfile, error)
     ComputeCacheTag(profile *ResolvedRuntimeProfile) (string, error)
 }
 ```
 
-- [ ] **Step 1: Write unit tests for Manifest parsing, precedence, fail-closed handling, and hashing**
-  - Create `internal/runner/runtime_resolver_test.go`:
-    - Test 1: Empty repo without manifest -> defaults to baseline (`go`, `node`, `python` baseline; others `"false"`).
-    - Test 2: Valid `.atm-runtime.json` -> overrides baseline.
-    - Test 3: Project DB override takes precedence over manifest.
-    - Test 4: Malformed JSON or schemaVersion != 1 in `.atm-runtime.json` -> fails closed with error immediately (UI override does not forgive malformed manifest).
-    - Test 5: Unknown runtime key or uncataloged version -> fails closed with error.
-    - Test 6: Deterministic tag calculation produces `atm-runtime:<64_hex_chars>`.
+- [ ] **Step 1: Write unit tests for multi-repo union, conflict fail-closed, and hashing**
+  - In `internal/runner/runtime_resolver_test.go`:
+    - Test 1: Single repo with no manifest resolves to catalog baseline.
+    - Test 2: Multi-repo union: Repo A specifies `rust: "1.99.0"`, Repo B specifies `rust: false`; resolved profile includes `rust: "1.99.0"`.
+    - Test 3: Multi-repo conflict: With a test fixture registering a secondary valid catalog version `go: "1.26.0"` alongside `go: "1.27.2"`, Repo A specifies `go: "1.27.2"` and Repo B specifies `go: "1.26.0"`; resolver fails closed with conflict error. This isolates union conflict handling from uncataloged version rejection.
+    - Test 4: Project UI/DB override resolves multi-repo conflict: project override `go: "1.27.2"` allows resolution to succeed.
+    - Test 5: Invalid manifest: schemaVersion != 1 or invalid runtime key fails closed immediately; UI override does NOT forgive invalid manifest.
+    - Test 6: Uncataloged version: Repo specifying uncataloged version fails closed under catalog validation, distinguishing it from valid-version union conflicts.
+    - Test 7: Project UI/DB override set to `false` disables runtime across entire project.
+    - Test 8: `ComputeCacheTag` outputs canonical format `atm-runtime:<64_hex_chars>`.
 - [ ] **Step 2: Run focused test to verify failure**
-  - Run: `go test -v ./internal/runner -run TestRuntimeResolver`
+  - Command: `go test -v ./internal/runner -run TestRuntimeResolver`
   - Expected: FAIL (`undefined: runner.NewRuntimeResolver`)
 - [ ] **Step 3: Implement RuntimeResolver**
   - Implement `internal/runner/runtime_resolver.go`.
-  - Normalize keys in sorted order, encode to canonical JSON string, and compute SHA256.
+  - Validate all manifest entries against `RuntimeCatalog`.
+  - Encode canonical JSON with sorted runtime keys and compute SHA256 tag.
 - [ ] **Step 4: Run focused tests to verify green**
-  - Run: `go test -v ./internal/runner -run TestRuntimeResolver`
+  - Command: `go test -v ./internal/runner -run TestRuntimeResolver`
   - Expected: PASS
 - [ ] **Step 5: Commit scoped changes**
-  - Scope: `internal/runner/runtime_resolver*`
+  - Command: `git add internal/runner/runtime_resolver* && git commit -m "feat(runtime): implement multi-repo union runtime resolver and cache tag hashing"`
 
 ---
 
 ### Task 3: Docker Sandbox Client Extension & Deterministic Image Builder
 
-**Goal:** Extend `sandbox.DockerClient` to support required image/network/volume operations strictly matching `github.com/docker/docker v27.5.1+incompatible` types, and implement `RuntimeImageBuilder` with in-flight build coalescing.
+**Goal:** Extend `sandbox.DockerClient` to support image, network, and volume operations matching `github.com/docker/docker v27.5.1+incompatible`, and implement `RuntimeImageBuilder` with in-flight build coalescing based on the Gate 0B base OS decision.
 
 **Files:**
 - Modify: `internal/sandbox/docker.go`
 - Modify: `internal/sandbox/docker_test.go`
 - Create: `internal/runner/image_builder.go`
 - Create: `internal/runner/image_builder_test.go`
-- Create: `deploy/sandbox/Dockerfile.template`
+- Create: `deploy/sandbox/Dockerfile.project.template`
 
-**Required DockerClient Operations (Strictly verified against pinned Docker SDK v27.5.1 packages):**
+**Interfaces:**
 ```go
+// internal/sandbox/docker.go
+package sandbox
+
+import (
+    "context"
+    "io"
+    "github.com/docker/docker/api/types"
+    "github.com/docker/docker/api/types/image"
+    "github.com/docker/docker/api/types/network"
+    "github.com/docker/docker/api/types/volume"
+)
+
 type DockerClient interface {
-    // Existing operations:
+    // Existing container lifecycle operations
     ContainerCreate(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *ocispec.Platform, containerName string) (container.CreateResponse, error)
     ContainerStart(ctx context.Context, containerID string, options container.StartOptions) error
-    ContainerWait(ctx context.Context, containerID string, condition container.WaitCondition) (<-chan container.WaitResponse, <-chan error)
-    ContainerLogs(ctx context.Context, containerID string, options container.LogsOptions) (io.ReadCloser, error)
     ContainerStop(ctx context.Context, containerID string, options container.StopOptions) error
     ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error
-    ImagePull(ctx context.Context, refStr string, options image.PullOptions) (io.ReadCloser, error)
+    ContainerInspect(ctx context.Context, containerID string) (types.ContainerJSON, error)
 
-    // Extended operations strictly matched to github.com/docker/docker v27.5.1:
-    // Package "github.com/docker/docker/api/types": types.ImageBuildOptions, types.ImageBuildResponse, types.ImageInspect, types.ContainerJSON
-    // Package "github.com/docker/docker/api/types/image": image.ListOptions, image.Summary
-    // Package "github.com/docker/docker/api/types/network": network.CreateOptions, network.CreateResponse, network.InspectOptions, network.Inspect
-    // Package "github.com/docker/docker/api/types/volume": volume.CreateOptions, volume.Volume
-    ImageBuild(ctx context.Context, context io.Reader, options types.ImageBuildOptions) (types.ImageBuildResponse, error)
+    // Image, network, and volume operations
+    ImageBuild(ctx context.Context, buildContext io.Reader, options types.ImageBuildOptions) (types.ImageBuildResponse, error)
     ImageList(ctx context.Context, options image.ListOptions) ([]image.Summary, error)
-    ImageInspectWithRaw(ctx context.Context, image string) (types.ImageInspect, []byte, error)
+    ImageInspectWithRaw(ctx context.Context, imageID string) (types.ImageInspect, []byte, error)
     NetworkCreate(ctx context.Context, name string, options network.CreateOptions) (network.CreateResponse, error)
-    NetworkInspect(ctx context.Context, network string, options network.InspectOptions) (network.Inspect, error)
-    NetworkRemove(ctx context.Context, network string) error
+    NetworkInspect(ctx context.Context, networkID string, options network.InspectOptions) (network.Inspect, error)
+    NetworkRemove(ctx context.Context, networkID string) error
     VolumeCreate(ctx context.Context, options volume.CreateOptions) (volume.Volume, error)
     VolumeInspect(ctx context.Context, volumeID string) (volume.Volume, error)
     VolumeRemove(ctx context.Context, volumeID string, force bool) error
-    ContainerInspect(ctx context.Context, container string) (types.ContainerJSON, error)
 }
 ```
 
 - [ ] **Step 1: Write unit tests for DockerClient extensions and ImageBuilder build coalescing**
   - Create `internal/runner/image_builder_test.go`:
-    - Test 1: Cached image tag found via `ImageList` -> returns cached tag without building.
-    - Test 2: Uncached image tag -> builds tar context from template, invokes `ImageBuild`, returns tag.
-    - Test 3: Multiple concurrent requests for same profile share single in-flight build channel.
-    - Test 4: Detaching 1 cancelled waiter does not cancel build if other waiters remain.
+    - Test 1: Cached image tag found via `ImageList` returns immediately without building.
+    - Test 2: Uncached image generates tar context and calls `ImageBuild`.
+    - Test 3: Multiple concurrent calls for the same profile coalesce onto a single build channel.
+    - Test 4: Detaching a cancelled context leaves the build running if another caller is waiting.
 - [ ] **Step 2: Run focused test to verify failure**
-  - Run: `go test -v ./internal/runner -run TestRuntimeImageBuilder`
+  - Command: `go test -v ./internal/runner -run TestRuntimeImageBuilder`
   - Expected: FAIL
-- [ ] **Step 3: Update sandbox.DockerClient and implement RuntimeImageBuilder**
-  - Update `internal/sandbox/docker.go` to declare exact Docker SDK v27.5.1 method signatures as specified above.
-  - Update `internal/sandbox/NewDefaultHostConfig` to accept network and ensure `CapDrop: ALL`, `no-new-privileges: true`, CPU/mem/PID limits are configured.
-  - Implement `deploy/sandbox/Dockerfile.template` with pinned base digest and non-root user setup.
+- [ ] **Step 3: Implement DockerClient extensions and RuntimeImageBuilder**
+  - Update `internal/sandbox/docker.go` with Docker SDK v27.5.1 signatures.
   - Implement `internal/runner/image_builder.go`.
+  - Create `deploy/sandbox/Dockerfile.project.template` reflecting the approved base OS from Gate 0B.
 - [ ] **Step 4: Run focused tests to verify green**
-  - Run: `go test -v ./internal/sandbox -run TestDocker`
-  - Run: `go test -v ./internal/runner -run TestRuntimeImageBuilder`
+  - Command: `go test -v ./internal/sandbox -run TestDocker`
+  - Command: `go test -v ./internal/runner -run TestRuntimeImageBuilder`
   - Expected: PASS
 - [ ] **Step 5: Commit scoped changes**
-  - Scope: `internal/sandbox/`, `internal/runner/image_builder*`, `deploy/sandbox/`
+  - Command: `git add internal/sandbox/ internal/runner/image_builder* deploy/sandbox/ && git commit -m "feat(sandbox): extend docker client and implement deterministic image builder"`
 
 ---
 
-### Task 4: Task Sandbox Lifecycle Manager & Task Session Broker
+### Task 4: Project Sandbox Container Lifecycle Manager & OpenCode Server Bootstrap
 
-**Goal:** Implement `TaskSandboxManager` and `TaskSessionBroker` to manage task container lifecycles, daemon-derived route mapping, and strictly context-bound leased client access for both runner and service operations.
+**Goal:** Implement `ProjectSandboxManager` to manage `atm-project-<project_id>` containers on dedicated bridge networks with outbound default-deny egress filtering (blocking private subnets, host bridge interfaces, link-local, and cloud metadata endpoints `169.254.169.254` / `[fd00:ec2::254]`) per Gate 0D, volume mounts (`atm-project-data-<project_id>` and `atm-project-state-<project_id>`), read-only root, tmpfs scratch, mandatory `no-new-privileges:true`, and `OPENCODE_PASSWORD` HTTP Basic authentication.
 
 **Files:**
-- Create: `internal/runner/task_sandbox_manager.go`
-- Create: `internal/runner/task_sandbox_manager_test.go`
-- Create: `internal/runner/task_session_broker.go`
-- Create: `internal/runner/task_session_broker_test.go`
+- Create: `internal/runner/project_sandbox_manager.go`
+- Create: `internal/runner/project_sandbox_manager_test.go`
+- Create: `internal/sandbox/egress_filter.go`
+- Create: `internal/sandbox/egress_filter_test.go`
 
 **Interfaces:**
 ```go
-type TaskRouteHandle struct {
-    TaskID       string `json:"task_id"`
+// internal/runner/project_sandbox_manager.go
+package runner
+
+import (
+    "context"
+    "time"
+    "agent-task-manager/internal/models"
+)
+
+type ProjectRouteHandle struct {
+    ProjectID    string `json:"project_id"`
     ContainerID  string `json:"container_id"`
     NetworkID    string `json:"network_id"`
     IPAddress    string `json:"ip_address"`
     Port         int    `json:"port"`
     EndpointURL  string `json:"endpoint_url"`
+    AuthPassword string `json:"-"`
     Generation   int64  `json:"generation"`
 }
 
-type TaskSandboxManager interface {
-    StartTaskServer(ctx context.Context, task *models.Task, attempt *models.TaskAttempt, imageTag string, env []string) (*TaskRouteHandle, error)
-    StopTaskServer(ctx context.Context, handle *TaskRouteHandle, gracePeriod time.Duration) error
-    PurgeTaskVolume(ctx context.Context, taskID string) error
-}
-
-type ClientLease interface {
-    Client() OpenCodeClient
-    Release() error
-}
-
-type TaskSessionBroker interface {
-    // AcquireActiveClient provides lease-counted access to an existing running container.
-    // Returns (lease, true, nil) if active, (nil, false, nil) if no active server exists.
-    AcquireActiveClient(ctx context.Context, taskID string) (ClientLease, bool, error)
-
-    // EnsureServer acquires an existing running server or starts a new container server attached to the task worktree
-    // and retained volume (re-resolving runtime profile), returning a leased client.
-    EnsureServer(ctx context.Context, taskID string) (ClientLease, error)
-
-    // RegisterActive registers an active container server started by the runner.
-    RegisterActive(handle *TaskRouteHandle, client OpenCodeClient)
-
-    // UnregisterActive unregisters and stops the active container server for the task once active turns conclude.
-    UnregisterActive(ctx context.Context, taskID string, gracePeriod time.Duration) error
+type ProjectSandboxManager interface {
+    EnsureProjectContainer(ctx context.Context, project *models.Project, imageTag string) (*ProjectRouteHandle, error)
+    StopProjectContainer(ctx context.Context, projectID string, gracePeriod time.Duration) error
+    GetProjectRoute(ctx context.Context, projectID string) (*ProjectRouteHandle, bool, error)
 }
 ```
 
-- [ ] **Step 1: Write unit tests for TaskSandboxManager and TaskSessionBroker**
-  - Create `internal/runner/task_sandbox_manager_test.go`:
-    - Test 1: Container configuration applies `CapDrop: ["ALL"]`, `SecurityOpt: ["no-new-privileges:true"]`, `Memory: 4GB`, `NanoCPUs: 2e9`, and dedicated bridge network.
-    - Test 2: Binds host worktree at `/workspace:rw` and dedicated volume `atm-task-data-<task_id>` at `/root/.local/share/opencode:rw`. No host configs or host docker.sock mounted.
-    - Test 3: Daemon inspection extracts internal IP; returns validated `TaskRouteHandle`.
-    - Test 4: Bounded stop timeout initiates `ContainerStop` then falls back to `ContainerRemove`.
-    - Test 5: `PurgeTaskVolume` calls `VolumeRemove(ctx, "atm-task-data-<task_id>", true)`.
-  - Create `internal/runner/task_session_broker_test.go`:
-    - Test 1: Two active tasks have distinct, isolated endpoints; operations on Task A route strictly to Task A container and never Task B.
-    - Test 2: `AcquireActiveClient` returns `nil, false, nil` when task container is stopped.
-    - Test 3: `EnsureServer` starts container attached to retained volume and worktree, returning lease.
-    - Test 4: `Release` on lease decrements count; container stops only after session turn ends, no active task execution remains, and lease count reaches 0.
-    - Test 5: Boundary test: concurrent live read / cancel versus container teardown does not panic or use stale handle.
-- [ ] **Step 2: Run focused tests to verify failure**
-  - Run: `go test -v ./internal/runner -run TestTaskSandboxManager`
-  - Run: `go test -v ./internal/runner -run TestTaskSessionBroker`
+- [ ] **Step 1: Write unit tests for ProjectSandboxManager and Network Egress Filtering**
+  - Create `internal/runner/project_sandbox_manager_test.go`:
+    - Test 1: Container configuration applies `CapDrop: ["ALL"]`, `SecurityOpt: ["no-new-privileges:true"]`, `ReadonlyRootfs: true`.
+    - Test 2: Mounts persistent volumes `atm-project-data-<project_id>:/workspaces:rw` and `atm-project-state-<project_id>:/var/lib/opencode:rw`.
+    - Test 3: Mounts bounded tmpfs scratch at `/tmp:rw,noexec,nosuid,size=512m`.
+    - Test 4: Zero host bind mounts configured.
+    - Test 5: Injects `OPENCODE_PASSWORD` environment variable.
+    - Test 6: Daemon inspection retrieves container IP on dedicated bridge; returns verified `ProjectRouteHandle`.
+  - Create `internal/sandbox/egress_filter_test.go`:
+    - Test 7: Bridge network configuration creates isolated user-defined Docker bridge without published host ports.
+    - Test 8: Egress filter enforces default-deny outbound policy: explicitly drops packets to private host/control-plane subnets (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16), Docker bridge gateways, IPv4/IPv6 link-local addresses, and cloud provider metadata endpoints (`169.254.169.254` and `[fd00:ec2::254]`), while allowing traffic to qualified model provider endpoints.
+- [ ] **Step 2: Run focused test to verify failure**
+  - Command: `go test -v ./internal/runner -run TestProjectSandboxManager`
+  - Command: `go test -v ./internal/sandbox -run TestEgressFilter`
   - Expected: FAIL
-- [ ] **Step 3: Implement TaskSandboxManager and TaskSessionBroker**
-  - Implement `internal/runner/task_sandbox_manager.go`.
-  - Implement `internal/runner/task_session_broker.go` with mutex-protected active handles map `map[string]*activeTaskEntry`.
-  - Ensure volume creation, network connectivity, and container configuration are applied.
-  - Enforce daemon-validated routing handle and instantiate client using `NewTaskOpenCodeClient`.
+- [ ] **Step 3: Implement ProjectSandboxManager and Egress Filtering**
+  - Implement `internal/sandbox/egress_filter.go` according to the mechanism qualified in Gate 0D.
+  - Implement `internal/runner/project_sandbox_manager.go`.
+  - Wire network creation to apply egress filter rules prior to container attachment.
+  - Validate fail-closed behavior if container creation, NNP, or egress setup fails.
 - [ ] **Step 4: Run focused tests to verify green**
-  - Run: `go test -v ./internal/runner -run TestTaskSandboxManager`
-  - Run: `go test -v ./internal/runner -run TestTaskSessionBroker`
+  - Command: `go test -v ./internal/runner -run TestProjectSandboxManager`
+  - Command: `go test -v ./internal/sandbox -run TestEgressFilter`
   - Expected: PASS
 - [ ] **Step 5: Commit scoped changes**
-  - Scope: `internal/runner/task_sandbox_manager*`, `internal/runner/task_session_broker*`
+  - Command: `git add internal/runner/project_sandbox_manager* internal/sandbox/egress_filter* && git commit -m "feat(runner): implement project sandbox container manager with egress filtering"`
 
 ---
 
-### Task 5: AgentTaskRunner & TaskService Integration: Broker Leases & Versioned Immutable Snapshots
+### Task 5: In-Container Worktree Management & Credential-Safe Sync Integration
 
-**Goal:** Eliminate `runOnHost` and host `InstallDependencies`. Add isolated `NewTaskOpenCodeClient`. Implement versioned immutable static snapshots `TaskSessionSnapshot` with composite unique `(TaskID, SnapshotVersion)` and optional nullable `AttemptID` attribution, ensuring multiple steering turns sharing an attempt create distinct versions without overwriting. Replace global host `openCodeClient` in `TaskService` with injected `TaskSessionBroker` using context-bound leases for all operations.
+**Goal:** Implement in-container task worktree provisioning inside `/workspaces/<repo>/tasks/<task_id>` within the persistent project volume, and integrate the credential-safe Git sync mechanism qualified in Gate 0C.
+
+**Files:**
+- Create: `internal/runner/workspace_manager.go`
+- Create: `internal/runner/workspace_manager_test.go`
+- Modify: `internal/git/worktree.go`
+- Modify: `internal/git/worktree_test.go`
+
+**Interfaces:**
+```go
+// internal/runner/workspace_manager.go
+package runner
+
+import (
+    "context"
+    "agent-task-manager/internal/models"
+)
+
+type WorkspaceManager interface {
+    EnsureTaskWorktree(ctx context.Context, projectID string, task *models.Task, repoName string, baseCommit string) (containerWorktreePath string, err error)
+    CleanupTaskScratch(ctx context.Context, projectID string, taskID string) error
+}
+```
+
+- [ ] **Step 1: Write unit tests for WorkspaceManager**
+  - Create `internal/runner/workspace_manager_test.go`:
+    - Test 1: Provisions task worktree inside `/workspaces/<repo>/tasks/<task_id>`.
+    - Test 2: Tasks default to single selected repository worktree.
+    - Test 3: Bounded per-task scratch directory in `/tmp` is purged on `CleanupTaskScratch`.
+    - Test 4: Persistent worktree and git data in `/workspaces` are retained intact across task ends (manual retention).
+- [ ] **Step 2: Run focused test to verify failure**
+  - Command: `go test -v ./internal/runner -run TestWorkspaceManager`
+  - Expected: FAIL
+- [ ] **Step 3: Implement WorkspaceManager using Gate 0C mechanism**
+  - Implement `internal/runner/workspace_manager.go`.
+  - Ensure zero raw tokens are passed into container Git configurations or command arguments.
+- [ ] **Step 4: Run focused tests to verify green**
+  - Command: `go test -v ./internal/runner -run TestWorkspaceManager`
+  - Expected: PASS
+- [ ] **Step 5: Commit scoped changes**
+  - Command: `git add internal/runner/workspace_manager* internal/git/ && git commit -m "feat(runner): implement in-container workspace and task worktree manager"`
+
+---
+
+### Task 6: AgentTaskRunner & TaskService Integration: Basic Auth, Session Routing & Host Fallback Elimination
+
+**Goal:** Refactor `OpenCodeClient` to use HTTP Basic authentication (`opencode:<OPENCODE_PASSWORD>`), update `AgentTaskRunner` and `TaskService` to route task sessions to in-container worktrees, eliminate `runOnHost`, and eradicate host-level dependency installation in `dependencies.go`.
 
 **Files:**
 - Modify: `internal/runner/opencode_client.go`
 - Modify: `internal/runner/opencode_client_test.go`
-- Modify: `internal/models/task_models.go`
-- Modify: `internal/models/task_models_test.go`
-- Modify: `internal/repository/task_repository.go`
-- Modify: `internal/repository/task_repository_test.go`
-- Modify: `internal/service/task_service.go`
-- Modify: `internal/service/task_service_test.go`
 - Modify: `internal/runner/task_runner.go`
 - Modify: `internal/runner/task_runner_test.go`
 - Modify: `internal/runner/dependencies.go`
 - Modify: `internal/runner/dependencies_test.go`
+- Modify: `internal/service/task_service.go`
+- Modify: `internal/service/task_service_test.go`
 - Modify: `cmd/server/main.go`
-- Modify: `cmd/migrate/main.go`
 
-**Model Definition & Client Constructor:**
+**Interfaces:**
 ```go
-// TaskSessionSnapshot stores immutable transcript snapshots versioned monotonically per task.
-// Unique constraint on (task_id, snapshot_version) supports multiple follow-up turns sharing
-// an attempt without collisions or overwrites. Prior snapshots are strictly immutable (no updates/upserts).
-// AttemptID is an optional nullable UUID for attribution.
-// Messages are stored inside a JSONMap object {"messages": [...]}.
-type TaskSessionSnapshot struct {
-    CreatedAt       time.Time `gorm:"type:timestamptz;not null;default:CURRENT_TIMESTAMP" json:"created_at"`
-    UpdatedAt       time.Time `gorm:"type:timestamptz;not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
-    ID              string    `gorm:"type:uuid;primaryKey" json:"id"`
-    TaskID          string    `gorm:"type:uuid;not null;uniqueIndex:idx_session_snapshot_version,priority:1" json:"task_id"`
-    SnapshotVersion int64     `gorm:"type:bigint;not null;uniqueIndex:idx_session_snapshot_version,priority:2" json:"snapshot_version"`
-    AttemptID       *string   `gorm:"type:uuid;index:idx_session_snapshot_attempt" json:"attempt_id,omitempty"`
-    SessionID       string    `gorm:"type:text;not null" json:"session_id"`
-    Status          string    `gorm:"type:text;not null" json:"status"`
-    Model           string    `gorm:"type:text;not null" json:"model"`
-    Cost            float64   `gorm:"type:numeric" json:"cost"`
-    Tokens          JSONMap   `gorm:"type:jsonb;not null;default:'{}'" json:"tokens"`
-    Data            JSONMap   `gorm:"type:jsonb;not null;default:'{}'" json:"data"` // {"messages": [...]}
-    IsComplete      bool      `gorm:"type:boolean;not null;default:true" json:"is_complete"` // false if truncated during forced stop or 10MB cap
-    ByteSize        int64     `gorm:"type:bigint;not null;default:0" json:"byte_size"`
-}
-
-// NewTaskOpenCodeClient creates an isolated client strictly bound to the container TCP endpoint.
-// It bypasses host Unix socket auto-discovery (/home/ghug/.local/share/opencode/opencode.sock, /tmp/opencode.sock)
-// and rejects loopback fallbacks to eliminate host interception and SSRF escape.
-func NewTaskOpenCodeClient(endpointURL, token string, httpClient *http.Client) OpenCodeClient
+// internal/runner/opencode_client.go
+func NewProjectOpenCodeClient(endpointURL string, password string, httpClient *http.Client) OpenCodeClient
 ```
 
-- [ ] **Step 1: Write tests for NewTaskOpenCodeClient, Snapshot storage, and Broker-based TaskService**
+- [ ] **Step 1: Write tests asserting HTTP Basic Auth, zero host fallback, and session worktree path binding**
   - In `internal/runner/opencode_client_test.go`:
-    - Test `NewTaskOpenCodeClient` strictly uses provided `endpointURL`, disables redirects, and NEVER attempts unix socket dial even if socket files exist on host filesystem.
-  - In `internal/models/task_models_test.go`:
-    - Test `TaskSessionSnapshot` composite unique index `(task_id, snapshot_version)`.
-    - Test message encapsulation inside object map `{ "messages": [...] }` conforming to `JSONMap`.
-    - Test byte size truncation check (limit to 10MB per snapshot; marks `IsComplete = false` and flags truncated if capped).
-    - Test nullable optional `AttemptID` field validation and attribution.
-  - In `internal/repository/task_repository_test.go`:
-    - Test `SaveSnapshot`: multiple steering turn snapshots within the same attempt allocate separate monotonically increasing versions (e.g. 1, 2) without overwriting or updating prior versions.
-    - Test immutability: attempts to update/upsert existing `(task_id, snapshot_version)` fail or are rejected.
-    - Test concurrent captures for the same task serialize transactionally and allocate unique strictly increasing versions without collisions.
-    - Test `GetLatestSnapshot(taskID)` returns the snapshot with the highest `snapshot_version`.
-  - In `internal/service/task_service_test.go`:
-    - Test `GetTaskSession` on a task with NO active container (completed, failed, review, cancelled): reads latest persisted `TaskSessionSnapshot` via `GetLatestSnapshot` without invoking broker or container. Verify zero model calls and zero container startup.
-    - Test `GetTaskSession` on active task: calls `broker.AcquireActiveClient(ctx, taskID)`, uses client to fetch live messages, releases lease.
-    - Test `PromptTaskSession` on stopped task: calls `broker.EnsureServer`, issues prompt, passes lease to `watchSteeringTurn`, and releases lease when turn finishes (triggering container stop).
-    - Test multiple steering turns under `PromptTaskSession` within the same attempt: verify each completed turn captures a separate new snapshot version and prior snapshot versions remain unchanged.
-    - Test `CancelTask`: calls `broker.AcquireActiveClient(ctx, taskID)`; if active, calls `InterruptSessionTree` and releases lease. Verify canceling Task A does not interrupt Task B.
-    - Test `CompactTaskSession`: calls `broker.AcquireActiveClient(ctx, taskID)` (or `EnsureServer`) to compact session and releases lease.
-    - Test PR/status/session reconciliation paths: all callsites (`GetSessionMessages`, `ListChildSessions`, `GetSession`) acquire task lease via broker and release immediately.
-    - Test that `TaskService` option `WithTaskSessionBroker` replaces `WithTaskSessionDependencies(openCodeClient, ...)`, removing any global host client.
+    - Test client sends `Authorization: Basic <base64(opencode:password)>` on all API requests.
+    - Test client rejects loopback redirects and host Unix socket dial paths.
   - In `internal/runner/task_runner_test.go`:
-    - Test task completion and cancellation capture static snapshot and store in database before container shutdown.
-    - Test that snapshot failure or timeout during cancellation does NOT block container force-stop; sets `IsComplete = false`, preserves partial transcript, and proceeds.
-    - Test `TestAgentTaskRunner_NoHostFallbackOnContainerFailure`: verifies zero host fallback.
-- [ ] **Step 2: Run focused tests to verify failures**
-  - Run: `go test -v ./internal/runner -run TestTaskOpenCodeClient`
-  - Run: `go test -v ./internal/service -run TestTaskService_BrokerRouting`
+    - Test `TestAgentTaskRunner_NoHostFallbackOnContainerFailure`: container failure aborts task attempt fail-closed without host fallback.
+    - Test task session creation binds directory strictly to in-container worktree path `/workspaces/<repo>/tasks/<task_id>`.
+  - In `internal/runner/dependencies_test.go`:
+    - Verify host execution functions are removed; dependency operations execute via container toolchains.
+- [ ] **Step 2: Run focused tests to verify failure**
+  - Command: `go test -v ./internal/runner -run TestProjectOpenCodeClient`
+  - Command: `go test -v ./internal/runner -run TestAgentTaskRunner_NoHostFallback`
   - Expected: FAIL
-- [ ] **Step 3: Implement Isolated Client, Snapshot Repository & Wire Broker in Service**
-  - Implement `NewTaskOpenCodeClient` in `internal/runner/opencode_client.go`.
-  - Add `TaskSessionSnapshot` to `internal/models/task_models.go`, update `cmd/server/main.go` and `cmd/migrate/main.go` `AutoMigrate` lists.
-  - Add `SaveSnapshot(ctx, snapshot)` and `GetLatestSnapshot(ctx, taskID)` to `TaskRepository`:
-    - `SaveSnapshot` executes inside a database transaction using dialect-safe row-level serialization to guarantee strictly increasing, collision-free versions without invalid aggregate locks (rejecting updates/upserts of prior snapshots):
-      - Under PostgreSQL: Lock the parent task row first (`SELECT id FROM tasks WHERE id = ? FOR UPDATE`), then query `SELECT COALESCE(MAX(snapshot_version), 0) + 1 FROM task_session_snapshots WHERE task_id = ?` (without `FOR UPDATE` on the aggregate, preventing `SQLSTATE 42809`), and insert the new snapshot row with the allocated `snapshot_version`.
-      - Under SQLite (tests): Execute inside an immediate transaction (`BEGIN IMMEDIATE`), select `COALESCE(MAX(snapshot_version), 0) + 1`, and insert the snapshot row; unique composite index `(task_id, snapshot_version)` guarantees conflict rejection and retry safety if serialized concurrently.
-      - Add a dedicated repository test with concurrent captures against the same task ID to prove unique monotonically increasing versions without collisions.
-    - `GetLatestSnapshot` executes `SELECT * FROM task_session_snapshots WHERE task_id = ? ORDER BY snapshot_version DESC LIMIT 1`.
-  - In `internal/service/task_service.go`:
-    - Replace `s.openCodeClient` with `s.sessionBroker runner.TaskSessionBroker`.
-    - Update option: `WithTaskSessionBroker(broker runner.TaskSessionBroker, projectRepo repository.ProjectRepository, teamRepo repository.TeamRepository)`.
-    - In `GetTaskSession`: attempt `broker.AcquireActiveClient(ctx, taskID)`. If active lease acquired, defer `lease.Release()`, query live client, and return. If not active (stopped, completed, failed, review, cancelled), retrieve latest persisted `TaskSessionSnapshot` from `taskRepo.GetLatestSnapshot(ctx, taskID)` and map to `*dto.TaskSessionResponseDTO`.
-    - In `PromptTaskSession`: call `broker.EnsureServer(ctx, taskID)` to obtain a `ClientLease`. Use leased client for `PromptSession`. Pass lease to `watchSteeringTurn`.
-    - In `watchSteeringTurn`: defer `lease.Release()`. Poll messages and child sessions via `lease.Client()`. When turn completes or times out, capture session snapshot via transactional `SaveSnapshot` (with optional `attemptID` attribution), finalize turn, and release lease.
-    - In `CancelTask`: call `broker.AcquireActiveClient(ctx, taskID)`. If active, defer `lease.Release()`, invoke `InterruptSessionTree`.
-    - In `CompactTaskSession`: call `broker.AcquireActiveClient(ctx, taskID)`. If active, defer `lease.Release()`, invoke `CompactSession`.
-    - In all session reconciliation callsites: acquire task-specific lease and release after query.
+- [ ] **Step 3: Implement Client updates, delete host fallback and host dependency installation**
+  - Update `internal/runner/opencode_client.go` with HTTP Basic auth support.
   - In `internal/runner/task_runner.go`:
-    - Register active handle with broker on startup: `r.sessionBroker.RegisterActive(handle, client)`.
-    - Before stopping container in normal completion or cancellation: capture session metadata and messages via in-container GET with bounded timeout (3-5s). Enforce max 10MB byte size limit; if exceeded or error, record `IsComplete = false` and mark incomplete/truncated. Save immutable `TaskSessionSnapshot` transactionally with `task.ID`, allocated next `SnapshotVersion`, and optional `attempt.ID`.
-    - Snapshot capture failure during cancellation must NOT block container stop; proceed immediately with `UnregisterActive`.
-    - Delete `runOnHost` function in `task_runner.go`.
-    - Delete host execs in `dependencies.go`.
-    - Preserve the 9 dirty cancellation files (`InterruptSession`, `InterruptSessionTree`, context timeout checks, snapshot diff handling).
-  - In `cmd/server/main.go`:
-    - Instantiate single `TaskSessionBroker` backed by `TaskSandboxManager`.
-    - Inject `sessionBroker` into both `NewAgentTaskRunner` and `NewTaskService(..., service.WithTaskSessionBroker(sessionBroker, ...))`.
-    - Remove the single host `openCodeClient` initialization for tasks.
+    - Delete `runOnHost` function.
+    - Wire `ProjectSandboxManager` to ensure project container.
+    - Acquire active task execution lease: `releaseTask, err := r.idleTracker.AcquireTaskLease(task.ProjectID, task.ID)` and defer `releaseTask()`.
+    - Bind task sessions to in-container worktree paths.
+  - In `internal/runner/dependencies.go`:
+    - Delete host package manager executions (`exec.Command("npm", ...)` and `exec.Command("go", ...)`).
+  - Preserve cancellation logic (`InterruptSessionTree`).
 - [ ] **Step 4: Run focused tests to verify green**
-  - Run: `go test -v ./internal/runner -run TestTaskOpenCodeClient`
-  - Run: `go test -v ./internal/service -run TestTaskService_BrokerRouting`
-  - Run: `go test -v ./internal/runner -run TestAgentTaskRunner`
+  - Command: `go test -v ./internal/runner -run TestProjectOpenCodeClient`
+  - Command: `go test -v ./internal/runner -run TestAgentTaskRunner`
   - Expected: PASS
 - [ ] **Step 5: Commit scoped changes**
-  - Scope: `internal/models/`, `internal/repository/`, `internal/service/`, `internal/runner/`, `cmd/`
+  - Command: `git add internal/runner/ internal/service/ cmd/server/ && git commit -m "feat(runner): wire project container routing and eliminate host execution fallback"`
 
 ---
 
-### Task 6: API Endpoints, RBAC Authorization & Gate C Decision
+### Task 7: 24-Hour Container Idle Lifecycle Coordinator
 
-**Goal:** Implement runtime catalog and project runtime endpoints with RBAC enforcement (`RequireAuth` for catalog read; `RoleViewer` for project runtime read, `RoleAdmin`/`RoleOwner` for update, cross-team IDOR defense). Resolve Gate C decision before implementing task deletion.
+**Goal:** Implement a background coordinator that stops project containers after 24 consecutive hours without running tasks or active OpenCode requests, preserving persistent volumes and OpenCode state.
+
+**Files:**
+- Create: `internal/runner/idle_coordinator.go`
+- Create: `internal/runner/idle_coordinator_test.go`
+- Modify: `cmd/server/main.go`
+
+**Interfaces:**
+```go
+// internal/runner/idle_coordinator.go
+package runner
+
+import (
+    "context"
+    "time"
+)
+
+type IdleTracker interface {
+    RecordActivity(projectID string)
+    AcquireTaskLease(projectID, taskID string) (release func(), err error)
+    AcquireRequestLease(projectID string) (release func(), err error)
+    CheckIdleAndStop(ctx context.Context, maxIdleDuration time.Duration) error
+}
+```
+
+- [ ] **Step 1: Write unit tests for idle timeout and race-free stopping**
+  - In `internal/runner/idle_coordinator_test.go`:
+    - Test 1: Container active within 24h is NOT stopped.
+    - Test 2: Container with zero activity for >24h triggers `StopProjectContainer`.
+    - Test 3: Active task running holds lease from `AcquireTaskLease`, preventing idle stop even if >24h since previous activity.
+    - Test 4: In-flight OpenCode request holds lease from `AcquireRequestLease`, blocking idle stop until released.
+    - Test 5: Stopping container preserves persistent Docker volumes (`atm-project-data-*` and `atm-project-state-*`).
+- [ ] **Step 2: Run focused test to verify failure**
+  - Command: `go test -v ./internal/runner -run TestIdleTracker`
+  - Expected: FAIL
+- [ ] **Step 3: Implement IdleTracker coordinator**
+  - Implement `internal/runner/idle_coordinator.go`.
+  - Wire periodic tick in `cmd/server/main.go`.
+- [ ] **Step 4: Run focused tests to verify green**
+  - Command: `go test -v ./internal/runner -run TestIdleTracker`
+  - Expected: PASS
+- [ ] **Step 5: Commit scoped changes**
+  - Command: `git add internal/runner/idle_coordinator* cmd/server/ && git commit -m "feat(runner): implement 24-hour project container idle lifecycle coordinator"`
+
+---
+
+### Task 8: API Endpoints, RBAC Authorization & Web UI Settings
+
+**Goal:** Implement REST API endpoints (`GET /api/v1/runtimes/catalog`, `GET/PUT /api/v1/projects/:id/runtime`) with RBAC enforcement, and build the project runtime settings modal in the web frontend.
 
 **Files:**
 - Create: `internal/api/runtime_handlers.go`
 - Create: `internal/api/runtime_handlers_test.go`
 - Modify: `internal/api/server.go`
-- Modify: `internal/repository/project_repository.go`
-- Modify (Conditional on Gate C): `internal/api/task_handlers.go`
-
-**Endpoints:**
-- `GET /api/v1/runtimes/catalog` (Auth-required via `RequireAuth`, no team role required) -> Returns 6-runtime catalog.
-- `GET /api/v1/projects/:id/runtime` (Viewer+) -> Looks up project, verifies user is team `RoleViewer`+, returns overrides and catalog metadata.
-- `PUT /api/v1/projects/:id/runtime` (Admin/Owner) -> Looks up project, verifies user is team `RoleAdmin`+ or `RoleOwner`, validates versions against catalog, updates DB.
-- Task Deletion (`DELETE /api/v1/tasks/:id`) -> **BLOCKED ON GATE C.** If Option 1 approved: validates team `RoleAdmin`+, purges task volume via `TaskSandboxManager.PurgeTaskVolume`, deletes task records. If Option 2 approved: do not implement task deletion endpoint; retain volumes under manual policy.
-
-- [ ] **Step 1: Write handler tests for RBAC, cross-team IDOR, and input validation**
-  - Create `internal/api/runtime_handlers_test.go`:
-    - Test 1: `GET /api/v1/runtimes/catalog` returns 401 Unauthorized when unauthenticated.
-    - Test 2: `GET /api/v1/runtimes/catalog` returns 200 OK when authenticated (any valid user session, no team role required).
-    - Test 3: `GET /api/v1/projects/:id/runtime` permits `RoleViewer` (10), denies non-team member (403 IDOR check).
-    - Test 4: `PUT /api/v1/projects/:id/runtime` denies `RoleMember` (20) and `RoleViewer` (10) with 403.
-    - Test 5: `PUT /api/v1/projects/:id/runtime` permits `RoleAdmin` (30) and `RoleOwner` (40).
-    - Test 6: `PUT /api/v1/projects/:id/runtime` returns 400 for unknown runtime key or uncataloged version.
-- [ ] **Step 2: Run focused test to verify failure**
-  - Run: `go test -v ./internal/api -run TestRuntimeHandlers`
-  - Expected: FAIL
-- [ ] **Step 3: Implement RuntimeHandlers and Register Routes**
-  - Implement `internal/api/runtime_handlers.go`.
-  - In handlers, look up project by ID to retrieve `TeamID`, then call `authService.AuthorizeTeamRole(ctx, project.TeamID, user.ID, minRole)`.
-  - Register routes in `internal/api/server.go`:
-    - `v1.Get("/runtimes/catalog", RequireAuth(s.AuthService, s.SessionManager), runtimeHandlers.GetCatalog)`
-    - Project runtime endpoints with `RequireAuth` and project team RBAC.
-  - If and only if Gate C Option 1 was selected by user, implement authorized task deletion.
-- [ ] **Step 4: Run focused tests to verify green**
-  - Run: `go test -v ./internal/api -run TestRuntimeHandlers`
-  - Expected: PASS
-- [ ] **Step 5: Commit scoped changes**
-  - Scope: `internal/api/`, `internal/repository/`
-
----
-
-### Task 7: Web Frontend Project Runtime Settings UI & Verification
-
-**Goal:** Provide project runtime configuration in the web frontend using the existing active project/team store (`useTeamStore`), with RBAC permission disabling and accessibility checks.
-
-**Files:**
 - Create: `web/src/features/projects/schemas/runtimeSchemas.ts`
 - Create: `web/src/features/projects/api/runtimeApi.ts`
 - Create: `web/src/features/projects/components/ProjectRuntimeSettingsModal.tsx`
 - Create: `web/src/features/projects/components/ProjectRuntimeSettingsModal.test.tsx`
-- Modify: `web/src/features/teams/components/ProjectSwitcher.tsx` (or control bar project settings trigger)
+- Modify: `web/src/features/teams/components/ProjectSwitcher.tsx`
 
-- [ ] **Step 1: Write Vitest tests for runtime API and settings modal**
-  - Create `web/src/features/projects/components/ProjectRuntimeSettingsModal.test.tsx`:
-    - Test 1: Renders runtime table with all 6 runtimes (Go, Node, Python, Java, Rust, .NET).
-    - Test 2: Shows catalog options and allows selecting "Inherit", "Disabled", or catalog versions.
-    - Test 3: Disables editing controls when user role is less than Admin.
-    - Test 4: Submits valid payload on Save.
-    - Test 5: Accessibility: labels, keyboard tab navigation, ARIA attributes.
-- [ ] **Step 2: Run focused Vitest to verify failure**
-  - Run: `npm test --prefix web -- ProjectRuntimeSettingsModal`
+**API Contracts:**
+- `GET /api/v1/runtimes/catalog`: Public catalog metadata (Requires `RequireAuth`, no team role required).
+- `GET /api/v1/projects/:id/runtime`: Requires `RoleViewer` (10)+ on project team.
+- `PUT /api/v1/projects/:id/runtime`: Requires `RoleAdmin` (30)+ or `RoleOwner` (40) on project team. Validates runtime versions against catalog.
+
+- [ ] **Step 1: Write backend API and frontend modal tests**
+  - In `internal/api/runtime_handlers_test.go`:
+    - Test catalog endpoint 401 unauthenticated, 200 authenticated.
+    - Test project runtime read: 200 for Viewer, 403 for non-team member (cross-team IDOR).
+    - Test project runtime write: 200 for Admin/Owner, 403 for Member/Viewer, 400 for uncataloged version.
+  - In `web/src/features/projects/components/ProjectRuntimeSettingsModal.test.tsx`:
+    - Test renders 6 runtimes with baseline/catalog options.
+    - Test disables form controls for non-admin roles.
+- [ ] **Step 2: Run focused tests to verify failure**
+  - Command: `go test -v ./internal/api -run TestRuntimeHandlers`
+  - Command: `npm test --prefix web -- ProjectRuntimeSettingsModal`
   - Expected: FAIL
-- [ ] **Step 3: Implement Frontend Schemas, API Client, and Component**
-  - Create Zod schemas in `web/src/features/projects/schemas/runtimeSchemas.ts`.
-  - Implement API client in `web/src/features/projects/api/runtimeApi.ts`.
-  - Implement `ProjectRuntimeSettingsModal.tsx` using `@base-ui/react` / shadcn primitives, integrating with active project from `useTeamStore`.
-  - Wire trigger into project interface.
-- [ ] **Step 4: Run focused Vitest and typecheck to verify green**
-  - Run: `npm test --prefix web -- ProjectRuntimeSettingsModal`
-  - Run: `cd web && npx tsc -b`
+- [ ] **Step 3: Implement API endpoints and Web UI component**
+  - Implement `internal/api/runtime_handlers.go` and register routes in `internal/api/server.go`.
+  - Implement frontend schemas, API client, and `ProjectRuntimeSettingsModal.tsx` using `@base-ui/react` primitives.
+- [ ] **Step 4: Run focused tests to verify green**
+  - Command: `go test -v ./internal/api -run TestRuntimeHandlers`
+  - Command: `npm test --prefix web -- ProjectRuntimeSettingsModal`
+  - Command: `cd web && npx tsc -b`
   - Expected: PASS
 - [ ] **Step 5: Commit scoped changes**
-  - Scope: `web/src/features/projects/`, `web/src/features/teams/`
-
----
-
-### Task 8: Concrete 6-Language Docker Runtime Smoke Tests
-
-**Goal:** Execute end-to-end sandbox verification on `linux/amd64` testing real compilation and execution across all 6 runtimes in generated containers.
-
-**Files:**
-- Create: `internal/runner/smoke_test.go` (guarded by `//go:build integration`)
-
-- [ ] **Step 1: Write integration smoke test**
-  - In `internal/runner/smoke_test.go`, test container creation for:
-    - Go: compiles and executes `main.go`
-    - Node: executes `node index.js`
-    - Python: executes `python3 script.py`
-    - Java: compiles and executes `Main.java`
-    - Rust: compiles with `cargo build` and runs binary
-    - .NET: builds and runs with `dotnet run`
-- [ ] **Step 2: Run integration smoke test with Docker daemon**
-  - Run: `go test -v -tags=integration ./internal/runner -run TestSixRuntimeSmoke`
-  - Expected: PASS for all 6 runtimes.
-- [ ] **Step 3: Commit scoped changes**
-  - Scope: `internal/runner/smoke_test.go`
+  - Command: `git add internal/api/ web/src/features/ && git commit -m "feat(api,web): add runtime catalog and project settings api and ui"`
 
 ---
 
 ### Task 9: Full Verification, Clean Build & Lint Gate
 
-**Goal:** Run the complete test suite, staticcheck, lint, and typechecks across backend and frontend to verify no regressions.
+**Goal:** Run complete test suites, static analysis, linter checks, and typechecks across backend and frontend in an isolated environment to verify zero regressions.
 
 - [ ] **Step 1: Run complete backend verification**
-  - Run: `make check`
-  - Expected: `staticcheck` passed with 0 findings, `go vet` clean, all unit tests PASS.
+  - Command: `make check` (or `./scripts/staticcheck.sh && go vet ./... && go test -v -race ./...`)
+  - Expected: All packages PASS, 0 staticcheck findings, 0 vet issues.
 - [ ] **Step 2: Run complete frontend verification**
-  - Run: `npm test --prefix web -- --run`
-  - Run: `cd web && npx tsc -b`
-  - Expected: All 26+ test files PASS, 0 TypeScript errors.
-- [ ] **Step 3: Verify git status cleanliness**
-  - Run: `git status`
-  - Verify that the 9 original cancellation files were cleanly integrated and no untracked temporary files exist.
+  - Command: `npm test --prefix web -- --run`
+  - Command: `cd web && npx tsc -b`
+  - Expected: All test suites PASS, 0 TypeScript errors.
+- [ ] **Step 3: Verify working tree cleanliness**
+  - Command: `git status`
+  - Expected: Clean working tree, no untracked temporary files.
 
 ---
 
-## Developer's Verification Commands
+## Planned Execution & Verification Reference
 
 ```bash
-# Backend unit & static analysis
+# Backend unit & static analysis (Planned for execution phase)
 make check
+./scripts/staticcheck.sh
+go vet ./...
 
-# Focused Go package testing during tasks
+# Package unit tests (Planned for execution phase)
 go test -v ./internal/models -run TestProject
 go test -v ./internal/runner -run TestRuntimeCatalog
 go test -v ./internal/runner -run TestRuntimeResolver
 go test -v ./internal/sandbox -run TestDocker
 go test -v ./internal/runner -run TestRuntimeImageBuilder
-go test -v ./internal/runner -run TestTaskSandboxManager
-go test -v ./internal/runner -run TestTaskSessionBroker
-go test -v ./internal/runner -run TestTaskOpenCodeClient
-go test -v ./internal/service -run TestTaskService_BrokerRouting
+go test -v ./internal/runner -run TestProjectSandboxManager
+go test -v ./internal/runner -run TestWorkspaceManager
+go test -v ./internal/runner -run TestProjectOpenCodeClient
 go test -v ./internal/runner -run TestAgentTaskRunner
+go test -v ./internal/runner -run TestIdleTracker
 go test -v ./internal/api -run TestRuntimeHandlers
 
-# Integration 6-language Docker smoke test
-go test -v -tags=integration ./internal/runner -run TestSixRuntimeSmoke
-
-# Frontend unit tests & TypeScript build check
+# Frontend unit tests & TypeScript verification (Planned for execution phase)
 npm test --prefix web -- --run
 cd web && npx tsc -b
 ```
+
+> **Execution Status Note:** The commands above are documented for the future implementation phase. In accordance with the documentation specialist brief, no code tests, dependency installations, or build commands were run while authoring this plan.
+
+---
+
+## Execution Handoff
+
+Plan complete and saved to `docs/superpowers/plans/2026-10-10-runtime-image-configuration.md`. Please review the plan. Which execution approach would you prefer?
+
+- **Subagent-driven** - A fresh subagent implements each task and a fresh reviewer checks it before the next one starts, then a whole-branch review at the end. Most thorough; costs a fresh context per task and per review.
+- **Native** - I implement every task myself in this session, the way this harness runs work, then one fresh reviewer on the most capable model checks the whole branch. Cheapest and fastest; no independent review until the end. Runs well with a mid-tier session model, since the plan carries the design.
+
+For this plan I recommend **Subagent-driven**, because this refactoring crosses critical security boundaries, container lifecycle management, credential isolation, and database models where per-task fresh verification prevents subtle regressions. Does the plan capture what you want, and which approach should we use?

@@ -1,6 +1,6 @@
 # Design Specification: Project-Scoped Runtime Container & Sandboxed OpenCode Server Architecture
 
-**Status:** PROPOSED Revision (Awaiting User Review & Approval — Not Implemented)
+**Status:** APPROVED FOR PLANNING (Not Implemented; implementation blocked pending qualification gates)
 **Author:** Engineering Coordinator
 **Date:** 2026-10-11
 **Target:** Agent Task Manager (`agent-task-manager`)
