@@ -28,6 +28,7 @@ coverage.html
 .DS_Store
 
 # Worktrees and temporary task repositories
+.worktrees/
 worktrees/
 repos/
 
