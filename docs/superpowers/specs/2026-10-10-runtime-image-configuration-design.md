@@ -36,11 +36,26 @@
 - **Historical Alternative (Informational Only):**
   The previous design specified task-scoped containers (`atm-task-<task_id>`) mounting host worktrees via `/workspace:rw`. This was abandoned because: (a) it required host-level bind-mounts exposing the host control-plane filesystem; (b) it could not cleanly support multi-repository project workflows; and (c) container setup latency degraded interactive prompt steering across rapid task turns.
 
-### 2.2 In-Container Repository Cloning (Zero Host Bind-Mounts)
+### 2.2 In-Container Repository Storage & Task Worktrees (Zero Host Bind-Mounts)
 - Host worktrees and host bind-mounts (`/workspace:rw` pointing to host paths) are **strictly eliminated**.
-- Repositories required by a project are cloned, fetched, and checked out **inside the project container sandbox** (e.g. into `/workspaces/<repo_name>` or `/workspaces/<task_id>`).
+- Repositories required by a project are stored, fetched, and checked out **inside the project container sandbox** in persistent project storage.
 - The control plane never bind-mounts host source trees, host git caches, or control-plane directories into the container.
-- Persistent project storage is managed via dedicated Docker volumes (`atm-project-data-<project_id>`) attached to the project container, retaining repository state and branch artifacts across task executions.
+- Persistent project storage is managed via dedicated Docker volumes:
+  - `atm-project-data-<project_id>:/workspaces:rw`: Retains repository bare/base trees, task worktrees, and branch artifacts across task executions.
+  - `atm-project-state-<project_id>:/var/lib/opencode:rw`: Retains necessary durable OpenCode state across container restarts.
+- **Task Worktree Layout & Operational Separation:**
+  - Each task receives its own Git worktree inside the persistent project volume (e.g., `/workspaces/<repo>/tasks/<task_id>`).
+  - By default, a task worktree includes only the task's selected repository; multi-repository access for a task must be explicitly declared.
+  - Worktrees provide operational separation and concurrency management for branches and working directories; they do **NOT** establish security boundaries. All tasks and repositories within the same project share the security trust boundary and can access sibling files and processes.
+  - Task and worktree retention is strictly manual; there is no automatic deletion semantics and no task-delete API.
+- **Project Container Idle Lifecycle & Cold Starts:**
+  - After 24 consecutive hours without any running task or active OpenCode request, the control plane stops the project container only.
+  - Persistent project volumes (`atm-project-data-<project_id>` and `atm-project-state-<project_id>`), worktrees, and durable OpenCode state are retained intact; bounded tmpfs scratch directories are discarded on container stop.
+  - The project container is restarted automatically on the next task or request (accepting the cold-start restart latency tradeoff).
+  - Idle stopping must be coordinated so it never races active tasks or in-flight OpenCode requests and never deletes project data.
+- **Credential Separation & Active Blocker:**
+  - Raw GitHub tokens remain solely in the trusted ATM control plane; they are never passed into the project container, OpenCode/task process, task-visible environment variables, files, arguments, prompts, or worktree git configuration.
+  - The exact credential-safe mechanism for clone, fetch, push, and data transfer between the trusted control plane and the project volume without host bind mounts remains unresolved and is an active blocker (see Section 7.1).
 
 ---
 
@@ -72,12 +87,17 @@ Optional manifest placed at repository root, defining desired runtime version bi
     - `java`: `"25.0.4.1+1"`
     - `rust`: `"1.99.0"`
     - `dotnet`: `"10.0.401"`
-- **Multi-Repository Reality & Manifest Scope:** In multi-repository projects, different repositories may each contain an `.atm-runtime.json`. Manifest reconciliation across repositories is an open decision tracked in Section 7.1; container image resolution must not arbitrarily assume an undeclared single "primary" repo.
+- **Multi-Repository Resolution & Union Semantics:**
+  - In projects declaring multiple repositories, ATM resolves a single project runtime profile by computing the union of requirements across all declared project repository manifests (`.atm-runtime.json`).
+  - **Union Behavior for Disablement:** Repo-level `false` means that specific repository does not require that runtime. If another repository in the project requires a positive runtime version, the positive requirement is included in the project runtime profile (consistent with union semantics). An explicit project-level UI/DB override set to `false` disables the runtime project-wide regardless of repository manifests.
+  - **Conflicting Requirements Fail Closed:** If different repository manifests declare conflicting exact versions for the same runtime (i.e., two different exact versions that are both valid catalog entries), resolution **fails closed immediately**, refusing container startup and task attempts unless an explicit project-level UI/DB override resolves the conflict. An uncataloged version is separately invalid and fails manifest validation on its own.
+  - Project UI/DB overrides remain the highest priority in the hierarchy.
+  - Any invalid manifest (syntax/schema error or uncataloged version) fails closed immediately; a UI override does not forgive or bypass an invalid manifest.
 
 ### 3.2 Project UI/DB Overrides & Precedence
 - Structured metadata field in `models.Project` (`runtime_config`).
 - Per runtime: `inherit` (unset override), exact catalog version, or `disabled` (`false`).
-- **Hierarchy:** UI Override > Manifest (`.atm-runtime.json`) > Pinned Catalog Baseline.
+- **Hierarchy:** UI Override > Union of Repo Manifests (`.atm-runtime.json`) > Pinned Catalog Baseline.
 - **Fail-Closed Validation:** An invalid manifest (schema/syntax violation or uncataloged version) fails container startup and task attempts immediately. A UI override does *not* mask or forgive an invalid manifest. Even when no configuration file exists, the project resolves to the pinned catalog baseline profile fail-closed.
 
 ---
@@ -112,6 +132,7 @@ Optional manifest placed at repository root, defining desired runtime version bi
 │                                                                        │
 │   Project OpenCodeClient ───(Daemon-Validated Project Route)────────┐  │
 │   (HTTP Basic: opencode:<OPENCODE_PASSWORD>, HTTP APIs)            │  │
+│   (Binds Task Sessions to Task Worktree Paths)                     │  │
 └────────────────────────────────────────────────────────────────────┼───┘
                                                                      │ HTTP (Container IP/Net)
                                                                      ▼
@@ -119,25 +140,26 @@ Optional manifest placed at repository root, defining desired runtime version bi
 │             Project Sandbox Container (atm-runtime:<sha256>)           │
 │             Container Name: atm-project-<project_id>                   │
 │                                                                        │
-│   Dedicated User-Defined Bridge Network (Outbound NAT, No Host Ports)  │
+│   Dedicated User-Defined Bridge Network (Egress-Filtered NAT, No Ports)│
 │   HostConfig: CapDrop=ALL, no-new-privileges=true, CPU/Mem/PID limits  │
-│   Read-Only Root Filesystem, Writable tmpfs on approved paths          │
+│   Read-Only Root Filesystem, Bounded Writable tmpfs Scratch            │
 │                                                                        │
 │   ┌────────────────────────────────────────────────────────────────┐   │
-│   │  OpenCode Server Process (Container Sandboxed)                 │   │
+│   │  Long-Lived OpenCode Server Process (1 Per Project Sandbox)   │   │
 │   │  - Auth: OPENCODE_PASSWORD set per project                     │   │
 │   │  - Config: Minimal vetted plugins, local tools only            │   │
 │   │  - External MCP execution disabled; no host credentials/plugins│   │
 │   │  - Model Provider Auth: Injected per attempt/project env       │   │
+│   │  - Task sessions bound to dedicated worktree paths             │   │
 │   └───────────────┬────────────────────────────────┬───────────────┘   │
 │                   │ tool execution                 │ child subagents   │
 │                   ▼                                ▼                   │
-│         /workspaces (In-Container Repos)   In-Container Shell / Tools  │
+│         /workspaces (In-Container Worktrees) In-Container Shell / Tools│
 │                                                                        │
-│   Volume Mounts:                                                       │
-│   - atm-project-data-<project_id>:/workspaces:rw (Cloned Repos)        │
-│   - atm-project-state-<project_id>:/var/lib/opencode:rw                │
-│   - tmpfs:/tmp:rw,noexec,nosuid,size=512m                              │
+│   Volume Mounts & Temp Scratch:                                        │
+│   - atm-project-data-<project_id>:/workspaces:rw (Bare/Worktrees)      │
+│   - atm-project-state-<project_id>:/var/lib/opencode:rw (Durable State)│
+│   - tmpfs:/tmp:rw,noexec,nosuid,size=512m (Per-task dirs cleared on end)
 │   (NO HOST BIND MOUNTS)                                                │
 └────────────────────────────────────────────────────────────────────────┘
 ```
@@ -178,7 +200,7 @@ Authentication mechanics have been verified directly against official OpenCode t
 
 ### 6.1 Preserved Strict Security Requirements
 1. **Fail-Closed Privilege Enforcement (`no-new-privileges`):**
-   The container must be executed with `--security-opt no-new-privileges:true`. If the underlying container runtime rejects this option, the control plane **must fail closed immediately**. It is strictly forbidden to silently relax or bypass this control.
+   The container must be executed with `--security-opt no-new-privileges:true`. If the underlying container runtime rejects this option, the control plane **must fail closed immediately**. It is strictly forbidden to silently relax, create exceptions for, or bypass this control; weakening AppArmor, relaxing seccomp, or omitting NNP is completely prohibited. Initial deployment targets native non-Snap Linux Docker Engine (or a dedicated native Linux VM) qualified via exact probe.
 2. **Docker Socket Isolation:**
    No container may ever have access to `/var/run/docker.sock` or any Docker daemon interface.
 3. **Host Mount Elimination:**
@@ -186,12 +208,17 @@ Authentication mechanics have been verified directly against official OpenCode t
 4. **Least Privilege Execution:**
    - Dropped Linux capabilities: `CapDrop: ALL`.
    - Execution as non-root user (`USER opencode:opencode`, UID 1000) compatible with language toolchains.
-5. **Read-Only Root Filesystem:**
-   Container root filesystem is mounted read-only (`--read-only`), with explicitly declared, bounded, writable tmpfs mounts for necessary runtime scratch space.
+5. **Read-Only Root Filesystem & Bounded Writable Scratch:**
+   Container root filesystem is mounted read-only (`--read-only`). Writable storage is restricted to persistent project volumes (for repository worktrees and durable OpenCode state) and bounded `tmpfs` mounts (e.g. `/tmp:rw,noexec,nosuid,size=512m`). Per-task scratch directories in `tmpfs` are cleared upon task completion. Task and worktree retention in persistent volumes is strictly manual (no auto-deletion semantics or task-delete API).
 6. **Resource Bounds:**
    Strict memory quotas, CPU limits, and PID limits enforced on the project container.
-7. **Control-Plane Network Isolation & Routing:**
-   Project containers run on isolated user-defined Docker bridge networks without published host ports. Control plane communicates via daemon-inspected internal container IPs. Arbitrary user-supplied URLs are strictly prohibited to prevent SSRF.
+7. **Control-Plane Network Isolation & Egress Filtering:**
+   Project containers run on isolated user-defined Docker bridge networks without published host ports. Control plane communicates via daemon-inspected internal container IPs. Project containers enforce a **default-deny outbound egress policy** with explicit destination allowlists:
+   - Must explicitly block host and control-plane private IP ranges, Docker daemon bridges, and IPv4/IPv6 link-local and cloud provider metadata endpoints (specifically including `169.254.169.254` and `[fd00:ec2::254]`).
+   - Outbound access is restricted strictly to permitted external destinations (such as verified model provider API endpoints and package registries). Exact endpoints and filter mechanisms (iptables/nftables/proxy) remain an active qualification item (see Section 7.1).
+   - Arbitrary user-supplied URLs are strictly prohibited to prevent SSRF.
+8. **Credential Defense-in-Depth:**
+   Raw GitHub tokens remain solely in the trusted ATM control plane and are never exposed into the project container, task-visible files, environment variables, command arguments, or prompt contexts.
 
 ---
 
@@ -199,32 +226,26 @@ Authentication mechanics have been verified directly against official OpenCode t
 
 The following items are unresolved architectural decisions and active implementation blockers that must be formally resolved and qualified before proceeding to production implementation:
 
-### 7.1 Unresolved Design Questions
+### 7.1 Unresolved Design Questions & Architecture Decisions
 
-1. **Multi-Repository Runtime Manifest & Profile Resolution:**
-   Because a single ATM project can contain multiple git repositories, each repository might define its own `.atm-runtime.json` with differing or conflicting runtime version requirements. Since container execution is sandboxed at the project level, a single runtime image must satisfy the project's requirements. Several resolution strategies remain open:
-   - *Option A (Project Manifest Precedence / Dedicated Primary Repo):* The user explicitly designates one repository as the primary runtime manifest source in project settings, or project UI/DB overrides take absolute precedence over repository manifests.
-   - *Option B (Manifest Merging / Union):* ATM parses manifests from all declared project repositories and computes the union of required runtimes. If different repositories declare conflicting versions of the same runtime (e.g., Repo 1 specifies Node 24.21.0 while Repo 2 specifies Node 22.14.0), resolution fails closed immediately, requiring the user to set an explicit project-level override.
-   - *Option C (UI/DB Override Only for Multi-Repo):* Multi-repo projects require explicit project-level runtime configurations in the ATM UI/DB, treating repo-level `.atm-runtime.json` files as informational hints or advisory checks.
-2. **OpenCode Server Process Topology (Per-Project vs. Per-Task):**
-   While container sandboxing is established at the **project boundary**, whether to run a single long-lived OpenCode server process per project container or to spawn separate OpenCode server processes per task inside that project container remains an open architectural decision:
-   - *Option A (Single Project Server):* Low memory overhead; single OpenCode database per project. Requires validating how OpenCode handles concurrent multi-repo sessions and directory switching.
-   - *Option B (Task-Scoped Server Processes inside Project Container):* Isolates agent crash domains and simplifies per-task session teardown, but consumes more memory per task.
-3. **Safe GitHub Clone Credential Delivery:**
-   Repositories must be cloned inside the project container without exposing host git credentials or persisting GitHub personal access tokens (PATs) / OAuth tokens on container disk or in bash history where untrusted project agents could leak them. Requires design of a secure in-container credential helper, short-lived installation token, or control-plane clone proxy.
-4. **Task Workspace Layout & Concurrency inside Shared Project Boundary:**
-   Because tasks within a project share the container filesystem, multiple tasks running concurrently could experience git lock contention or workspace collisions if operating in the same working tree. Requires deciding whether each task receives a git worktree (`/workspaces/<repo>/tasks/<task_id>`), separate cloned trees, or mutually exclusive task execution locks per repository.
-5. **Outbound Egress & Cloud Metadata Blocking:**
-   Containers need outbound internet NAT to reach LLM APIs and public package registries (npm, Go proxy, PyPI, Maven, crates.io, NuGet). However, open outbound NAT exposes risks of SSRF against cloud provider metadata endpoints (`169.254.169.254`) and internal control-plane services. A concrete iptables/firewall egress policy must be designed.
-6. **Bounded Writable Tmpfs Locations for Read-Only Root Filesystem:**
-   Running with `--read-only` rootfs requires identifying all directories that toolchains and OpenCode require for temporary scratch space (e.g. `/tmp`, `/var/tmp`, `/var/lib/opencode/tmp`, `/run`) and establishing bounded memory limits (`tmpfs:size=...`, `noexec`, `nosuid`) that do not exhaust host memory or bypass execution restrictions.
-7. **Strict `no-new-privileges` vs. Explicitly Approved Exceptions:**
-   Given the current runtime environment failure (detailed below), the policy must decide whether ATM strictly refuses to run on environments where `no-new-privileges` fails, or if an explicitly configured, user-approved platform exception can ever exist.
-8. **Runtime Base OS and Image Composition (Alpine/musl vs. Debian/glibc multi-stage):**
-   The upstream OpenCode image `ghcr.io/anomalyco/opencode:2.0.26` builds from an Alpine base (`packages/cli/Dockerfile`) and copies a `linux-x64-baseline-musl` OpenCode binary to `/usr/local/bin/opencode`, installing `libgcc`, `libstdc++`, and `ripgrep`. Meanwhile, the existing ATM runtime catalog and sandbox baseline are built on Debian/glibc (`debian:bookworm-slim`).
-   - *Option A (Adopt Alpine Base for ATM Runtime):* Standardize ATM project sandboxes on Alpine, running the musl binary natively with musl-compatible toolchains.
-   - *Option B (Multi-Stage Copy into Debian with ABI/Dependency Qualification):* Extract `/usr/local/bin/opencode` from the GHCR candidate image into the Debian base, but only after qualifying ABI compatibility, runtime C library/dynamic link dependencies (or musl compatibility layers such as `gcompat`/`musl`), and companion tools (e.g. `ripgrep`).
-   - This architectural decision remains open pending ABI and dependency qualification.
+1. **Accepted Architecture Decisions (Pending Qualification & Implementation):**
+   - *Process Topology:* A single long-lived OpenCode server process runs per project sandbox container. Task sessions are bound to their respective Git worktree paths.
+   - *Workspace Layout:* Each task receives its own dedicated Git worktree inside persistent project storage (`atm-project-data-<project_id>:/workspaces`). Tasks default to including only their selected repository; multi-repository task access must be explicitly configured. Worktrees are an operational separation only and share the project security trust boundary.
+   - *Multi-Repository Runtime Resolution:* Resolved via unioning requirements across all declared project repository manifests (`.atm-runtime.json`). Conflicting exact versions for the same runtime fail closed unless resolved by an explicit project-level override. Project UI/DB overrides remain highest priority, and invalid manifests fail closed. Repo-level `false` means that repo does not require the runtime; positive requirements from other repos win in union; an explicit project-level `false` override disables the runtime project-wide.
+   - *Container Storage & Idle Lifecycle:* Read-only container root; persistent project Docker volumes for repository trees and durable OpenCode state; bounded tmpfs scratch with per-task directories cleared upon task completion. Task and worktree retention is manual (no auto-deletion semantics or task-delete API). Containers stop after 24 hours of inactivity (no running tasks or active OpenCode requests), preserving persistent volumes and discarding tmpfs, with automatic restart on the next task/request.
+   - *Egress Architecture:* Outbound container egress follows a default-deny policy with explicit allowlists, blocking host/control-plane private networks, daemon bridges, IPv4/IPv6 link-local addresses, and cloud provider metadata (`169.254.169.254`).
+   - *Deployment Target & Privilege Mandate:* The initial production target is a native non-Snap Linux Docker Engine (or dedicated native Linux VM). Mandatory `no-new-privileges:true` is non-negotiable; AppArmor/seccomp softening and NNP omission are strictly banned.
+
+2. **Active Unresolved Architecture Questions (Blockers):**
+   - **Credential-Safe Clone / Fetch / Push & Data Transfer Mechanism:**
+     Raw GitHub tokens remain solely in the trusted ATM control plane and are never passed into the project container, OpenCode/task process, environment variables, files, arguments, prompts, or worktree config. Repository contents and worktrees must reside in the project volume without host bind mounts. The exact credential-safe mechanism for initial cloning, fetching, pushing, and data transfer between the trusted control plane and the project volume remains an **active unresolved blocker**. No proxy, helper, or sidecar is yet qualified or assumed to be inherently secure.
+   - **Egress Filter Implementation & Endpoint Qualification:**
+     While the default-deny policy and cloud metadata blocking requirements are accepted, the exact filter mechanism (iptables/nftables vs. egress proxy) and the specific allowlisted destinations (exact LLM API endpoints and package registry domains) remain to be qualified and documented.
+   - **Runtime Base OS and Image Composition (Alpine/musl vs. Debian/glibc multi-stage):**
+     The upstream OpenCode image `ghcr.io/anomalyco/opencode:2.0.26` builds from an Alpine base (`packages/cli/Dockerfile`) and copies a `linux-x64-baseline-musl` OpenCode binary to `/usr/local/bin/opencode`, installing `libgcc`, `libstdc++`, and `ripgrep`. Meanwhile, the existing ATM runtime catalog and sandbox baseline are built on Debian/glibc (`debian:bookworm-slim`).
+     - *Option A (Adopt Alpine Base for ATM Runtime):* Standardize ATM project sandboxes on Alpine, running the musl binary natively with musl-compatible toolchains.
+     - *Option B (Multi-Stage Copy into Debian with ABI/Dependency Qualification):* Extract `/usr/local/bin/opencode` from the GHCR candidate image into the Debian base, but only after qualifying ABI compatibility, runtime C library/dynamic link dependencies (or musl compatibility layers such as `gcompat`/`musl`), and companion tools (e.g. `ripgrep`).
+     - This architectural decision remains open pending ABI and dependency qualification.
 
 ### 7.2 Current Implementation Blockers
 
@@ -233,9 +254,10 @@ The following items are unresolved architectural decisions and active implementa
    - *Provenance & Build Identity:* Although a registry-attached SLSA provenance attestation exists referencing source repository `https://github.com/anomalyco/opencode` and commit `5e73d5cb1f788637b1b3d5cf1298ea694cbad0c5` (the parent of release tag `v2.0.26` commit `9b4ec5714d481559990db0a816d5dec19541a814`, differing only by version metadata), its `resolvedDependencies` field is false and builder ID is empty. It cannot be characterized as fully verified provenance or signed publisher identity.
    - *Dependency Completeness & ABI Composition:* The binary is packaged in Alpine with `musl`, `libgcc`, `libstdc++`, and `ripgrep`. ABI compatibility and runtime dependencies for ATM container composition are not yet verified.
    - *Runtime Handshake & Auth Smoke:* Container startup handshake, `OPENCODE_PASSWORD` authentication smoke tests, and command-line execution validation have not yet been run and qualified.
-2. **Docker/Snap Environment Incompatibility with Mandatory `no-new-privileges`:**
+2. **Native Non-Snap Docker Host Qualification & Mandatory `no-new-privileges` Probe:**
    On the target Linux host running the default container daemon (Docker Engine 29.8.0 installed via Snap revision 3613, containerd 2.3.4, runc 1.5.1), running containers with mandatory `--security-opt no-new-privileges:true` fails during execution.
-   - **Reproducible A/B Probe Facts:**
+   - **Target Qualification Requirement:** Initial deployment targets a native non-Snap Linux Docker Engine (or a dedicated native Linux VM). Before implementation can begin, the native non-Snap target host must pass the exact qualification probe (`NoNewPrivs: 1`, exit status 0).
+   - **Reproducible A/B Probe Facts (Snap Docker Failure):**
      - Evaluated against existing local image `alpine:latest` (`--pull=never`). Minimal probe parameters applied: `--network none --read-only --cap-drop=ALL --user 65534:65534 --pids-limit 16 --memory 64m --cpus 0.5`, with zero host bind mounts, environment credentials, published ports, repository code, or registry download.
      - **With NNP enabled:**
        ```text
@@ -247,7 +269,7 @@ The following items are unresolved architectural decisions and active implementa
        docker run --rm --pull=never --network none --read-only --cap-drop=ALL --user 65534:65534 --pids-limit 16 --memory 64m --cpus 0.5 --entrypoint /bin/sh alpine:latest -c 'grep "^NoNewPrivs:" /proc/self/status; exec /bin/true'
        NoNewPrivs: 0 (exit status 0)
        ```
-   - **Alternate Daemon Comparison (Docker Desktop Linux VM):**
+   - **Alternate Daemon Comparison (Docker Desktop Linux VM — Informational Only):**
      - Docker Desktop daemon (Docker Engine 29.2.1, runc 1.3.4) was started temporarily for comparative testing. Only the pre-existing Alpine test image was copied from the default daemon into Desktop without pulling from any external registry.
      - Running the exact same restricted probe with NNP enabled succeeded:
        ```text
@@ -255,15 +277,15 @@ The following items are unresolved architectural decisions and active implementa
        NoNewPrivs: 1 (exit status 0)
        ```
      - Four pre-existing Desktop containers showed `Exited (255)` upon Desktop startup and were completely untouched; none were running. Following the probe, Docker Desktop was stopped and the Docker context was restored to `default`.
-     - *Scope & Qualification Limitations:* Docker Desktop executes containers inside a dedicated Linux virtual machine, representing an alternate guest kernel and runtime stack. This pass serves solely as an informational comparison and development test candidate; it does **not** prove compatibility for a native Docker Engine host deployment or ATM's containerized OpenCode runtime.
+     - *Scope & Qualification Limitations:* Docker Desktop executes containers inside a dedicated Linux virtual machine, representing an alternate guest kernel and runtime stack. This pass serves solely as an informational VM comparison and development test candidate; it does **not** qualify a native Docker Engine host deployment or ATM's containerized OpenCode runtime.
    - **Root Cause & Workaround Prohibitions:**
      - The captured evidence localizes the execution failure specifically to the `no-new-privileges` interaction on this Snap-backed daemon installation. However, Snap confinement or AppArmor profile conflicts remain an unproven hypothesis, not an established root cause.
      - Workarounds that disable AppArmor, relax Seccomp profiles, or silently omit/bypass `no-new-privileges` are **strictly prohibited**.
      - In accordance with ATM's security specification, `no-new-privileges:true` is **strictly mandatory and fail-closed**. The Docker Desktop pass does not clear overall sandbox qualification, and implementation remains fully blocked until this runtime incompatibility is resolved on supported native hosts alongside other unapproved architectural decisions.
    - **Untested Surface:**
-     - This minimal probe evaluated only the Linux kernel execution barrier. It did **not** test workspace volume mounts, OpenCode server runtime processes, authentication handshakes, model provider credential delivery, or network egress filtering.
-3. **Gate D Provider Credential Validation Blocked:**
-   Validating and testing model provider credential injection into containerized OpenCode servers is blocked until the candidate OpenCode container artifact is qualified, dependency/ABI composition is resolved, and the container is runnable with the required security options.
+     - Prior probes evaluated only the Linux kernel execution barrier. They did **not** involve provider credentials, host config/data mounts, repository code, workspace volume mounts, OpenCode server runtime processes, authentication handshakes, or network egress filtering.
+3. **Gate D Provider Credential and Egress Validation Blocked:**
+   Validating and testing model provider credential injection and network egress allowlisting for containerized OpenCode servers remains blocked until the candidate OpenCode container artifact is qualified, dependency/ABI composition is resolved, the safe credential transfer mechanism is defined, and the container is runnable on a qualified native host with mandatory security options.
 
 ---
 
