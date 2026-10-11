@@ -233,13 +233,35 @@ The following items are unresolved architectural decisions and active implementa
    - *Provenance & Build Identity:* Although a registry-attached SLSA provenance attestation exists referencing source repository `https://github.com/anomalyco/opencode` and commit `5e73d5cb1f788637b1b3d5cf1298ea694cbad0c5` (the parent of release tag `v2.0.26` commit `9b4ec5714d481559990db0a816d5dec19541a814`, differing only by version metadata), its `resolvedDependencies` field is false and builder ID is empty. It cannot be characterized as fully verified provenance or signed publisher identity.
    - *Dependency Completeness & ABI Composition:* The binary is packaged in Alpine with `musl`, `libgcc`, `libstdc++`, and `ripgrep`. ABI compatibility and runtime dependencies for ATM container composition are not yet verified.
    - *Runtime Handshake & Auth Smoke:* Container startup handshake, `OPENCODE_PASSWORD` authentication smoke tests, and command-line execution validation have not yet been run and qualified.
-2. **Docker/Snap Environment Incompatibility with `no-new-privileges`:**
-   On the target Linux host running Docker Engine 29.8.0 via Snap, executing containers with `--security-opt no-new-privileges` currently fails with:
-   ```text
-   docker run --rm --security-opt no-new-privileges debian:bookworm-slim /bin/sh -c "echo hello"
-   exec /bin/sh: operation not permitted (exit status 255)
-   ```
-   Because our security contract requires **failing closed** if `no-new-privileges` cannot be enforced, strict sandbox qualification cannot pass in this environment until Docker AppArmor/Snap confinement profiles are reconciled or a native Docker Engine is provided. Pinned image updates do not alter this host runtime restriction.
+2. **Docker/Snap Environment Incompatibility with Mandatory `no-new-privileges`:**
+   On the target Linux host running the default container daemon (Docker Engine 29.8.0 installed via Snap revision 3613, containerd 2.3.4, runc 1.5.1), running containers with mandatory `--security-opt no-new-privileges:true` fails during execution.
+   - **Reproducible A/B Probe Facts:**
+     - Evaluated against existing local image `alpine:latest` (`--pull=never`). Minimal probe parameters applied: `--network none --read-only --cap-drop=ALL --user 65534:65534 --pids-limit 16 --memory 64m --cpus 0.5`, with zero host bind mounts, environment credentials, published ports, repository code, or registry download.
+     - **With NNP enabled:**
+       ```text
+       docker run --rm --pull=never --network none --read-only --cap-drop=ALL --security-opt no-new-privileges:true --user 65534:65534 --pids-limit 16 --memory 64m --cpus 0.5 --entrypoint /bin/sh alpine:latest -c 'grep "^NoNewPrivs:" /proc/self/status; exec /bin/true'
+       exec /bin/sh: operation not permitted (exit status 255)
+       ```
+     - **Control (otherwise identical probe, only NNP omitted):**
+       ```text
+       docker run --rm --pull=never --network none --read-only --cap-drop=ALL --user 65534:65534 --pids-limit 16 --memory 64m --cpus 0.5 --entrypoint /bin/sh alpine:latest -c 'grep "^NoNewPrivs:" /proc/self/status; exec /bin/true'
+       NoNewPrivs: 0 (exit status 0)
+       ```
+   - **Alternate Daemon Comparison (Docker Desktop Linux VM):**
+     - Docker Desktop daemon (Docker Engine 29.2.1, runc 1.3.4) was started temporarily for comparative testing. Only the pre-existing Alpine test image was copied from the default daemon into Desktop without pulling from any external registry.
+     - Running the exact same restricted probe with NNP enabled succeeded:
+       ```text
+       docker --context desktop-linux run --rm --pull=never --network none --read-only --cap-drop=ALL --security-opt no-new-privileges:true --user 65534:65534 --pids-limit 16 --memory 64m --cpus 0.5 --entrypoint /bin/sh alpine:latest -c 'grep "^NoNewPrivs:" /proc/self/status; grep -q "^NoNewPrivs:[[:space:]]*1$" /proc/self/status; exec /bin/true'
+       NoNewPrivs: 1 (exit status 0)
+       ```
+     - Four pre-existing Desktop containers showed `Exited (255)` upon Desktop startup and were completely untouched; none were running. Following the probe, Docker Desktop was stopped and the Docker context was restored to `default`.
+     - *Scope & Qualification Limitations:* Docker Desktop executes containers inside a dedicated Linux virtual machine, representing an alternate guest kernel and runtime stack. This pass serves solely as an informational comparison and development test candidate; it does **not** prove compatibility for a native Docker Engine host deployment or ATM's containerized OpenCode runtime.
+   - **Root Cause & Workaround Prohibitions:**
+     - The captured evidence localizes the execution failure specifically to the `no-new-privileges` interaction on this Snap-backed daemon installation. However, Snap confinement or AppArmor profile conflicts remain an unproven hypothesis, not an established root cause.
+     - Workarounds that disable AppArmor, relax Seccomp profiles, or silently omit/bypass `no-new-privileges` are **strictly prohibited**.
+     - In accordance with ATM's security specification, `no-new-privileges:true` is **strictly mandatory and fail-closed**. The Docker Desktop pass does not clear overall sandbox qualification, and implementation remains fully blocked until this runtime incompatibility is resolved on supported native hosts alongside other unapproved architectural decisions.
+   - **Untested Surface:**
+     - This minimal probe evaluated only the Linux kernel execution barrier. It did **not** test workspace volume mounts, OpenCode server runtime processes, authentication handshakes, model provider credential delivery, or network egress filtering.
 3. **Gate D Provider Credential Validation Blocked:**
    Validating and testing model provider credential injection into containerized OpenCode servers is blocked until the candidate OpenCode container artifact is qualified, dependency/ABI composition is resolved, and the container is runnable with the required security options.
 
