@@ -227,7 +227,203 @@ func TestOpenCodeClient_EnsureSessionAtLocation(t *testing.T) {
 	}
 }
 
+func TestOpenCodeClient_InterruptSession(t *testing.T) {
+	var outboundCalled bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		outboundCalled = true
+		if r.URL.Path == "/api/session/ses_active/interrupt" && r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"interrupted":true}`))
+			return
+		}
+		if r.URL.Path == "/api/session/ses_idle/interrupt" && r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"interrupted":false}`))
+			return
+		}
+		if r.URL.Path == "/api/session/ses_notfound/interrupt" && r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client := runner.NewOpenCodeClient(server.URL, "secret", nil)
+
+	// 1. Invalid session ID: rejects without outbound request
+	err := client.InterruptSession(context.Background(), "invalid/session/id")
+	if err == nil {
+		t.Fatalf("expected error for malformed session ID, got nil")
+	}
+	if outboundCalled {
+		t.Fatalf("outbound request was made for invalid session ID")
+	}
+
+	// 2. Active session: success
+	err = client.InterruptSession(context.Background(), "ses_active")
+	if err != nil {
+		t.Fatalf("expected nil error interrupting active session, got: %v", err)
+	}
+
+	// 3. Idle session: no-op (nil error)
+	err = client.InterruptSession(context.Background(), "ses_idle")
+	if err != nil {
+		t.Fatalf("expected nil error interrupting idle session, got: %v", err)
+	}
+
+	// 4. Not found session: treated as safe no-op (nil error)
+	err = client.InterruptSession(context.Background(), "ses_notfound")
+	if err != nil {
+		t.Fatalf("expected nil error on 404 not found, got: %v", err)
+	}
+}
+
+func TestOpenCodeClient_InterruptSessionTree(t *testing.T) {
+	interruptedSessions := make(map[string]bool)
+	var mu sync.Mutex
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		if r.URL.Path == "/api/session" && r.Method == http.MethodGet {
+			// Return list of sessions with child relationships
+			resp := map[string]any{
+				"data": []map[string]any{
+					{"id": "ses_root", "parentID": ""},
+					{"id": "ses_child_1", "parentID": "ses_root"},
+					{"id": "ses_child_2", "parentID": "ses_root"},
+					{"id": "ses_grandchild_1", "parentID": "ses_child_1"},
+					{"id": "ses_unrelated", "parentID": "ses_other"},
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		if strings.HasSuffix(r.URL.Path, "/interrupt") && r.Method == http.MethodPost {
+			// Extract session ID
+			parts := strings.Split(r.URL.Path, "/")
+			if len(parts) >= 4 {
+				sID := parts[3]
+				interruptedSessions[sID] = true
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"interrupted":true}`))
+			return
+		}
+
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := runner.NewOpenCodeClient(server.URL, "secret", nil)
+
+	err := client.InterruptSessionTree(context.Background(), "ses_root")
+	if err != nil {
+		t.Fatalf("unexpected error from InterruptSessionTree: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !interruptedSessions["ses_root"] {
+		t.Errorf("expected root session to be interrupted")
+	}
+	if !interruptedSessions["ses_child_1"] {
+		t.Errorf("expected child 1 session to be interrupted")
+	}
+	if !interruptedSessions["ses_child_2"] {
+		t.Errorf("expected child 2 session to be interrupted")
+	}
+	if !interruptedSessions["ses_grandchild_1"] {
+		t.Errorf("expected grandchild 1 session to be interrupted")
+	}
+	if interruptedSessions["ses_unrelated"] {
+		t.Errorf("unrelated session was interrupted!")
+	}
+}
+
+func TestOpenCodeClient_InterruptSessionTree_ErrorsAndCycle(t *testing.T) {
+	// 1. Cycle in session hierarchy (ses_a -> ses_b -> ses_a) must terminate and aggregate
+	interruptedSessions := make(map[string]int)
+	var mu sync.Mutex
+
+	cycleServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		if r.URL.Path == "/api/session" && r.Method == http.MethodGet {
+			resp := map[string]any{
+				"data": []map[string]any{
+					{"id": "ses_a", "parentID": "ses_b"},
+					{"id": "ses_b", "parentID": "ses_a"},
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		if strings.HasSuffix(r.URL.Path, "/interrupt") && r.Method == http.MethodPost {
+			parts := strings.Split(r.URL.Path, "/")
+			if len(parts) >= 4 {
+				interruptedSessions[parts[3]]++
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"interrupted":true}`))
+			return
+		}
+	}))
+	defer cycleServer.Close()
+
+	client := runner.NewOpenCodeClient(cycleServer.URL, "secret", nil)
+	err := client.InterruptSessionTree(context.Background(), "ses_a")
+	if err != nil {
+		t.Fatalf("expected nil error on valid cycle interrupt, got: %v", err)
+	}
+
+	mu.Lock()
+	if interruptedSessions["ses_a"] != 1 || interruptedSessions["ses_b"] != 1 {
+		t.Errorf("expected each cycle node visited exactly once, got: %+v", interruptedSessions)
+	}
+	mu.Unlock()
+
+	// 2. Child failure must NOT be silently ignored
+	failChildServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/session" && r.Method == http.MethodGet {
+			resp := map[string]any{
+				"data": []map[string]any{
+					{"id": "ses_child_fail", "parentID": "ses_root"},
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+		if r.URL.Path == "/api/session/ses_root/interrupt" {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"interrupted":true}`))
+			return
+		}
+		if r.URL.Path == "/api/session/ses_child_fail/interrupt" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	}))
+	defer failChildServer.Close()
+
+	failClient := runner.NewOpenCodeClient(failChildServer.URL, "secret", nil)
+	err = failClient.InterruptSessionTree(context.Background(), "ses_root")
+	if err == nil {
+		t.Fatalf("expected aggregated error when child interrupt fails, got nil")
+	}
+}
+
 func BenchmarkResponseBodyReader_IOReadAll(b *testing.B) {
+
 	data := strings.Repeat(`{"id":"msg_123","type":"assistant","text":"sample response text chunk"}`+"\n", 1000) // ~75 KB
 	b.ReportAllocs()
 	b.ResetTimer()

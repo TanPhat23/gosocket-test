@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -21,7 +22,8 @@ import (
 
 func setupTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	gormDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", common.NewID())
+	gormDB, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		DisableAutomaticPing: true,
 	})
 	if err != nil {
@@ -195,6 +197,14 @@ func createTestUserAndTask(t *testing.T, gormDB *gorm.DB) (*models.User, *models
 		t.Fatalf("failed to create user: %v", err)
 	}
 
+	if err := gormDB.Create(&models.TeamMembership{
+		TeamID: team.ID,
+		UserID: user.ID,
+		Role:   models.RoleMember,
+	}).Error; err != nil {
+		t.Fatalf("failed to create team membership: %v", err)
+	}
+
 	project := &models.Project{
 		ID:        common.NewID(),
 		TeamID:    team.ID,
@@ -232,7 +242,7 @@ func createTestUserAndTask(t *testing.T, gormDB *gorm.DB) (*models.User, *models
 
 func TestTaskServiceTransitionsAndCancellation(t *testing.T) {
 	gormDB := setupTestDB(t)
-	_, _, task := createTestUserAndTask(t, gormDB)
+	user, _, task := createTestUserAndTask(t, gormDB)
 	taskRepo := repository.NewTaskRepository(gormDB)
 
 	hub := ws.NewHub()
@@ -245,7 +255,15 @@ func TestTaskServiceTransitionsAndCancellation(t *testing.T) {
 
 	mockQueue := &mockQueueClient{}
 	attemptRepo := repository.NewAttemptRepository(gormDB)
-	taskSvc := service.NewTaskService(taskRepo, attemptRepo, mockQueue, hub)
+	projectRepo := repository.NewProjectRepository(gormDB)
+	teamRepo := repository.NewTeamRepository(gormDB)
+	taskSvc := service.NewTaskService(
+		taskRepo,
+		attemptRepo,
+		mockQueue,
+		hub,
+		service.WithTaskSessionDependencies(nil, projectRepo, teamRepo),
+	)
 
 	ctx := context.Background()
 
@@ -274,8 +292,14 @@ func TestTaskServiceTransitionsAndCancellation(t *testing.T) {
 		t.Fatalf("timed out waiting for status broadcast")
 	}
 
-	// CancelTask
-	err = taskSvc.CancelTask(ctx, task.ID)
+	// CancelTask with empty userID -> ErrForbidden
+	err = taskSvc.CancelTask(ctx, task.ID, "")
+	if !errors.Is(err, common.ErrForbidden) {
+		t.Fatalf("expected ErrForbidden on empty userID, got %v", err)
+	}
+
+	// CancelTask with authorized user -> success
+	err = taskSvc.CancelTask(ctx, task.ID, user.ID)
 	if err != nil {
 		t.Fatalf("CancelTask failed: %v", err)
 	}
@@ -514,6 +538,14 @@ func (m *mockOpenCodeClient) ListChildSessions(ctx context.Context, parentID str
 	return nil, nil
 }
 
+func (m *mockOpenCodeClient) InterruptSession(ctx context.Context, sessionID string) error {
+	return nil
+}
+
+func (m *mockOpenCodeClient) InterruptSessionTree(ctx context.Context, rootSessionID string) error {
+	return nil
+}
+
 func (m *mockOpenCodeClient) EnsureSessionAtLocation(ctx context.Context, sessionID, title, directory string) error {
 	return nil
 }
@@ -670,6 +702,268 @@ func TestTaskService_SessionOperationsAndRBAC(t *testing.T) {
 	err = offlineSvc.CompactTaskSession(ctx, task.ID, memberUser.ID)
 	if !errors.Is(err, common.ErrServiceUnavailable) {
 		t.Fatalf("expected ErrServiceUnavailable on CompactTaskSession, got %v", err)
+	}
+	// 8. CancelTask authorization tests
+	// CancelTask with viewer user -> 403 Forbidden
+	err = taskSvc.CancelTask(ctx, task.ID, viewerUser.ID)
+	if !errors.Is(err, common.ErrForbidden) {
+		t.Fatalf("expected ErrForbidden for viewer on CancelTask, got %v", err)
+	}
+
+	// CancelTask with outsider user -> 403 Forbidden
+	err = taskSvc.CancelTask(ctx, task.ID, outsiderUser.ID)
+	if !errors.Is(err, common.ErrForbidden) {
+		t.Fatalf("expected ErrForbidden for outsider on CancelTask, got %v", err)
+	}
+
+	// CancelTask with member user -> Success
+	err = taskSvc.CancelTask(ctx, task.ID, memberUser.ID)
+	if err != nil {
+		t.Fatalf("expected member to be able to CancelTask, got %v", err)
+	}
+	reloadedTask, err := taskSvc.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("failed to reload task: %v", err)
+	}
+	if reloadedTask.Status != models.TaskStatusCancelled {
+		t.Fatalf("expected task status to be %s, got %s", models.TaskStatusCancelled, reloadedTask.Status)
+	}
+}
+
+type delayedMockRunner struct {
+	started chan struct{}
+	block   chan struct{}
+}
+
+func (d *delayedMockRunner) RunTask(ctx context.Context, task *models.Task, attempt *models.TaskAttempt) error {
+	close(d.started)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-d.block:
+		return nil
+	}
+}
+
+func TestTaskService_InFlightCancellation(t *testing.T) {
+	db := setupTestDB(t)
+	taskRepo := repository.NewTaskRepository(db)
+	attemptRepo := repository.NewAttemptRepository(db)
+	projectRepo := repository.NewProjectRepository(db)
+	teamRepo := repository.NewTeamRepository(db)
+
+	ctx := context.Background()
+	ownerUser := &models.User{ID: common.NewID(), Email: "cancel-owner@test.com", DisplayName: "Owner", Subject: "sub-owner", Issuer: "test"}
+	db.Create(ownerUser)
+
+	team := &models.Team{ID: common.NewID(), Name: "Cancel Team"}
+	db.Create(team)
+	db.Create(&models.TeamMembership{TeamID: team.ID, UserID: ownerUser.ID, Role: models.RoleOwner})
+
+	project := &models.Project{ID: common.NewID(), TeamID: team.ID, Name: "Cancel Project", RepoPath: "/tmp"}
+	db.Create(project)
+
+	task := &models.Task{
+		ID:        common.NewID(),
+		ProjectID: project.ID,
+		Title:     "In-flight Cancel Task",
+		Prompt:    "Long running",
+		Status:    models.TaskStatusQueued,
+	}
+	db.Create(task)
+
+	runner := &delayedMockRunner{
+		started: make(chan struct{}),
+		block:   make(chan struct{}),
+	}
+
+	taskSvc := service.NewTaskService(
+		taskRepo,
+		attemptRepo,
+		nil,
+		nil,
+		service.WithTaskSessionDependencies(nil, projectRepo, teamRepo),
+	)
+
+	execDone := make(chan error, 1)
+	go func() {
+		execDone <- taskSvc.ExecuteTask(context.Background(), task.ID, runner)
+	}()
+
+	// Wait for runner to start
+	<-runner.started
+
+	// Verify task is in_progress
+	tInProgress, _ := taskSvc.GetTask(ctx, task.ID)
+	if tInProgress.Status != models.TaskStatusInProgress {
+		t.Fatalf("expected task in_progress, got %s", tInProgress.Status)
+	}
+
+	// Now cancel task via CancelTask
+	err := taskSvc.CancelTask(ctx, task.ID, ownerUser.ID)
+	if err != nil {
+		t.Fatalf("CancelTask failed: %v", err)
+	}
+
+	// Execution should return
+	select {
+	case err := <-execDone:
+		// ExecuteTask returns error or nil, but task and attempt must remain canceled
+		_ = err
+	case <-time.After(3 * time.Second):
+		t.Fatalf("ExecuteTask did not terminate after cancellation")
+	}
+
+	// Check final DB task and attempt status
+	finalTask, err := taskSvc.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("failed to fetch final task: %v", err)
+	}
+	if finalTask.Status != models.TaskStatusCancelled {
+		t.Errorf("expected final task status to be %s, got %s", models.TaskStatusCancelled, finalTask.Status)
+	}
+
+	var attempts []models.TaskAttempt
+	if err := db.Where("task_id = ?", task.ID).Find(&attempts).Error; err != nil || len(attempts) == 0 {
+		t.Fatalf("expected at least 1 attempt, got: %v", err)
+	}
+	if attempts[0].Status != models.AttemptCancelled {
+		t.Errorf("expected final attempt status to be %s, got %s", models.AttemptCancelled, attempts[0].Status)
+	}
+}
+
+func TestTaskService_CancellationCompletionRace(t *testing.T) {
+	db := setupTestDB(t)
+	taskRepo := repository.NewTaskRepository(db)
+	attemptRepo := repository.NewAttemptRepository(db)
+	projectRepo := repository.NewProjectRepository(db)
+	teamRepo := repository.NewTeamRepository(db)
+
+	ctx := context.Background()
+	ownerUser := &models.User{ID: common.NewID(), Email: "race-owner@test.com", DisplayName: "Owner", Subject: "sub-owner", Issuer: "test"}
+	db.Create(ownerUser)
+
+	team := &models.Team{ID: common.NewID(), Name: "Race Team"}
+	db.Create(team)
+	db.Create(&models.TeamMembership{TeamID: team.ID, UserID: ownerUser.ID, Role: models.RoleOwner})
+
+	project := &models.Project{ID: common.NewID(), TeamID: team.ID, Name: "Race Project", RepoPath: "/tmp"}
+	db.Create(project)
+
+	task := &models.Task{
+		ID:        common.NewID(),
+		ProjectID: project.ID,
+		Title:     "Race Task",
+		Prompt:    "Race",
+		Status:    models.TaskStatusQueued,
+	}
+	db.Create(task)
+
+	runner := &delayedMockRunner{
+		started: make(chan struct{}),
+		block:   make(chan struct{}),
+	}
+
+	taskSvc := service.NewTaskService(
+		taskRepo,
+		attemptRepo,
+		nil,
+		nil,
+		service.WithTaskSessionDependencies(nil, projectRepo, teamRepo),
+	)
+
+	execDone := make(chan error, 1)
+	go func() {
+		execDone <- taskSvc.ExecuteTask(context.Background(), task.ID, runner)
+	}()
+
+	<-runner.started
+
+	// Cancel and release runner simultaneously
+	go func() {
+		_ = taskSvc.CancelTask(ctx, task.ID, ownerUser.ID)
+	}()
+	close(runner.block)
+
+	select {
+	case <-execDone:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("ExecuteTask timed out")
+	}
+
+	// Give cancellation goroutine a moment to complete
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify terminal status is cancelled, never resurrected to review/done
+	finalTask, err := taskSvc.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("failed to fetch final task: %v", err)
+	}
+	if finalTask.Status != models.TaskStatusCancelled {
+		t.Errorf("task was resurrected! Expected status %s, got %s", models.TaskStatusCancelled, finalTask.Status)
+	}
+}
+
+func TestTaskService_CancelBeforeStart_DoesNotStart(t *testing.T) {
+	db := setupTestDB(t)
+	taskRepo := repository.NewTaskRepository(db)
+	attemptRepo := repository.NewAttemptRepository(db)
+	projectRepo := repository.NewProjectRepository(db)
+	teamRepo := repository.NewTeamRepository(db)
+
+	ctx := context.Background()
+	ownerUser := &models.User{ID: common.NewID(), Email: "pre-owner@test.com", DisplayName: "Owner", Subject: "sub-owner", Issuer: "test"}
+	db.Create(ownerUser)
+
+	team := &models.Team{ID: common.NewID(), Name: "Pre Team"}
+	db.Create(team)
+	db.Create(&models.TeamMembership{TeamID: team.ID, UserID: ownerUser.ID, Role: models.RoleOwner})
+
+	project := &models.Project{ID: common.NewID(), TeamID: team.ID, Name: "Pre Project", RepoPath: "/tmp"}
+	db.Create(project)
+
+	task := &models.Task{
+		ID:        common.NewID(),
+		ProjectID: project.ID,
+		Title:     "Pre Cancel Task",
+		Prompt:    "Pre Cancel",
+		Status:    models.TaskStatusQueued,
+	}
+	db.Create(task)
+
+	taskSvc := service.NewTaskService(
+		taskRepo,
+		attemptRepo,
+		nil,
+		nil,
+		service.WithTaskSessionDependencies(nil, projectRepo, teamRepo),
+	)
+
+	// Cancel task before ExecuteTask begins
+	err := taskSvc.CancelTask(ctx, task.ID, ownerUser.ID)
+	if err != nil {
+		t.Fatalf("CancelTask failed: %v", err)
+	}
+
+	runnerCalled := false
+	runner := &delayedMockRunner{
+		started: make(chan struct{}),
+		block:   make(chan struct{}),
+	}
+	go func() {
+		close(runner.block)
+	}()
+
+	err = taskSvc.ExecuteTask(ctx, task.ID, runner)
+	if err != nil {
+		t.Fatalf("ExecuteTask returned error on pre-cancelled task: %v", err)
+	}
+	_ = runnerCalled
+
+	// Verify task is still cancelled and no in_progress overwrite occurred
+	tFinal, _ := taskSvc.GetTask(ctx, task.ID)
+	if tFinal.Status != models.TaskStatusCancelled {
+		t.Errorf("expected task status to remain %s, got %s", models.TaskStatusCancelled, tFinal.Status)
 	}
 }
 

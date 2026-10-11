@@ -7,6 +7,7 @@ import (
 	"log"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-task-manager/internal/auth"
@@ -32,7 +33,7 @@ type TaskService interface {
 	ListSubtasks(ctx context.Context, parentTaskID string) ([]models.Task, error)
 	CreateTask(ctx context.Context, req *dto.CreateTaskRequest) (*models.Task, error)
 	UpdateStatus(ctx context.Context, taskID string, status models.TaskStatus) error
-	CancelTask(ctx context.Context, taskID string) error
+	CancelTask(ctx context.Context, taskID, userID string) error
 	ExecuteTask(ctx context.Context, taskID string, runner TaskRunner) error
 	CreatePullRequestForTask(ctx context.Context, taskID string) (*models.Task, error)
 	GetTaskSession(ctx context.Context, taskID, userID string) (*dto.TaskSessionResponseDTO, error)
@@ -56,6 +57,9 @@ type taskService struct {
 	teamRepo        repository.TeamRepository
 	openCodeClient  runner.OpenCodeClient
 	logRepo         repository.LogRepository
+
+	activeCancels *common.SafeMap[string, context.CancelFunc]
+	completionMu  sync.Mutex
 }
 
 // TaskServiceOption allows configuring optional dependencies for TaskService.
@@ -105,10 +109,11 @@ func NewTaskService(
 	opts ...TaskServiceOption,
 ) TaskService {
 	svc := &taskService{
-		taskRepo:    taskRepo,
-		attemptRepo: attemptRepo,
-		queueClient: queueClient,
-		hub:         hub,
+		taskRepo:      taskRepo,
+		attemptRepo:   attemptRepo,
+		queueClient:   queueClient,
+		hub:           hub,
+		activeCancels: common.NewSafeMap[string, context.CancelFunc](),
 	}
 	for _, opt := range opts {
 		opt(svc)
@@ -206,18 +211,45 @@ func (s *taskService) UpdateStatus(ctx context.Context, taskID string, status mo
 }
 
 // CancelTask cancels an ongoing or queued task, notifying the queue client and updating DB status.
-func (s *taskService) CancelTask(ctx context.Context, taskID string) error {
-	task, err := s.GetTask(ctx, taskID)
+func (s *taskService) CancelTask(ctx context.Context, taskID, userID string) error {
+	if userID == "" {
+		return common.ErrForbidden
+	}
+
+	task, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleMember)
 	if err != nil {
 		return err
 	}
 
+	// 1. Coordinated lifecycle boundary under completionMu:
+	// Signal in-flight execution context, update status in DB, and guarantee that
+	// ExecuteTask registration/completion cannot race with cancellation persistence.
+	s.completionMu.Lock()
+	if cancel, ok := s.activeCancels.LoadAndDelete(taskID); ok && cancel != nil {
+		cancel()
+	}
+	err = s.UpdateStatus(ctx, taskID, models.TaskStatusCancelled)
+	s.completionMu.Unlock()
+	if err != nil {
+		return err
+	}
+
+	// 2. Interrupt OpenCode session tree outside completionMu without holding mutex during HTTP calls
+	if s.openCodeClient != nil && task.SessionID != nil && *task.SessionID != "" {
+		interruptCtx, intCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if intErr := s.openCodeClient.InterruptSessionTree(interruptCtx, *task.SessionID); intErr != nil {
+			log.Printf("warning: error interrupting OpenCode session tree for task %s: %v", taskID, intErr)
+		}
+		intCancel()
+	}
+
+	// 3. Cancel Asynq queue job if queued (outside completionMu)
 	if s.queueClient != nil && task.AsynqTaskID != nil && *task.AsynqTaskID != "" {
 		tier := queue.ResolveQueueTier(task.Priority)
 		_ = s.queueClient.CancelTask(ctx, tier, *task.AsynqTaskID)
 	}
 
-	return s.UpdateStatus(ctx, taskID, models.TaskStatusCancelled)
+	return nil
 }
 
 // ExecuteTask orchestrates the task execution lifecycle: status transition, attempt tracking, runner execution, and status completion.
@@ -227,10 +259,19 @@ func (s *taskService) ExecuteTask(ctx context.Context, taskID string, runner Tas
 		return fmt.Errorf("failed to find task %q: %w", taskID, err)
 	}
 
-	// If cancelled, skip execution
-	if task.Status == models.TaskStatusCancelled {
+	// Coordinated start check & execution context registration under completionMu:
+	// Prevents:
+	// - Overwriting an earlier canceled row with in_progress
+	// - Cancellation arriving just before execution registration with no context signal
+	s.completionMu.Lock()
+	currentTask, getErr := s.taskRepo.GetByID(ctx, task.ID)
+	if (getErr == nil && currentTask.Status == models.TaskStatusCancelled) || task.Status == models.TaskStatusCancelled {
+		s.completionMu.Unlock()
 		return nil
 	}
+
+	runCtx, runCancel := context.WithCancel(ctx)
+	s.activeCancels.Store(task.ID, runCancel)
 
 	// Ensure task.SessionID is initialized
 	if task.SessionID == nil || *task.SessionID == "" {
@@ -243,8 +284,13 @@ func (s *taskService) ExecuteTask(ctx context.Context, taskID string, runner Tas
 	task.Status = models.TaskStatusInProgress
 	task.HeartbeatAt = &now
 	if err := s.taskRepo.Update(ctx, task); err != nil {
+		s.activeCancels.Delete(task.ID)
+		runCancel()
+		s.completionMu.Unlock()
 		return fmt.Errorf("failed to mark task as in_progress: %w", err)
 	}
+	s.completionMu.Unlock()
+
 	if s.hub != nil {
 		_ = s.hub.BroadcastTaskStatus(task.ID, models.TaskStatusInProgress)
 	}
@@ -252,6 +298,8 @@ func (s *taskService) ExecuteTask(ctx context.Context, taskID string, runner Tas
 	// Count existing attempts for this task
 	count, err := s.attemptRepo.CountByTaskID(ctx, task.ID)
 	if err != nil {
+		s.activeCancels.Delete(task.ID)
+		runCancel()
 		return fmt.Errorf("failed to count task attempts: %w", err)
 	}
 
@@ -265,16 +313,44 @@ func (s *taskService) ExecuteTask(ctx context.Context, taskID string, runner Tas
 		SessionID:     task.SessionID,
 	}
 	if err := s.attemptRepo.Create(ctx, attempt); err != nil {
+		s.activeCancels.Delete(task.ID)
+		runCancel()
 		return fmt.Errorf("failed to create task attempt: %w", err)
 	}
 
+	defer func() {
+		runCancel()
+	}()
+
 	var runErr error
 	if runner != nil {
-		runErr = runner.RunTask(ctx, task, attempt)
+		runErr = runner.RunTask(runCtx, task, attempt)
 	}
 
 	finishedAt := time.Now().UTC()
 	attempt.FinishedAt = &finishedAt
+
+	// Completion and state transition are protected under completionMu to guarantee that
+	// a concurrent cancellation cannot be overwritten by completion logic.
+	s.completionMu.Lock()
+	defer s.completionMu.Unlock()
+	s.activeCancels.Delete(task.ID)
+
+	reloadedTask, reloadErr := s.taskRepo.GetByID(context.Background(), task.ID)
+	// Fail closed on reload error: if we cannot reload the task status, treat as cancelled to avoid resurrecting
+	isCancelled := reloadErr != nil ||
+		reloadedTask.Status == models.TaskStatusCancelled ||
+		errors.Is(runErr, context.Canceled) ||
+		(runCtx.Err() != nil && ctx.Err() == nil) // runCtx cancelled but parent ctx is alive
+
+	if isCancelled {
+		attempt.Status = models.AttemptCancelled
+		failReason := "task execution cancelled"
+		attempt.FailureReason = &failReason
+		_ = s.attemptRepo.Update(context.Background(), attempt)
+		_ = s.UpdateStatus(context.Background(), task.ID, models.TaskStatusCancelled)
+		return nil
+	}
 
 	if runErr == nil {
 		attempt.Status = models.AttemptSucceeded

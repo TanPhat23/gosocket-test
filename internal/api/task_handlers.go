@@ -114,7 +114,13 @@ func (h *TaskHandlers) Cancel(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	if err := h.taskService.CancelTask(c.Context(), taskID); err != nil {
+	user := CurrentUser(c)
+	userID := ""
+	if user != nil {
+		userID = user.ID
+	}
+
+	if err := h.taskService.CancelTask(c.Context(), taskID, userID); err != nil {
 		return CentralErrorHandler(c, err)
 	}
 

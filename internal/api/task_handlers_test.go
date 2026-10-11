@@ -152,13 +152,23 @@ func TestTaskAndTeamHandlers(t *testing.T) {
 	go hub.Run()
 	defer hub.Stop()
 
-	taskSvc := service.NewTaskService(taskRepo, attemptRepo, queueClient, hub)
+	tokenRepo := repository.NewTokenRepository(db)
+	userRepo := repository.NewUserRepository(db)
+	authSvc := service.NewAuthService(userRepo, teamRepo, tokenRepo, nil)
+
+	taskSvc := service.NewTaskService(
+		taskRepo,
+		attemptRepo,
+		queueClient,
+		hub,
+		service.WithTaskSessionDependencies(nil, projectRepo, teamRepo),
+	)
 	wsHandler := api.NewWSHandler(hub, api.WithWSServices(taskSvc, nil))
 
 	server := api.NewServer(
 		cfg,
 		sessionManager,
-		nil,
+		authSvc,
 		nil,
 		nil,
 		api.WithTaskService(taskSvc),
@@ -166,6 +176,18 @@ func TestTaskAndTeamHandlers(t *testing.T) {
 		api.WithProjectRepository(projectRepo),
 		api.WithWSHandler(wsHandler),
 	)
+
+	// Seed user and team membership
+	adminUser := &models.User{
+		ID:          common.NewID(),
+		Email:       "admin@example.com",
+		DisplayName: "Admin",
+		Subject:     "sub-admin",
+		Issuer:      "test",
+	}
+	if err := db.Create(adminUser).Error; err != nil {
+		t.Fatalf("failed to seed user: %v", err)
+	}
 
 	// Seed team and project
 	teamID := common.NewID()
@@ -177,6 +199,28 @@ func TestTaskAndTeamHandlers(t *testing.T) {
 	}
 	if err := db.Create(team).Error; err != nil {
 		t.Fatalf("failed to seed team: %v", err)
+	}
+
+	if err := db.Create(&models.TeamMembership{
+		TeamID: teamID,
+		UserID: adminUser.ID,
+		Role:   models.RoleMember,
+	}).Error; err != nil {
+		t.Fatalf("failed to seed team membership: %v", err)
+	}
+
+	adminCookieVal, err := sessionManager.SignPayload(auth.SessionClaims{
+		UserID:    adminUser.ID,
+		Issuer:    adminUser.Issuer,
+		Subject:   adminUser.Subject,
+		ExpiresAt: time.Now().Add(1 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("failed to create admin cookie: %v", err)
+	}
+	adminCookie := &http.Cookie{
+		Name:  auth.SessionCookieName,
+		Value: adminCookieVal,
 	}
 
 	project := &models.Project{
@@ -451,6 +495,7 @@ func TestTaskAndTeamHandlers(t *testing.T) {
 
 	t.Run("POST /api/v1/tasks/:task_id/cancel", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+createdTaskID+"/cancel", nil)
+		req.AddCookie(adminCookie)
 		resp, err := server.App.Test(req)
 		if err != nil {
 			t.Fatalf("POST cancel failed: %v", err)
@@ -780,20 +825,67 @@ func TestTaskSessionEndpoints(t *testing.T) {
 		}
 	})
 
-	// 5. 503 Daemon Offline
-	t.Run("GET /api/v1/tasks/:id/session - 503 daemon offline", func(t *testing.T) {
-		mockClient.failWith503 = true
-		defer func() { mockClient.failWith503 = false }()
+	// 6. Task cancellation endpoints authorization tests
+	t.Run("POST /api/v1/tasks/:id/cancel - 401 unauthenticated", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/cancel", nil)
+		resp, err := server.App.Test(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("expected 401 Unauthorized, got %d", resp.StatusCode)
+		}
+	})
 
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/"+task.ID+"/session", nil)
+	t.Run("POST /api/v1/tasks/:task_id/cancel - 401 unauthenticated", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/cancel", nil)
+		resp, err := server.App.Test(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("expected 401 Unauthorized, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("POST /api/v1/tasks/:id/cancel - 403 outsider", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/cancel", nil)
+		req.AddCookie(outsiderCookie)
+		resp, err := server.App.Test(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("expected 403 Forbidden, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("POST /api/v1/tasks/:id/cancel - 403 viewer (requires role member)", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/cancel", nil)
+		req.AddCookie(viewerCookie)
+		resp, err := server.App.Test(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("expected 403 Forbidden, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("POST /api/v1/tasks/:id/cancel - 200 member success", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/cancel", nil)
 		req.AddCookie(memberCookie)
 		resp, err := server.App.Test(req)
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
 		}
 		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusServiceUnavailable {
-			t.Errorf("expected 503 Service Unavailable, got %d", resp.StatusCode)
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected 200 OK, got %d", resp.StatusCode)
 		}
 	})
 }
@@ -835,6 +927,20 @@ func (m *mockOpenCodeClientRunner) ListChildSessions(ctx context.Context, parent
 		return nil, common.ErrServiceUnavailable
 	}
 	return nil, nil
+}
+
+func (m *mockOpenCodeClientRunner) InterruptSession(ctx context.Context, sessionID string) error {
+	if m.failWith503 {
+		return common.ErrServiceUnavailable
+	}
+	return nil
+}
+
+func (m *mockOpenCodeClientRunner) InterruptSessionTree(ctx context.Context, rootSessionID string) error {
+	if m.failWith503 {
+		return common.ErrServiceUnavailable
+	}
+	return nil
 }
 
 func (m *mockOpenCodeClientRunner) EnsureSessionAtLocation(ctx context.Context, sessionID, title, directory string) error {

@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"agent-task-manager/internal/config"
@@ -530,6 +531,9 @@ func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attemp
 	currentPrompt := task.Prompt
 
 	for iteration := 1; iteration <= maxIterations; iteration++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if iteration > 1 {
 			r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\r\n\x1b[33m[Agent Control Plane] Starting autonomous self-repair turn (Iteration %d/%d)...\x1b[0m\r\n", iteration, maxIterations))
 		}
@@ -550,6 +554,10 @@ func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attemp
 			return execErr
 		}
 
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		// Run pre-flight verification if a test suite is present
 		if verifyCmd == "" {
 			r.broadcastLog(ctx, task.ID, attempt.ID, "\x1b[36m[Agent Control Plane]\x1b[0m No test suite detected. Skipping pre-flight verification.\r\n")
@@ -563,6 +571,9 @@ func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attemp
 		vCancel()
 
 		if vErr != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[31m[Agent Control Plane] Verification execution error: %v\x1b[0m\r\n", vErr))
 			return fmt.Errorf("verification execution error: %w", vErr)
 		}
@@ -587,6 +598,10 @@ func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attemp
 		currentPrompt = FormatVerificationFeedbackPrompt(iteration, maxIterations, vRes.Output)
 	}
 
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
 	diffRes, diffErr := git.CaptureSnapshot(ctx, localWorktreePath, "main")
 	if diffErr == nil && diffRes != nil {
 		if r.hub != nil {
@@ -596,6 +611,10 @@ func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attemp
 			len(diffRes.Files), diffRes.TotalAdditions, diffRes.TotalDeletions))
 	} else if diffErr != nil {
 		log.Printf("warning: failed to capture snapshot diff: %v", diffErr)
+	}
+
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 
 	r.broadcastLog(ctx, task.ID, attempt.ID, "\x1b[32m✔ Autonomous task run finished. Ready for review.\x1b[0m\r\n")
@@ -613,6 +632,10 @@ func (r *AgentTaskRunner) maybeAutoCreatePR(
 	localWorktreePath string,
 	diffRes *git.Result,
 ) {
+	if ctx.Err() != nil {
+		return
+	}
+
 	if r.integRepo == nil || r.credRepo == nil || r.cipher == nil || r.ghProvider == nil {
 		return
 	}
@@ -845,7 +868,9 @@ func (r *AgentTaskRunner) runInDocker(ctx context.Context, task *models.Task, at
 
 	containerID := resp.ID
 	defer func() {
-		_ = r.dockerCli.ContainerRemove(context.Background(), containerID, container.RemoveOptions{Force: true})
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		_ = r.dockerCli.ContainerRemove(cleanupCtx, containerID, container.RemoveOptions{Force: true})
 	}()
 
 	if err := r.dockerCli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
@@ -862,6 +887,13 @@ func (r *AgentTaskRunner) runInDocker(ctx context.Context, task *models.Task, at
 	select {
 	case waitErr := <-errCh:
 		if waitErr != nil {
+			if ctx.Err() != nil {
+				stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer stopCancel()
+				timeoutSec := 0
+				_ = r.dockerCli.ContainerStop(stopCtx, containerID, container.StopOptions{Timeout: &timeoutSec})
+				return ctx.Err()
+			}
 			return fmt.Errorf("error waiting for container: %w", waitErr)
 		}
 	case status := <-statusCh:
@@ -869,6 +901,10 @@ func (r *AgentTaskRunner) runInDocker(ctx context.Context, task *models.Task, at
 			return fmt.Errorf("agent container exited with status code %d", status.StatusCode)
 		}
 	case <-ctx.Done():
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stopCancel()
+		timeoutSec := 0
+		_ = r.dockerCli.ContainerStop(stopCtx, containerID, container.StopOptions{Timeout: &timeoutSec})
 		return ctx.Err()
 	}
 
@@ -900,6 +936,14 @@ func (r *AgentTaskRunner) runOnHost(ctx context.Context, task *models.Task, atte
 	cmd := exec.CommandContext(ctx, binPath, args...)
 	cmd.Dir = worktreeDir
 	cmd.Env = append(cmd.Environ(), r.BuildProcessEnv(task, model, "/home/ghug")...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return nil
+	}
+	cmd.WaitDelay = 2 * time.Second
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {

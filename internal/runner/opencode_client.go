@@ -77,7 +77,13 @@ type OpenCodeMessageDTO = dto.OpenCodeMessageDTO
 type OpenCodeClient interface {
 	GetSession(ctx context.Context, sessionID string) (*OpenCodeSessionDTO, error)
 	GetSessionMessages(ctx context.Context, sessionID string) ([]OpenCodeMessageDTO, error)
+	// ListChildSessions queries all active sessions from OpenCode daemon and filters those whose parentID matches parentID.
 	ListChildSessions(ctx context.Context, parentID string) ([]OpenCodeSessionDTO, error)
+	// InterruptSession interrupts an active session via POST /api/session/{sessionID}/interrupt.
+	// Returns nil on 200 (even if interrupted was false/idle) and 404 (safe no-op).
+	InterruptSession(ctx context.Context, sessionID string) error
+	// InterruptSessionTree interrupts the root session and all verified descendant child sessions.
+	InterruptSessionTree(ctx context.Context, rootSessionID string) error
 	PromptSession(ctx context.Context, sessionID, prompt string) error
 	CompactSession(ctx context.Context, sessionID string) error
 	EnsureSessionAtLocation(ctx context.Context, sessionID, title, directory string) error
@@ -546,6 +552,70 @@ func (c *openCodeClient) CompactSession(ctx context.Context, sessionID string) e
 	}
 
 	return nil
+}
+
+func (c *openCodeClient) InterruptSession(ctx context.Context, sessionID string) error {
+	escapedID, err := validateSessionID(sessionID)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodPost, "/api/session/"+escapedID+"/interrupt", nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if resp.StatusCode >= 500 {
+		return common.ErrServiceUnavailable
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("opencode server returned status %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+func (c *openCodeClient) InterruptSessionTree(ctx context.Context, rootSessionID string) error {
+	if _, err := validateSessionID(rootSessionID); err != nil {
+		return err
+	}
+
+	visited := make(map[string]bool)
+	var errs []error
+	c.interruptTreeHelper(ctx, rootSessionID, visited, &errs)
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
+func (c *openCodeClient) interruptTreeHelper(ctx context.Context, sessionID string, visited map[string]bool, errs *[]error) {
+	if sessionID == "" || visited[sessionID] {
+		return
+	}
+	visited[sessionID] = true
+
+	// Interrupt current session
+	if err := c.InterruptSession(ctx, sessionID); err != nil {
+		*errs = append(*errs, fmt.Errorf("failed to interrupt session %s: %w", sessionID, err))
+	}
+
+	// Discover children
+	children, listErr := c.ListChildSessions(ctx, sessionID)
+	if listErr != nil {
+		*errs = append(*errs, fmt.Errorf("failed to list child sessions for %s: %w", sessionID, listErr))
+		return
+	}
+
+	for _, child := range children {
+		if child.ID != "" && !visited[child.ID] {
+			c.interruptTreeHelper(ctx, child.ID, visited, errs)
+		}
+	}
 }
 
 func (c *openCodeClient) EnsureSessionAtLocation(ctx context.Context, sessionID, title, directory string) error {

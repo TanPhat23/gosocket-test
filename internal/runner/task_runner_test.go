@@ -2,12 +2,14 @@ package runner_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -243,6 +245,8 @@ type mockDockerClientForRunner struct {
 	createdConfigs []*container.Config
 	waitStatusCh   chan container.WaitResponse
 	waitErrCh      chan error
+	stopCalled   bool
+	removeCalled bool
 }
 
 func (m *mockDockerClientForRunner) ContainerCreate(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *ocispec.Platform, containerName string) (container.CreateResponse, error) {
@@ -259,12 +263,13 @@ func (m *mockDockerClientForRunner) ContainerWait(ctx context.Context, container
 	statusCh := make(chan container.WaitResponse, 1)
 	errCh := make(chan error, 1)
 	if m.waitStatusCh != nil {
-		select {
-		case s := <-m.waitStatusCh:
-			statusCh <- s
-		default:
-			statusCh <- container.WaitResponse{StatusCode: 0}
-		}
+		go func() {
+			select {
+			case s := <-m.waitStatusCh:
+				statusCh <- s
+			case <-ctx.Done():
+			}
+		}()
 	} else {
 		statusCh <- container.WaitResponse{StatusCode: 0}
 	}
@@ -276,10 +281,12 @@ func (m *mockDockerClientForRunner) ContainerLogs(ctx context.Context, container
 }
 
 func (m *mockDockerClientForRunner) ContainerStop(ctx context.Context, containerID string, options container.StopOptions) error {
+	m.stopCalled = true
 	return nil
 }
 
 func (m *mockDockerClientForRunner) ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error {
+	m.removeCalled = true
 	return nil
 }
 
@@ -782,10 +789,164 @@ func TestAgentTaskRunner_Watch_Failure(t *testing.T) {
 	}
 }
 
+func TestAgentTaskRunner_CancelExecution_StopsDocker(t *testing.T) {
+	tmpDir := t.TempDir()
+	repoPath := filepath.Join(tmpDir, "repo")
+	if err := runner.EnsureGitRepo(repoPath); err != nil {
+		t.Fatalf("failed to init repo: %v", err)
+	}
+
+	cfg := &config.Config{
+		OpenCodeServerURL: "http://127.0.0.1:49374",
+		HostWorktreeRoot:  filepath.Join(tmpDir, "worktrees"),
+		HostRepoRoot:      tmpDir,
+	}
+	pRepo := &mockProjectRepo{
+		project: &models.Project{
+			ID:       "proj-cancel-docker",
+			RepoPath: repoPath,
+		},
+	}
+	task := &models.Task{
+		ID:        "task-cancel-docker",
+		ProjectID: "proj-cancel-docker",
+		Title:     "Cancel Docker Task",
+		Prompt:    "Long running agent prompt",
+	}
+	attempt := &models.TaskAttempt{
+		ID:     "attempt-cancel-docker",
+		TaskID: task.ID,
+	}
+
+	mockCli := &mockDockerClientForRunner{
+		waitStatusCh: make(chan container.WaitResponse), // blocks container wait
+	}
+
+	dockerRunner := sandbox.NewRunner(mockCli)
+	ar := runner.NewAgentTaskRunner(cfg, pRepo, &mockTaskRepo{task: task}, &mockLogRepo{}, git.NewWorktreeManager(cfg.HostWorktreeRoot), dockerRunner, mockCli, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	doneCh := make(chan error, 1)
+	go func() {
+		doneCh <- ar.RunTask(ctx, task, attempt)
+	}()
+
+	// Wait briefly until runner is running
+	time.Sleep(50 * time.Millisecond)
+
+	// Cancel context
+	cancel()
+
+	select {
+	case err := <-doneCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled error from RunTask, got: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for RunTask to abort on context cancellation")
+	}
+
+	if !mockCli.stopCalled {
+		t.Errorf("expected ContainerStop to be called on cancellation")
+	}
+	if !mockCli.removeCalled {
+		t.Errorf("expected ContainerRemove to be called on cancellation")
+	}
+}
+
 func TestAgentTaskRunner_Watch_IsRunning(t *testing.T) {
 	ar := runner.NewAgentTaskRunner(nil, nil, nil, nil, nil, nil, nil, nil)
 	if ar.IsRunning("non-existent-task") {
 		t.Errorf("expected IsRunning to be false for non-existent-task")
+	}
+}
+
+func TestAgentTaskRunner_CancelExecution_StopsHostDescendants(t *testing.T) {
+	tmpDir := t.TempDir()
+	repoPath := filepath.Join(tmpDir, "repo")
+	if err := runner.EnsureGitRepo(repoPath); err != nil {
+		t.Fatalf("failed to init repo: %v", err)
+	}
+
+	// Create a dummy binary/script that spawns a child sleep process
+	scriptPath := filepath.Join(tmpDir, "fake_opencode.sh")
+	pidFilePath := filepath.Join(tmpDir, "child.pid")
+	scriptContent := fmt.Sprintf("#!/bin/sh\nsleep 30 &\necho $! > %s\nwait\n", pidFilePath)
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("failed to write fake script: %v", err)
+	}
+
+	cfg := &config.Config{
+		OpenCodeBinPath:  scriptPath,
+		HostWorktreeRoot: filepath.Join(tmpDir, "worktrees"),
+		HostRepoRoot:     tmpDir,
+	}
+	pRepo := &mockProjectRepo{
+		project: &models.Project{
+			ID:       "proj-cancel-host",
+			RepoPath: repoPath,
+		},
+	}
+	task := &models.Task{
+		ID:        "task-cancel-host",
+		ProjectID: "proj-cancel-host",
+		Title:     "Cancel Host Task",
+		Prompt:    "Prompt",
+	}
+	attempt := &models.TaskAttempt{
+		ID:     "attempt-cancel-host",
+		TaskID: task.ID,
+	}
+
+	// dockerRunner nil => falls back to host execution
+	ar := runner.NewAgentTaskRunner(cfg, pRepo, &mockTaskRepo{task: task}, &mockLogRepo{}, git.NewWorktreeManager(cfg.HostWorktreeRoot), nil, nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	doneCh := make(chan error, 1)
+	go func() {
+		doneCh <- ar.RunTask(ctx, task, attempt)
+	}()
+
+	// Wait until child.pid exists
+	var childPid int
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if data, err := os.ReadFile(pidFilePath); err == nil && len(strings.TrimSpace(string(data))) > 0 {
+			var pid int
+			if _, err := fmt.Sscanf(string(data), "%d", &pid); err == nil && pid > 0 {
+				childPid = pid
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if childPid == 0 {
+		t.Fatalf("child process was not spawned in time")
+	}
+
+	// Cancel context
+	cancel()
+
+	select {
+	case err := <-doneCh:
+		if err == nil {
+			t.Errorf("expected non-nil error from canceled RunTask, got nil")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for RunTask host execution to abort")
+	}
+
+	// Verify child process is dead
+	time.Sleep(100 * time.Millisecond)
+	proc, err := os.FindProcess(childPid)
+	if err == nil {
+		// On Unix, FindProcess always succeeds. Send signal 0 to check if alive.
+		err = proc.Signal(syscall.Signal(0))
+		if err == nil {
+			// Clean up child process
+			_ = proc.Kill()
+			t.Fatalf("spawned descendant process %d is still running after task cancellation", childPid)
+		}
 	}
 }
 
@@ -915,6 +1076,12 @@ func (m *mockOpenCodeClientForRunner) PromptSession(ctx context.Context, session
 	return nil
 }
 func (m *mockOpenCodeClientForRunner) CompactSession(ctx context.Context, sessionID string) error {
+	return nil
+}
+func (m *mockOpenCodeClientForRunner) InterruptSession(ctx context.Context, sessionID string) error {
+	return nil
+}
+func (m *mockOpenCodeClientForRunner) InterruptSessionTree(ctx context.Context, rootSessionID string) error {
 	return nil
 }
 func (m *mockOpenCodeClientForRunner) EnsureSessionAtLocation(ctx context.Context, sessionID, title, directory string) error {
@@ -1183,5 +1350,43 @@ func TestRunTask_GitHubIntegrationSyncAndPushBranch(t *testing.T) {
 	checkBranchCmd := exec.Command("git", "--git-dir", remoteDir, "rev-parse", "--verify", "task/"+task.ID)
 	if out, err := checkBranchCmd.CombinedOutput(); err != nil {
 		t.Errorf("expected branch task/%s to exist in remote bare repo, out: %s, err: %v", task.ID, string(out), err)
+	}
+
+	// 8. Defect 3: Verify cancellation before auto-PR suppresses PR creation
+	taskCancel := &models.Task{
+		ID:        "task-gh-cancel-test",
+		ProjectID: "proj-gh-integrated",
+		Title:     "Feature Canceled Task",
+		Prompt:    "Modify app.js",
+	}
+	attemptCancel := &models.TaskAttempt{
+		ID:     "attempt-gh-cancel",
+		TaskID: taskCancel.ID,
+	}
+	mockGH2 := &mockGHProviderForRunner{prURL: "https://github.com/test/repo/pull/2"}
+	arCancel := runner.NewAgentTaskRunner(
+		cfg,
+		pRepo,
+		&mockTaskRepo{task: taskCancel},
+		&mockLogRepo{},
+		git.NewWorktreeManager(cfg.HostWorktreeRoot),
+		dockerRunner,
+		mockCli,
+		nil,
+		runner.WithRunnerOpenCodeClient(mockOC),
+		runner.WithRunnerGitHubIntegration(
+			&mockIntegRepoForRunner{integs: []models.ProjectIntegration{integ}},
+			&mockCredRepoForRunner{cred: cred},
+			cipher,
+			mockGH2,
+		),
+	)
+
+	canceledCtx, cancelFn := context.WithCancel(context.Background())
+	cancelFn() // cancel immediately
+	_ = arCancel.RunTask(canceledCtx, taskCancel, attemptCancel)
+
+	if mockGH2.prCreated {
+		t.Errorf("expected PR creation to be suppressed when context is canceled")
 	}
 }
