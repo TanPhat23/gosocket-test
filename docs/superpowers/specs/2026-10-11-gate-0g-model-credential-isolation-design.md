@@ -57,7 +57,7 @@ To analyze credential security correctly, the system is partitioned into three d
 +---------------------------------------------------------------------------------------------------+
 | ZONE 0: TRUSTED CONTROL PLANE & HOST                                                              |
 |                                                                                                   |
-|  - Holds raw Model Provider API Keys (Anthropic, OpenAI, etc.) in encrypted vault/memory.        |
+|  - Holds raw Model Provider API Keys in control-plane-only secret storage and gateway memory.    |
 |  - Hosts ATM Control Plane API & Database.                                                        |
 |  - Hosts Control-Plane LLM Gateway (authenticating, rate-limiting, egress-permitting proxy).      |
 |  - Host Docker Daemon & Host OS Kernel (enforces cgroups, namespaces, seccomp, AppArmor).         |
@@ -205,7 +205,7 @@ The Control-Plane LLM Gateway is a **narrow, purpose-built model API adapter**, 
 |  4. Verify Attempt State: Confirm task attempt is currently in status 'running'.                 |
 |  5. Atomic Upper-Bound Reservation: Reserve input + max_tokens budget (SEC-0G-01).               |
 |  6. Sanitize Request: Clamp max_tokens; strip inbound headers; validate model in catalog.        |
-|  7. Inject Upstream Secret: Load encrypted provider API key from Control Plane Vault.             |
+|  7. Inject Upstream Secret: Load encrypted key from control-plane secret storage.                |
 |  8. Dispatch Upstream: Forward HTTPS request to allowlisted provider (No Redirects, SEC-0G-02).   |
 |  9. Stream & Reconcile: Stream chunks; abort on client cancel/quota hit; reconcile actual tokens. |
 |               |                                                                                   |
@@ -237,7 +237,7 @@ Gate 0D (`docs/superpowers/specs/2026-10-11-gate-0d-egress-confinement-design.md
 
 ### 6.2 Hard Gate 0D Route Reconciliation Blocker (SEC-0G-03)
 
-Under the approved Gate 0D architecture, host firewall rules drop all traffic from project sandbox bridges except traffic explicitly destined for the package proxy (`atm-egress-proxy:3128`), and strictly drop all traffic to host INPUT, host ports, and control-plane infrastructure. Consequently:
+Under the Gate 0D design the user approved for planning only (still UNQUALIFIED), host firewall rules drop all traffic from project sandbox bridges except traffic explicitly destined for the package proxy (`atm-egress-proxy:3128`), and strictly drop all traffic to host INPUT, host ports, and control-plane infrastructure. Consequently:
 - **Current Gate 0D Rules Drop LLM Gateway Traffic:** Under the current baseline Gate 0D rules, packets from the sandbox to the proposed LLM gateway will be dropped by default.
 - **Mandatory Gate 0D Contract Addition:** Before Gate 0G can be approved, qualified, or implemented, Gate 0D must explicitly define, review, and qualify a narrow routing exception permitting:
   `source: project_sandbox_bridge -> destination: dedicated_gateway_service_ip:8082`
@@ -323,6 +323,8 @@ The following questions must be resolved before drafting an implementation plan 
    What exact pricing catalog, token estimation tokenizer, and atomic reservation algorithm will the gateway use to compute and reserve budget before dispatching requests?
 5. **Dynamic Password Ingestion in Unmodified Container:**
    How can a dynamic secret be ingested by OpenCode v2.0.26 without an entrypoint script that leaves the variable in `/proc/1/environ`?
+6. **Control-Plane Provider Credential Storage & Encryption Architecture:**
+   No specific vault product or at-rest secret store has been selected for Gate 0G. Provider API keys must stay exclusively in control-plane-only storage and gateway process memory, while the concrete storage backend, encryption-at-rest mechanism, key bootstrap, access auditing, backup, and rotation lifecycles remain an unresolved Gate 0G implementation dependency. Neither a vault product nor an existing storage integration may be assumed without formal design and review.
 
 ---
 
