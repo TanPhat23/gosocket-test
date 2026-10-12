@@ -40,12 +40,12 @@ Three architectural mechanisms were evaluated against the self-hosting threat mo
 | **Recommendation** | Inadequate for CDN-backed package registries. | **REJECTED** (Env-only proxy is not a security boundary). | **PROPOSED (Direction C)** pending user review and qualification probe. |
 
 ### Why Hybrid Enforcement is Mandatory
-Relying solely on environment variables (`HTTP_PROXY`, `HTTPS_PROXY`) is ineffective because any untrusted child process can bypass them:
-```bash
-# Bypasses HTTP_PROXY trivially:
-curl --noproxy "*" http://169.254.169.254/latest/meta-data/
-python3 -c "import socket; s = socket.socket(); s.connect(('10.0.0.1', 8080))"
-```
+Relying solely on environment variables (`HTTP_PROXY`, `HTTPS_PROXY`) is ineffective because any untrusted child process can bypass them conceptually and mechanically:
+- Standard HTTP client libraries and CLI tools support flags or configuration to bypass proxying (e.g. `--noproxy "*"` or explicit transport overrides).
+- Untrusted binaries, task scripts, or malware can completely ignore process environment variables and establish direct TCP, UDP, or raw socket connections to arbitrary internal IPs, local ports, or gateway addresses using standard system calls (e.g. `socket.connect((target_ip, port))`).
+
+Because client processes control their own networking syscalls, environment-based proxy configuration is merely an operational convention, not an enforced security boundary.
+
 Conversely, relying solely on IP-based host firewall rules is impractical for package ecosystems: PyPI, npm, and Crates.io rely on multi-tenant CDNs where IPs change frequently and overlap with untrusted customer domains.
 
 Therefore, **Direction C (Hybrid)** combines the strengths of both:
