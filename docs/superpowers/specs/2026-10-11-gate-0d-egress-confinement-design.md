@@ -242,23 +242,30 @@ table inet atm_confinement {
         # Priority filter hook with accept policy so unrelated host/docker forwarding is untouched
         type filter hook forward priority 0; policy accept;
 
-        # 1. Conntrack rules scoped strictly to ATM interfaces to prevent dropping unrelated host traffic
+        # 1. Drop invalid connection states on ATM-managed interfaces
         iifname { "atm-proj-*", "atm-egress-dmz" } ct state invalid drop
-        iifname { "atm-proj-*", "atm-egress-dmz" } ct state established,related accept
-        oifname { "atm-proj-*", "atm-egress-dmz" } ct state established,related accept
 
-        # 2. Allow traffic from any ATM project bridge to the proxy DMZ on the proxy port only (IPv4 TCP)
+        # 2. Return traffic strictly between project sandboxes and the egress proxy IP/port
+        # Note: Scoped strictly to pairwise interfaces and source/destination proxy parameters
+        iifname "atm-proj-*" oifname "atm-egress-dmz" ip daddr $PROXY_IP tcp dport $PROXY_PORT ct state established,related accept
+        iifname "atm-egress-dmz" oifname "atm-proj-*" ip saddr $PROXY_IP tcp sport $PROXY_PORT ct state established,related accept
+
+        # 3. Return traffic strictly between the egress proxy DMZ and the external WAN interface
+        iifname "atm-egress-dmz" oifname $WAN_IFACE ct state established,related accept
+        iifname $WAN_IFACE oifname "atm-egress-dmz" ct state established,related accept
+
+        # 4. New connections from ATM project bridges to the forward proxy on proxy port only (IPv4 TCP)
         iifname "atm-proj-*" oifname "atm-egress-dmz" ip daddr $PROXY_IP tcp dport $PROXY_PORT ct state new accept
 
-        # 3. Allow forward traffic from the proxy DMZ to WAN for upstream package registries & DNS
+        # 5. Outbound new connections from forward proxy DMZ to external WAN for approved package ports & DNS
         iifname "atm-egress-dmz" oifname $WAN_IFACE tcp dport 443 ct state new accept
         iifname "atm-egress-dmz" oifname $WAN_IFACE udp dport 53 ct state new accept
         iifname "atm-egress-dmz" oifname $WAN_IFACE tcp dport 53 ct state new accept
 
-        # 4. Drop any attempts by proxy to initiate new connections into project sandboxes
+        # 6. Drop any attempts by proxy to initiate new connections into project sandboxes
         iifname "atm-egress-dmz" oifname "atm-proj-*" drop
 
-        # 5. Default-deny for all other project bridge forwarding (drops direct WAN, IPv6, inter-project bridge traffic)
+        # 7. Default-deny for all other project bridge forwarding (drops direct WAN, IPv6, inter-project bridge traffic)
         iifname "atm-proj-*" drop
     }
 
@@ -266,14 +273,18 @@ table inet atm_confinement {
         # Priority filter hook with accept policy to preserve unrelated host services
         type filter hook input priority 0; policy accept;
 
-        # Allow established/related return packets to host only for ATM interfaces
-        iifname { "atm-proj-*", "atm-egress-dmz" } ct state established,related accept
-
-        # Default-deny: Project sandboxes must NEVER reach any host-bound listening service or gateway IP
+        # 1. Default-deny: Project sandboxes must NEVER reach any host-bound listening service or gateway IP.
+        # Dropped unconditionally BEFORE any conntrack evaluation to terminate pre-existing/stale flows.
         iifname "atm-proj-*" drop
+
+        # 2. Allow established/related return packets to host only for the DMZ management/proxy interface
+        iifname "atm-egress-dmz" ct state established,related accept
     }
 }
 ```
+
+> **Operational Note on Conntrack Invalidation upon Ruleset Reload:**
+> When applying or reloading firewall rules on a host with pre-existing or dirty network states, active kernel conntrack table entries might match established rules if interfaces were previously unconfined. Operators should execute `conntrack -D -i atm-proj-*` (or flush conntrack entries for project bridge interfaces) during initial deployment or configuration reload to guarantee immediate fail-closed termination of any stale connections.
 
 ---
 
