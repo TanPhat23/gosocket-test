@@ -267,6 +267,9 @@ table inet atm_confinement {
 
         # 7. Default-deny for all other project bridge forwarding (drops direct WAN, IPv6, inter-project bridge traffic)
         iifname "atm-proj-*" drop
+
+        # 8. Default-deny for all other forward traffic originating from the DMZ (blocks lateral forwarding to internal bridges/subnets)
+        iifname "atm-egress-dmz" drop
     }
 
     chain input {
@@ -277,14 +280,18 @@ table inet atm_confinement {
         # Dropped unconditionally BEFORE any conntrack evaluation to terminate pre-existing/stale flows.
         iifname "atm-proj-*" drop
 
-        # 2. Allow established/related return packets to host only for the DMZ management/proxy interface
-        iifname "atm-egress-dmz" ct state established,related accept
+        # 2. Default-deny: Egress DMZ proxy container must NEVER reach host-bound services (SSH, Docker API, DBs).
+        # Note on Proxy DNS: Forward proxy resolves external names via public upstream resolvers routed through WAN ($WAN_IFACE),
+        # NOT via host-listening resolvers (systemd-resolved). If an operator intentionally configures the proxy to query a
+        # host-local DNS resolver, an exact IP/port accept rule (ip daddr <host_dns_ip> udp dport 53 accept) must be explicitly
+        # inserted here prior to the drop. Otherwise, all DMZ-to-host input traffic is strictly blocked.
+        iifname "atm-egress-dmz" drop
     }
 }
 ```
 
-> **Operational Note on Conntrack Invalidation upon Ruleset Reload:**
-> When applying or reloading firewall rules on a host with pre-existing or dirty network states, active kernel conntrack table entries might match established rules if interfaces were previously unconfined. Operators should execute `conntrack -D -i atm-proj-*` (or flush conntrack entries for project bridge interfaces) during initial deployment or configuration reload to guarantee immediate fail-closed termination of any stale connections.
+> **Operational Note on Pre-Existing Conntrack State Invalidation:**
+> When applying or reloading firewall rules on a host with pre-existing network flows, exact tuple matching and unconditional interface drops in `chain forward` and `chain input` ensure that unapproved flows cannot bypass rules via generic conntrack acceptance. If an operator requires immediate eviction of active conntrack entries for project subnets without disrupting other host workloads, scoped tuple deletion can be executed by matching project subnets (e.g. `conntrack -D -s <project_subnet>` and `conntrack -D -d <project_subnet>`). Global flushing (`conntrack -F`) is prohibited on multi-tenant hosts as it terminates active connections across unrelated host workloads.
 
 ---
 
