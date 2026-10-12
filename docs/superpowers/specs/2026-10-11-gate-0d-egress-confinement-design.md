@@ -1,9 +1,10 @@
 # Specification: Gate 0D Default-Deny Sandbox Egress Architecture & Qualification Design
 
-**Status:** PROPOSED / Pending User Review and Checkpoint A
+**Status:** APPROVED (Design & Planning Only; User Approved 2026-10-12) / Pending Checkpoint A
 **Gate Status:** UNQUALIFIED (Blocks implementation of Sandbox Network Infrastructure and dependent tasks)
+**User Design Approval:** Approved by user on 2026-10-12 ("i approved the design look good to me"). Clarification: This approval applies solely to the architectural design and planning. It does not constitute Checkpoint A completion, security sign-off, qualification, implementation approval, or authorization for host changes.
 **Author:** Documentation Implementation Specialist
-**Date:** 2026-10-11
+**Date:** 2026-10-11 (Updated 2026-10-12)
 **Target Platform:** Single-Host Linux (`linux/amd64`), Native Docker Engine, Operator-Managed Firewall (`nftables` / `iptables`)
 **Specification File:** `docs/superpowers/specs/2026-10-11-gate-0d-egress-confinement-design.md`
 
@@ -31,13 +32,13 @@ Gate 0D addresses **network isolation only**. Filesystem mounts, shared volume s
 
 Three architectural mechanisms were evaluated against the self-hosting threat model:
 
-| Dimension | Direction A: Host Packet Filtering Only (`nftables`/`iptables`) | Direction B: Forward Proxy Container Only (App-Level Egress) | Direction C: Hybrid Host Packet Filtering + Isolated DMZ Forward Proxy (PROPOSED) |
+| **Dimension** | **Direction A: Host Packet Filtering Only (`nftables`/`iptables`)** | **Direction B: Forward Proxy Container Only (App-Level Egress)** | **Direction C: Hybrid Host Packet Filtering + Isolated DMZ Forward Proxy (SELECTED)** |
 |---|---|---|---|
 | **L3/L4 Confinement** | Strong. Kernel-enforced default-deny on bridge interfaces drops direct IP egress, RFC 1918, and metadata. | Ineffective as a security boundary. Relies solely on container env (`HTTP_PROXY`). Untrusted task code or malware ignores env and opens direct sockets. | Strong. Kernel-enforced host packet filtering drops all direct IP, metadata, and cross-project routing. Sandboxes can physically route only to proxy IP:port. |
 | **L7 FQDN Filtering** | Extremely brittle. L3 firewalls cannot inspect HTTP `CONNECT` or SNI reliably across dynamic IPs and shared CDNs (Cloudflare, Fastly, AWS CloudFront). | Strong at L7, but easily bypassed at L3/L4 if container has direct network access. | Strong. Forward proxy terminates/inspects HTTP `CONNECT` requests, enforcing an exact FQDN allowlist regardless of upstream IP churn. |
 | **Host Privilege Requirement** | High if orchestrated by ATM (would require ATM to have `CAP_NET_ADMIN` or root Docker privileges, violating the principle of least privilege). | Low for ATM (standard container deployment), but fails confinement guarantees. | Clean separation: Host operator owns static kernel packet filtering; ATM orchestrates unprivileged containers with zero `CAP_NET_ADMIN`. |
 | **Inter-Project Isolation** | Achievable if host rules isolate each bridge subnet. | Fails if multiple project containers attach to the same proxy bridge. | Strong. Each project uses an isolated Docker bridge. Proxy sits on a separate egress DMZ network. No shared bridges. |
-| **Recommendation** | Inadequate for CDN-backed package registries. | **REJECTED** (Env-only proxy is not a security boundary). | **PROPOSED (Direction C)** pending user review and qualification probe. |
+| **Recommendation** | Inadequate for CDN-backed package registries. | **REJECTED** (Env-only proxy is not a security boundary). | **APPROVED DESIGN (Direction C)** (Design approved by user on 2026-10-12; qualification probe and Checkpoint A pending). |
 
 ### Why Hybrid Enforcement is Mandatory
 Relying solely on environment variables (`HTTP_PROXY`, `HTTPS_PROXY`) is ineffective because any untrusted child process can bypass them conceptually and mechanically:
