@@ -110,21 +110,22 @@ Per user decision, **both Git LFS (Large File Storage) and Git submodules are st
   - Never checks out files in its staging area (operates strictly on bare staging repositories).
 
 #### 3. Volume Transfer Helper (Ephemeral Volume Worker)
-- **Role:** Manages the persistent project volume filesystem: initializes bare repository mirrors, applies bundles, checks for forbidden files (LFS/submodules), and creates task worktrees.
+- **Role:** Manages the persistent project volume filesystem: initializes bare repository mirrors, applies bundles, checks for forbidden files (LFS/submodules), and provisions task worktree directories.
 - **Security Boundaries:**
   - Has **zero network access** (`network_mode: none`).
   - Has **zero access to the Docker socket**.
   - Has **zero credentials, tokens, or auth headers**.
   - Runs as an unprivileged user (`no-new-privileges:true`, `--cap-drop=ALL`, `--read-only` rootfs with ephemeral tmpfs scratch at `/tmp`).
   - Mounts **only** the target project's dedicated data volume at `/workspaces`.
-- **Git Execution Hardening & Config Isolation:**
+- **Git Execution Hardening & Untrusted Config Isolation:**
   - Does not communicate with any external remote.
   - Acts solely on offline `git bundle` files spooled into transient tmpfs scratch (`/tmp/scratch.bundle`).
-  - **Untrusted Volume Config Defenses:** Linked worktrees and repositories inside `/workspaces` may contain untrusted, attacker-controlled `.git/config` files written by sandbox task scripts. When invoked, every Git command in the Volume Transfer Helper must enforce strict configuration isolation:
-    - `-c core.hooksPath=/dev/null` (prevents arbitrary hook script execution).
-    - `-c core.fsmonitor=false` (prevents malicious file system monitor command injection).
-    - Fixed controller-defined options overriding untrusted volume directives.
-    - Never executes hooks, filters, or credential helpers.
+  - **Untrusted Volume Config Defenses:** Linked worktrees and repositories inside `/workspaces` may contain untrusted, attacker-controlled `.git/config` files written by sandbox task scripts (such as `filter.<name>.smudge` or `filter.<name>.process` paired with `.gitattributes`). To eliminate hostile code execution inside the helper:
+    - **No-Checkout Invariant:** The Volume Transfer Helper invokes `git worktree add --no-checkout`. The helper **never checks out files** into the working directory. File checkout (`git checkout`) is delegated exclusively to the untrusted project sandbox container where task code already executes within its dropped-capability, network-confined boundary.
+    - Configuration overrides on helper commands:
+      - `-c core.hooksPath=/dev/null` (disables hook execution).
+      - `-c core.fsmonitor=false` (disables filesystem monitor binary invocation).
+    - Under `--no-checkout`, Git provisions only the worktree administrative directory and `.git` pointer file; no blob smudging or filter execution is ever triggered within the Volume Transfer Helper.
 
 ---
 
@@ -146,44 +147,48 @@ Official Git documentation (`git-bundle(1)`) defines a Git bundle as an offline 
    - If `/workspaces/<repo-id>/repository.git` does not exist: creates a bare mirror repository using `git clone --bare /tmp/scratch.bundle /workspaces/<repo-id>/repository.git`.
    - If it exists: runs `git -C /workspaces/<repo-id>/repository.git -c core.hooksPath=/dev/null -c core.fsmonitor=false fetch /tmp/scratch.bundle refs/heads/<base-branch>:refs/heads/<base-branch>`.
    - Ephemeral scratch file `/tmp/scratch.bundle` is immediately deleted after ingestion.
-7. **Worktree Provisioning:** The helper creates the task worktree with config isolation:
+7. **Worktree Provisioning (No-Checkout):** The helper provisions the task worktree without checking out files, enforcing configuration isolation:
    ```bash
    git -C /workspaces/<repo-id>/repository.git \
      -c core.hooksPath=/dev/null \
      -c core.fsmonitor=false \
-     worktree add \
+     worktree add --no-checkout \
      -b task/<task-id> \
      /workspaces/<repo-id>/tasks/<task-id> \
      <base-branch>
    ```
+   *Sandbox Checkout Delegation:* When the task container starts, the unprivileged task sandbox process performs `git checkout` inside `/workspaces/<repo-id>/tasks/<task-id>`. Because untrusted task scripts already execute in the sandbox, filter or script execution there remains strictly within the untrusted project sandbox boundary and cannot compromise the helper or control plane.
 8. **Origin Sanitization:** The repository's configured origin inside `/workspaces/<repo-id>/repository.git` is explicitly set to a local placeholder (or points to the local bare path). No remote URLs containing userinfo, tokens, or credential-helper directives exist.
 
 ### 5.2 Task Push & Upstream Synchronization Flow
-Per `git-bundle(1)`, `git bundle` is an offline transport format; Git cannot execute `git push` into a bundle file. Furthermore, an incremental bundle (`task/<task-id> ^<base-branch>`) requires that the recipient repository already contains the exact prerequisite base commits. If fetched into a bare staging repository lacking base commits, `git fetch` aborts with `error: Repository lacks these prerequisite commits`.
+Per `git-bundle(1)`, `git bundle` is an offline transport format; Git cannot execute `git push` into a bundle file. Furthermore, if an incremental bundle (`task/<task-id> ^<base-branch>`) is used, any upstream rebase, force-update, or concurrent branch movement causes `git fetch` to fail with `error: Repository lacks these prerequisite commits`.
 
-Therefore, pushing changes back to GitHub follows a verified, prerequisite-safe two-phase reverse flow:
+To provide deterministic, race-free push synchronization in v1:
+- The Volume Transfer Helper exports a **self-contained bundle of the task branch** (`refs/heads/task/<task-id>` without prerequisite exclusions).
+- Self-contained bundles include all commit history required by the task branch, ensuring that upstream branch rewrites, force-pushes, or rebase events never cause missing prerequisite errors.
+- Bounded bundle size and object count limits are enforced during export/import to prevent resource exhaustion.
 
 **Step-by-Step Flow:**
-1. **Helper Bundle Export:** When a task completes and commits code, the Volume Transfer Helper is invoked against the project volume. It verifies that commits on `task/<task-id>` contain no forbidden LFS pointers or submodules. It creates an incremental bundle of the task branch into tmpfs scratch with strict config isolation:
+1. **Helper Bundle Export:** When a task completes and commits code, the Volume Transfer Helper is invoked against the project volume. It verifies that commits on `task/<task-id>` contain no forbidden LFS pointers or submodules. It creates a self-contained bundle of the task branch into tmpfs scratch with strict config isolation:
    ```bash
    git -C /workspaces/<repo-id>/repository.git \
      -c core.hooksPath=/dev/null \
      -c core.fsmonitor=false \
      bundle create /tmp/export.bundle \
-     refs/heads/task/<task-id> ^refs/heads/<base-branch>
+     refs/heads/task/<task-id>
    ```
-   and streams `/tmp/export.bundle` to stdout (or pipes stdout directly using `git bundle create - refs/heads/task/<task-id> ^refs/heads/<base-branch>`), then wipes the tmpfs file.
+   and streams `/tmp/export.bundle` to stdout (or pipes stdout directly using `git bundle create - refs/heads/task/<task-id>`), then wipes the tmpfs file.
 2. **Stream Relay & Worker Spooling:** The control plane reads the bundle stream and pipes it into the Credentialed Git Worker, which spools the payload into its ephemeral tmpfs scratch (`/tmp/task.bundle`).
-3. **Prerequisite-Safe Worker Staging Import:** To ensure prerequisite commits exist:
-   - The Credentialed Worker initializes its private bare staging repository (`/worker/staging.git`).
-   - The worker seeds `/worker/staging.git` with the remote base branch first (via authenticated `git fetch https://github.com/<owner>/<repo>.git refs/heads/<base-branch>:refs/heads/<base-branch>` using the in-memory PAT helper, or by retaining base objects from the initial staging session).
-   - The worker then safely fetches the incremental task bundle:
+3. **Deterministic Worker Staging Import:**
+   - The Credentialed Worker initializes an empty bare staging repository (`/worker/staging.git`).
+   - The worker imports the self-contained task bundle:
      ```bash
      git -C /worker/staging.git \
        -c core.hooksPath=/dev/null \
        fetch /tmp/task.bundle \
        refs/heads/task/<task-id>:refs/heads/task/<task-id>
      ```
+   - Because the task bundle is self-contained, import succeeds deterministically regardless of upstream branch changes.
    - The temporary file `/tmp/task.bundle` is immediately unlinked.
 4. **Verified Upstream Push:** The worker executes a strictly validated push against the configured GitHub remote:
    ```bash
@@ -269,43 +274,47 @@ This section defines the formal, reproducible qualification battery required to 
 3. **Fixture Git Repository & Network Accommodation:**
    - A fixture repository served over TLS by a mock HTTPS Git server running on the isolated test Docker network.
    - *Harness Egress Accommodation:* Production worker policy enforces strict GitHub HTTPS (`github.com:443`). To allow the qualification test harness to validate the worker without modifying production container networking logic, the test harness maps `github.com` via internal container DNS / `/etc/hosts` to the mock fixture server's isolated test network IP, or mounts a test CA bundle into the worker's trust store. Outbound internet access remains completely blocked; no public network access is granted.
-4. **Synthetic Canary Credential:** A high-entropy synthetic canary token:
-   `CANARY_TOKEN="ghp_ATM_CANARY_0C_7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c"`
-   *Constraint:* The canary must exist solely in the test harness memory and ephemeral worker IPC. It must never appear in test container environment variables, command-line arguments, persistent files, or tracked git history.
+4. **Synthetic Canary Credential (In-Memory Generation):**
+   - The test harness generates a high-entropy canary token in test memory at runtime using a CSPRNG (`ghp_ATM_CANARY_` prefix followed by 32 cryptographically secure random hexadecimal characters).
+   - *Strict Tracking & Environment Invariant:* The canary token is **never hardcoded or committed to git history**, and must **never appear in shell command arguments (`argv`), host/container environment variables (`env`), inspectable container configurations, or tracked documentation**. The token is delivered exclusively via secure in-memory IPC/pipe directly to the test credential helper stdin.
 
 ### 9.2 Probe Test Cases & Verification Assertions
 
 #### Probe 1: Positive Clone & Worktree Round-Trip
 - **Procedure:**
-  1. Spawns Credentialed Worker with canary token via in-memory stdin helper.
+  1. Spawns Credentialed Worker with runtime CSPRNG canary token via in-memory stdin helper.
   2. Worker fetches from fixture HTTPS repository and streams `git bundle` to Volume Transfer Helper.
-  3. Helper spools bundle to tmpfs and unpacks into `probe-gate0c-data` at `/workspaces/repo-001/repository.git`, then creates worktree `task-001`.
+  3. Helper spools bundle to tmpfs and unpacks into `probe-gate0c-data` at `/workspaces/repo-001/repository.git`, then runs `git worktree add --no-checkout` to create worktree `task-001`.
+  4. Task sandbox container attaches to volume and executes `git checkout`.
 - **Assertions:**
   - Helper container exits with status `0`.
-  - Directory `/workspaces/repo-001/tasks/task-001` exists and contains tracked repository files.
+  - Directory `/workspaces/repo-001/tasks/task-001` exists and contains tracked repository files after sandbox checkout.
   - Worktree is on branch `task/task-001`.
 
-#### Probe 2: Canary Leakage Scan (Volume, Config, History, Env, Args)
+#### Probe 2: Canary Leakage Scan (Volume, Config, History, Env, Args, /proc)
 - **Procedure:**
-  - Execute exhaustive redaction scan across the entire project data volume, Docker inspect metadata for all involved containers, and container process trees.
+  - Execute exhaustive redaction scan across the entire project data volume, Docker inspect metadata for all involved containers, image layer histories, runtime process command-line tables, and container log streams.
 - **Assertions:**
   1. `git -C /workspaces/repo-001/repository.git remote -v`: Must NOT contain credentials or auth headers.
   2. `cat /workspaces/repo-001/repository.git/config`: Must NOT contain `extraHeader`, `token`, `password`, or canary string.
-  3. Volume file inspection: Full grep of `/workspaces` must return ZERO occurrences of `$CANARY_TOKEN` or `Authorization:`.
+  3. Volume file inspection: Full grep of `/workspaces` must return ZERO occurrences of the canary token or `Authorization:`.
   4. Docker inspect across all containers:
-     - `docker inspect <credentialed-worker-container>`: Environment variables (`Config.Env`) and command arguments (`Config.Cmd`, `Config.Entrypoint`, `Args`) must contain ZERO occurrences of `$CANARY_TOKEN` or `Authorization:`.
-     - `docker inspect <helper-container>`: Environment variables (`Config.Env`) and command arguments (`Args`) must contain ZERO occurrences of `$CANARY_TOKEN` or `Authorization:`.
-     - `docker inspect <sandbox-container>`: Environment variables (`Config.Env`) and command arguments (`Args`) must contain ZERO occurrences of `$CANARY_TOKEN` or `Authorization:`.
-  5. Container stdout/stderr logs across all three containers (`credentialed-worker`, `helper`, `sandbox`) must contain ZERO occurrences of `$CANARY_TOKEN` or `Authorization:`.
+     - `docker inspect <credentialed-worker-container>`: Environment variables (`Config.Env`) and command arguments (`Config.Cmd`, `Config.Entrypoint`, `Args`) must contain ZERO occurrences of the canary token or `Authorization:`.
+     - `docker inspect <helper-container>`: Environment variables (`Config.Env`) and command arguments (`Args`) must contain ZERO occurrences of the canary token or `Authorization:`.
+     - `docker inspect <sandbox-container>`: Environment variables (`Config.Env`) and command arguments (`Args`) must contain ZERO occurrences of the canary token or `Authorization:`.
+  5. Container stdout/stderr logs across all three containers (`credentialed-worker`, `helper`, `sandbox`) must contain ZERO occurrences of the canary token or `Authorization:`.
+  6. Docker image history inspection: `docker history <worker-image>` and `docker history <helper-image>` must show ZERO occurrences of canary credentials or auth headers baked into image layers.
+  7. Runtime process argument inspection: During active operations, inspecting `/proc/$PID/cmdline` and `ps aux` across host and containers must verify that credentials never appear in command-line arguments.
 
-#### Probe 3: Positive Commit, Bundle Export & Push Round-Trip
+#### Probe 3: Positive Commit, Bundle Export & Push Round-Trip (With Simulated Base Branch Drift)
 - **Procedure:**
   1. Sandbox modifies a file in `/workspaces/repo-001/tasks/task-001`, stages, and commits it.
-  2. Helper exports bundle `refs/heads/task/task-001 ^refs/heads/main` to stdout.
-  3. Worker imports bundle and pushes to fixture HTTPS remote using canary token.
+  2. Simulate upstream base branch rebase/amend or concurrent drift on the fixture remote.
+  3. Helper exports self-contained bundle `refs/heads/task/task-001` to stdout without prereq exclusion.
+  4. Worker imports bundle into empty bare staging repository and pushes to fixture HTTPS remote using canary token.
 - **Assertions:**
   - Upstream fixture repository receives branch `task/task-001` with new commit.
-  - Worker push exits with status `0`.
+  - Worker push exits with status `0`, succeeding deterministically despite upstream base drift.
   - Neither force-push nor pushes to `main` are permitted.
 
 #### Probe 4: TLS Insecurity Negative Test
@@ -331,14 +340,23 @@ This section defines the formal, reproducible qualification battery required to 
   - Operation terminates immediately with error code `ERR_LFS_NOT_SUPPORTED`.
   - Task execution blocked.
 
-#### Probe 7: Path Traversal & Identifier Escape Negative Test
+#### Probe 7: Untrusted Volume Config & Malicious Filter Negative Test
+- **Procedure:**
+  - Supply a repository with a `.gitattributes` file mapping files to a malicious smudge filter (`* filter=malicious`), and inject `filter.malicious.smudge = "touch /tmp/PWNED_HELPER"` into `/workspaces/<repo-id>/repository.git/config`.
+  - Execute Volume Transfer Helper worktree provisioning (`worktree add --no-checkout`).
+- **Assertions:**
+  - Volume Transfer Helper exits with status `0`.
+  - Marker file `/tmp/PWNED_HELPER` is NOT created within the Volume Transfer Helper container.
+  - Proves malicious filter was not executed by the helper.
+
+#### Probe 8: Path Traversal & Identifier Escape Negative Test
 - **Procedure:**
   - Attempt to invoke sync using malicious repo/task IDs containing relative paths (`../../etc`, `repo/sub`).
 - **Assertions:**
   - Control plane rejects identifiers at input validation boundary.
   - Volume helper path validation prevents any directory creation outside `/workspaces/<safe-id>`.
 
-#### Probe 8: Sandbox Network Confinement Verification (Gate 0D Synergy)
+#### Probe 9: Sandbox Network Confinement Verification (Gate 0D Synergy)
 - **Procedure:**
   - From inside the task sandbox container, attempt network connections to GitHub HTTPS (`curl -m 2 https://github.com`) and local Docker socket (`curl --unix-socket /var/run/docker.sock`).
 - **Assertions:**
