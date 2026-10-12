@@ -112,7 +112,7 @@ The deployment topology strictly isolates project containers, control-plane mana
    - The proxy container must be permitted outbound forwarding to the host WAN interface for DNS (`udp/tcp dport 53`) and outbound HTTPS (`tcp dport 443`) to resolve and connect to allowlisted upstream package registries.
 3. **Stateful Forwarding Rules (Host Kernel):**
    - **Direction: Sandbox -> Proxy:** Allowed solely for `tcp dport 3128` destined to the proxy IP (e.g., `172.30.200.10`).
-   - **Direction: Proxy -> Sandbox:** Established and related connections only (`ct state established,related accept`). New inbound connections initiated by the proxy into the sandbox are **strictly dropped**.
+   - **Direction: Proxy -> Sandbox:** Established return reply connections only (`ct direction reply ct state established accept`). New inbound connections initiated by the proxy into the sandbox are **strictly dropped**. Note: Secondary `related` helper connections are intentionally omitted to avoid broad connection matching; PMTU/ICMP error-handling dynamics remain an unresolved qualification consideration.
    - **Direction: Sandbox -> Direct External WAN:** Dropped.
    - **Direction: Sandbox -> Host Gateway / Host IP (INPUT chain):** Default dropped (`iifname "atm-proj-*" drop`). Prevents sandbox from reaching any host-bound services (SSH, Docker socket proxies, local management, control plane).
    - **Direction: Sandbox A -> Sandbox B (Inter-project forwarding):** Dropped.
@@ -338,25 +338,28 @@ Each supported package manager toolchain must successfully fetch package metadat
 All unauthorized requests must fail closed with connection timeouts or immediate network unreachable errors. To rigorously verify Layer-3 kernel filtering (rather than Layer-7 proxy filtering), probes testing direct network paths explicitly disable or bypass proxy environment variables (`--noproxy "*"` or `env -u HTTP_PROXY -u HTTPS_PROXY`).
 
 > **CRITICAL QUALIFICATION TESTBED MANDATE:**
-> Probes must **never** target `169.254.169.254` or any live cloud provider instance metadata service (IMDS). Probing real metadata endpoints risks accidental data retrieval or credential exposure on cloud VMs. All negative destination tests must run inside an isolated, disposable Linux test host or QEMU/KVM VM using controlled canary listeners (e.g. a dedicated canary container on a dummy IP or blocked host gateway port). Every negative probe must have a corresponding positive control verifying that the canary listener is actively reachable when firewall rules are deliberately absent, and reliably blocked when rules are active:
+> 1. Probes must **never** target `169.254.169.254` or any live cloud provider instance metadata service (IMDS). Probing real metadata endpoints risks accidental data retrieval or credential exposure on cloud VMs.
+> 2. Probes must **never** target public third-party endpoints (e.g. `1.1.1.1` or `8.8.8.8`) for negative egress verification. Negative probes must remain entirely self-contained within the isolated disposable test fixture.
+> 3. All negative destination tests must run inside an isolated, disposable Linux test host or QEMU/KVM VM using controlled canary listeners (e.g. a dedicated canary container on a dummy WAN-side IP `198.51.100.50` or blocked host gateway port).
+> 4. **Rigorous Positive/Negative Controls:** Every canary test must have a demonstrated **positive control** (proving the listener is actively reachable and receives traffic when ATM rules are deliberately absent in the test fixture) and a verified **negative control** (proving packets are dropped at Layer 3 when ATM rules are enabled). For TCP endpoints, probes must verify timeout/zero bytes rather than application-layer protocol mismatches (e.g. using `curl` against an SSH or Postgres port which could fail with protocol parsing errors after a successful TCP handshake). For UDP endpoints, connection return codes are insufficient; the test must observe that 0 packets reach the controlled canary listener via packet capture.
 
 | Test ID | Target / Test Condition | Command Inside Container | Expected Behavior / Error Assertion |
 |---|---|---|---|
-| `NEG-0D-01` | Controlled Canary Service (L3 Drop) | `curl --noproxy "*" -m 2 http://172.30.1.1:9999/canary` | Timeout (28) or Connection dropped (Controlled test canary listener) |
-| `NEG-0D-02` | Host Gateway Mock API (L3 Drop) | `curl --noproxy "*" -m 2 http://172.30.1.1:8080/health` | Timeout (28) or Connection refused/unreachable |
-| `NEG-0D-03` | Host Management Canary (L3 Drop) | `curl --noproxy "*" -m 2 http://172.30.1.1:2222` | Timeout (28) or Connection dropped (Mock SSH canary listener) |
-| `NEG-0D-04` | Control Plane DB Mock (L3 Drop) | `curl --noproxy "*" -m 2 http://172.28.0.2:5432` | Timeout (28) or Network unreachable (Mock DB on backend network `172.28.0.0/16`) |
-| `NEG-0D-05` | Peer Project Sandbox (L3 Drop) | `curl --noproxy "*" -m 2 http://172.30.2.2:80` | Timeout (28) or Host unreachable |
-| `NEG-0D-06` | Direct WAN IP (L3 Bypass) | `curl --noproxy "*" -m 2 http://1.1.1.1` | Timeout (28) or Network unreachable |
-| `NEG-0D-07` | Direct WAN IP without Env | `env -u HTTP_PROXY -u HTTPS_PROXY curl -m 2 http://1.1.1.1` | Timeout (28) or Network unreachable |
+| `NEG-0D-01` | Controlled Gateway Canary (L3 Drop) | `curl --noproxy "*" -m 2 http://172.30.1.1:9999/canary` | Timeout (exit 28); 0 bytes exchanged (Controlled HTTP test canary listener) |
+| `NEG-0D-02` | Host Gateway Mock API (L3 Drop) | `curl --noproxy "*" -m 2 http://172.30.1.1:8080/health` | Timeout (exit 28); 0 bytes exchanged (Controlled HTTP mock API) |
+| `NEG-0D-03` | Host Management Canary (L3 Drop) | `nc -z -v -w 2 172.30.1.1 2222` | Connection timed out (exit != 0); 0 bytes exchanged (Controlled TCP mock listener) |
+| `NEG-0D-04` | Control Plane DB Mock (L3 Drop) | `nc -z -v -w 2 172.28.0.2 5432` | Connection timed out / unreachable (exit != 0); 0 bytes exchanged (Controlled mock listener on `172.28.0.0/16`) |
+| `NEG-0D-05` | Peer Project Sandbox (L3 Drop) | `curl --noproxy "*" -m 2 http://172.30.2.2:80` | Timeout (exit 28) or Host unreachable (Controlled peer sandbox canary) |
+| `NEG-0D-06` | Controlled WAN Test IP (L3 Bypass) | `curl --noproxy "*" -m 2 http://198.51.100.50:80/canary` | Timeout (exit 28); 0 bytes exchanged (Controlled WAN fixture IP, never public internet) |
+| `NEG-0D-07` | Controlled WAN IP without Env | `env -u HTTP_PROXY -u HTTPS_PROXY curl -m 2 http://198.51.100.50:80/canary` | Timeout (exit 28); 0 bytes exchanged (Controlled WAN fixture IP, never public internet) |
 | `NEG-0D-08` | GitHub Direct Access (L7 Proxy) | `curl -m 2 https://github.com` | Blocked by proxy (HTTP 403 Forbidden) |
 | `NEG-0D-09` | Model Provider API (L7 Proxy) | `curl -m 2 https://api.anthropic.com` | Blocked by proxy (HTTP 403 Forbidden) |
 | `NEG-0D-10` | Non-Allowed Domain (L7 Proxy) | `curl -m 2 https://example.com` | Blocked by proxy (HTTP 403 Forbidden) |
-| `NEG-0D-11` | Raw UDP / QUIC (L3 Drop) | `nc -z -v -u -w 2 1.1.1.1 53` | Timeout or Network unreachable |
+| `NEG-0D-11` | Controlled WAN UDP Canary (L3 Drop) | `nc -z -v -u -w 2 198.51.100.50 5353` | Timeout / 0 packets received at controlled WAN UDP packet capture |
 | `NEG-0D-12` | Raw DNS Exfiltration (L3 Drop) | `dig @127.0.0.11 secret.example.com` | Connection timed out / No servers reachable (Host WAN `tcpdump port 53` must show 0 egress packets) |
 | `NEG-0D-13` | Proxy Reverse Connection | From proxy: `curl -m 2 http://172.30.1.2:80` | Dropped by host forward filter (Timeout) |
 | `NEG-0D-14` | Proxy Container Stopped | Stop proxy container; run `POS-0D-01` | Connection refused / Proxy unreachable (Fails closed) |
-| `NEG-0D-15` | Missing/Flushed Host Firewall | Flush `atm_confinement` ruleset; run canary | Canary fails; container launch aborted (Fails closed) |
+| `NEG-0D-15` | Missing/Flushed Host Firewall | Flush `atm_confinement` ruleset; run preflight | Canary probe connects to blocked canary target; preflight detects missing firewall and aborts container launch (Fails closed) |
 
 ---
 
@@ -382,3 +385,4 @@ All unauthorized requests must fail closed with connection timeouts or immediate
 1. **Pre-Implementation Blocker (Host Firewall Verification):** How ATM reliably verifies the health of operator-managed host firewall rules without possessing host root privileges remains a blocker requiring user/operator agreement before implementation begins.
 2. **Container DNS Resolution Behavior:** The behavior of `--dns=127.0.0.1` in suppressing `127.0.0.11` forwarding must be empirically tested on the authorized qualification host.
 3. **No TLS Interception (MITM):** Because TLS inspection is not performed, payload exfiltration through legitimate HTTPS `CONNECT` tunnels to allowlisted domains remains a residual risk, mitigated by absence of credentials inside the sandbox.
+4. **Shared Proxy Compromise & Public Egress Blast Radius:** The shared forward proxy is a cross-project trust component. Host-level stateful packet filtering successfully isolates the proxy from reaching host services or project bridge interfaces. However, if the proxy process itself is compromised (or proxy policy bypassed), an adversary could potentially exfiltrate data to arbitrary external endpoints over the proxy's allowed outbound WAN protocols (TCP 443, UDP/TCP 53). Restricting proxy DNS egress to an operator-configured upstream DNS resolver IP (rather than arbitrary WAN DNS servers) mitigates this risk; where unconstrained WAN DNS egress remains permitted, it must be acknowledged as a residual risk. Under no circumstances should the shared proxy be considered to have zero blast radius upon container compromise.
