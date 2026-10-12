@@ -75,7 +75,7 @@ The deployment topology strictly isolates project containers, control-plane mana
 |                   |                                                   |                           |
 |                   +------------------\             /------------------+                           |
 |                                       v           v                                               |
-|                    [ Host Kernel FORWARD Filter: DROP by default ]                                |
+|                    [ ATM Forward Confinement: DROP by default on ATM interfaces ]                                |
 |                    [ ALLOW: Project Subnets -> Proxy IP:3128 ONLY ]                               |
 |                    [ DROP: Project -> Host INPUT (Gateway / Ports) ]                              |
 |                    [ DROP: Project 1 <-> Project 2 Inter-Bridge   ]                               |
@@ -139,10 +139,11 @@ To satisfy the non-negotiable requirement that ATM must never launch a sandbox i
 > Because ATM lacks `CAP_NET_ADMIN` and host root privileges, how ATM verifies host firewall health before container launch must be formally resolved before implementation.
 
 **Candidate Verification Contracts:**
-1. **Contract 1: Active Gateway Canary Probe (Recommended Application-Level Check):**
+1. **Contract 1: Active Gateway Canary Probe (Harmless Test Fixture Probe):**
    - ATM launches a short-lived preflight canary probe container in the project network before initializing the task sandbox.
-   - The probe attempts an immediate connection to a prohibited target (e.g., host gateway port or metadata canary IP `169.254.169.254:80` with a 1-second timeout).
-   - If the connection succeeds or returns an active service response rather than dropping/timing out, the host firewall is deemed broken. Container startup **aborts immediately** with an error: `EgressConfinementError: Host firewall verification failed; sandbox startup aborted`.
+   - The probe attempts an immediate connection to a controlled, harmless test canary listener provisioned within the isolated qualification environment (e.g., an explicit blocked test port on the bridge gateway or dedicated negative canary IP), with a 1-second timeout.
+   - **Crucial Safety Mandate:** Probes must **never** be sent to `169.254.169.254` or any real cloud instance metadata service (IMDS) endpoint. In production cloud or virtualized environments, probing live metadata endpoints creates serious unintended data exposure risks. A positive control must prove that the canary listener is reachable when ATM rules are deliberately absent in a disposable test fixture, and proven blocked when rules are active.
+   - If the canary connection succeeds when rules should be active, the host firewall is deemed broken. Container startup **aborts immediately** with an error: `EgressConfinementError: Host firewall verification failed; sandbox startup aborted`.
 2. **Contract 2: Operator Attestation & Readiness File (Passive File Marker):**
    - Host operator's systemd unit writes a cryptographically validated readiness token or timestamped status file to `/etc/atm/firewall-ready` upon verifying `nftables` rules.
    - Control plane checks for valid attestation before provisioning project networks.
@@ -167,18 +168,18 @@ Approved destinations are limited to official package ecosystems:
 
 | Ecosystem | Approved Hostnames / FQDNs | Purpose & Canonical Ecosystem Reference | Status |
 |---|---|---|---|
-| **Node / npm** | `registry.npmjs.org` | Primary npm registry metadata and package tarballs ([npm Registry Docs](https://docs.npmjs.com/cli/v10/using-npm/registry)). | Approved |
-| | `registry.yarnpkg.com` | Yarn registry alias ([Yarn Configuration Docs](https://yarnpkg.com/configuration/yarnrc#npmRegistryServer)). | Approved |
-| **Python / PyPI** | `pypi.org` | PyPI web UI and package index metadata ([PyPI JSON API](https://warehouse.pypa.io/api-reference/json.html)). | Approved |
-| | `files.pythonhosted.org` | Official PyPI package distribution CDN artifact host ([Python Packaging Guide](https://packaging.python.org/en/latest/guides/index-mirrors/)). | Approved |
-| **Go** | `proxy.golang.org` | Official Go module mirror proxy ([Go Module Mirror Reference](https://proxy.golang.org/)). | Approved |
-| | `sum.golang.org` | Official Go module checksum database ([Go Checksum Database Reference](https://sum.golang.org/)). | Approved |
-| **Rust / Crates** | `crates.io` | Official Cargo package index metadata ([Cargo Reference - Registries](https://doc.rust-lang.org/cargo/reference/registries.html)). | Approved |
-| | `index.crates.io` | Sparse index endpoints (Cargo 1.68+ [RFC 2789](https://doc.rust-lang.org/cargo/reference/registry-index.html)). | Approved |
-| | `static.crates.io` | Package crate file downloads ([Cargo Configuration](https://doc.rust-lang.org/cargo/reference/config.html)). | Approved |
-| **.NET / NuGet** | `api.nuget.org` | NuGet v3 service index and package downloads ([NuGet v3 API Documentation](https://learn.microsoft.com/en-us/nuget/api/overview)). | Approved |
-| **Java / Maven** | `repo1.maven.org` | Maven Central repository artifact server ([Central Repository Documentation](https://central.sonatype.org/)). | Approved |
-| | `repo.maven.apache.org` | Maven Central alias ([Apache Maven Guides](https://maven.apache.org/guides/mini/guide-mirror-settings.html)). | Approved |
+| **Node / npm** | `registry.npmjs.org` | Primary npm registry metadata and package tarballs ([npm Registry Docs](https://docs.npmjs.com/cli/v10/using-npm/registry)). | Candidate / Pending Security Review and Gate 0D Qualification |
+| | `registry.yarnpkg.com` | Yarn registry alias ([Yarn Configuration Docs](https://yarnpkg.com/configuration/yarnrc#npmRegistryServer)). | Candidate / Pending Security Review and Gate 0D Qualification |
+| **Python / PyPI** | `pypi.org` | PyPI web UI and package index metadata ([PyPI JSON API](https://warehouse.pypa.io/api-reference/json.html)). | Candidate / Pending Security Review and Gate 0D Qualification |
+| | `files.pythonhosted.org` | Official PyPI package distribution CDN artifact host ([Python Packaging Guide](https://packaging.python.org/en/latest/guides/index-mirrors/)). | Candidate / Pending Security Review and Gate 0D Qualification |
+| **Go** | `proxy.golang.org` | Official Go module mirror proxy ([Go Module Mirror Reference](https://proxy.golang.org/)). | Candidate / Pending Security Review and Gate 0D Qualification |
+| | `sum.golang.org` | Official Go module checksum database ([Go Checksum Database Reference](https://sum.golang.org/)). | Candidate / Pending Security Review and Gate 0D Qualification |
+| **Rust / Crates** | `crates.io` | Official Cargo package index metadata ([Cargo Reference - Registries](https://doc.rust-lang.org/cargo/reference/registries.html)). | Candidate / Pending Security Review and Gate 0D Qualification |
+| | `index.crates.io` | Sparse index endpoints (Cargo 1.68+ [RFC 2789](https://doc.rust-lang.org/cargo/reference/registry-index.html)). | Candidate / Pending Security Review and Gate 0D Qualification |
+| | `static.crates.io` | Package crate file downloads ([Cargo Configuration](https://doc.rust-lang.org/cargo/reference/config.html)). | Candidate / Pending Security Review and Gate 0D Qualification |
+| **.NET / NuGet** | `api.nuget.org` | NuGet v3 service index and package downloads ([NuGet v3 API Documentation](https://learn.microsoft.com/en-us/nuget/api/overview)). | Candidate / Pending Security Review and Gate 0D Qualification |
+| **Java / Maven** | `repo1.maven.org` | Maven Central repository artifact server ([Central Repository Documentation](https://central.sonatype.org/)). | Candidate / Pending Security Review and Gate 0D Qualification |
+| | `repo.maven.apache.org` | Maven Central alias ([Apache Maven Guides](https://maven.apache.org/guides/mini/guide-mirror-settings.html)). | Candidate / Pending Security Review and Gate 0D Qualification |
 
 #### Handling of Redirects and Dynamic CDNs
 Package managers frequently encounter HTTP 301/302 redirects during package tarball resolution.
@@ -193,7 +194,10 @@ Package managers frequently encounter HTTP 301/302 redirects during package tarb
 
 ### 5.3 Proxy Upstream DNS & SSRF Defenses
 The proxy container performs upstream DNS resolution for external destinations.
-- **Anti-SSRF Protection:** The proxy's DNS resolver must inspect resolved A/AAAA records. If an allowlisted domain resolves to an RFC 1918 private address, loopback (`127.0.0.0/8`), link-local (`169.254.0.0/16`), or multicast address (DNS rebinding attack), the proxy must abort the connection immediately with HTTP `502 Bad Gateway`.
+- **Anti-SSRF Protection:** The proxy's DNS resolver must inspect and normalize all resolved A (IPv4) and AAAA (IPv6) records against special-use, private, and internal address registries. The proxy must abort the connection immediately with HTTP `502 Bad Gateway` if any hostname resolves to:
+  - IPv4 private / internal ranges: RFC 1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), loopback (`127.0.0.0/8`), link-local (`169.254.0.0/16`), broadcast (`255.255.255.255`), shared address space (`100.64.0.0/10`), or multicast (`224.0.0.0/4`).
+  - IPv6 non-global ranges: Loopback (`::1/128`), unspecified (`::/128`), Unique Local Addresses (ULA `fc00::/7`), link-local (`fe80::/10`), IPv4-mapped IPv6 addresses (`::ffff:0:0/96` mapping to any prohibited IPv4 range), and IPv6 multicast (`ff00::/8`).
+  - This anti-SSRF policy is mandatory to defeat DNS rebinding attacks and must be qualification-tested in Checkpoint A.
 - **Proxy Boundary Limitations (SNI / TLS Inspection):**
   - The proxy acts as a non-MITM forward proxy terminating the HTTP `CONNECT` tunnel. It validates the FQDN in the `CONNECT` line and matches it against the TLS ClientHello Server Name Indication (SNI).
   - *Residual Risk:* Without full TLS interception (MITM with private CA injection), the proxy cannot inspect decrypted payload contents within the HTTPS tunnel to an allowlisted registry. Malicious code could attempt data exfiltration by embedding data into HTTP request paths or headers sent to `registry.npmjs.org`. Because MITM proxying introduces severe CA trust and security complexity inside task runtimes, this residual risk is acknowledged and mitigated by default-deny FQDN filtering and Gate 0C credential absence.
@@ -245,30 +249,29 @@ table inet atm_confinement {
         # 1. Drop invalid connection states on ATM-managed interfaces
         iifname { "atm-proj-*", "atm-egress-dmz" } ct state invalid drop
 
-        # 2. Return traffic strictly between project sandboxes and the egress proxy IP/port
-        # Note: Scoped strictly to pairwise interfaces and source/destination proxy parameters
-        iifname "atm-proj-*" oifname "atm-egress-dmz" ip daddr $PROXY_IP tcp dport $PROXY_PORT ct state established,related accept
-        iifname "atm-egress-dmz" oifname "atm-proj-*" ip saddr $PROXY_IP tcp sport $PROXY_PORT ct state established,related accept
+        # 2. Project Sandbox -> Forward Proxy connections:
+        # Outbound original packets from sandbox to proxy IP/port
+        iifname "atm-proj-*" oifname "atm-egress-dmz" ip daddr $PROXY_IP tcp dport $PROXY_PORT ct direction original ct state new,established accept
+        # Return reply packets from proxy to sandbox
+        iifname "atm-egress-dmz" oifname "atm-proj-*" ip saddr $PROXY_IP tcp sport $PROXY_PORT ct direction reply ct state established accept
 
-        # 3. Return traffic strictly between the egress proxy DMZ and the external WAN interface
-        iifname "atm-egress-dmz" oifname $WAN_IFACE ct state established,related accept
-        iifname $WAN_IFACE oifname "atm-egress-dmz" ct state established,related accept
+        # 3. Forward Proxy -> External WAN connections:
+        # Outbound original packets from DMZ proxy to WAN for approved package ports (443) and DNS (53)
+        iifname "atm-egress-dmz" oifname $WAN_IFACE tcp dport 443 ct direction original ct state new,established accept
+        iifname "atm-egress-dmz" oifname $WAN_IFACE udp dport 53 ct direction original ct state new,established accept
+        iifname "atm-egress-dmz" oifname $WAN_IFACE tcp dport 53 ct direction original ct state new,established accept
+        # Return reply packets from WAN to DMZ proxy for approved package ports (443) and DNS (53)
+        iifname $WAN_IFACE oifname "atm-egress-dmz" tcp sport 443 ct direction reply ct state established accept
+        iifname $WAN_IFACE oifname "atm-egress-dmz" udp sport 53 ct direction reply ct state established accept
+        iifname $WAN_IFACE oifname "atm-egress-dmz" tcp sport 53 ct direction reply ct state established accept
 
-        # 4. New connections from ATM project bridges to the forward proxy on proxy port only (IPv4 TCP)
-        iifname "atm-proj-*" oifname "atm-egress-dmz" ip daddr $PROXY_IP tcp dport $PROXY_PORT ct state new accept
-
-        # 5. Outbound new connections from forward proxy DMZ to external WAN for approved package ports & DNS
-        iifname "atm-egress-dmz" oifname $WAN_IFACE tcp dport 443 ct state new accept
-        iifname "atm-egress-dmz" oifname $WAN_IFACE udp dport 53 ct state new accept
-        iifname "atm-egress-dmz" oifname $WAN_IFACE tcp dport 53 ct state new accept
-
-        # 6. Drop any attempts by proxy to initiate new connections into project sandboxes
+        # 4. Drop any attempts by proxy to initiate new connections into project sandboxes
         iifname "atm-egress-dmz" oifname "atm-proj-*" drop
 
-        # 7. Default-deny for all other project bridge forwarding (drops direct WAN, IPv6, inter-project bridge traffic)
+        # 5. Default-deny for all other project bridge forwarding (drops direct WAN, IPv6, inter-project bridge traffic)
         iifname "atm-proj-*" drop
 
-        # 8. Default-deny for all other forward traffic originating from the DMZ (blocks lateral forwarding to internal bridges/subnets)
+        # 6. Default-deny for all other forward traffic originating from the DMZ (blocks lateral forwarding to internal bridges/subnets)
         iifname "atm-egress-dmz" drop
     }
 
@@ -291,7 +294,7 @@ table inet atm_confinement {
 ```
 
 > **Operational Note on Pre-Existing Conntrack State Invalidation:**
-> When applying or reloading firewall rules on a host with pre-existing network flows, exact tuple matching and unconditional interface drops in `chain forward` and `chain input` ensure that unapproved flows cannot bypass rules via generic conntrack acceptance. If an operator requires immediate eviction of active conntrack entries for project subnets without disrupting other host workloads, scoped tuple deletion can be executed by matching project subnets (e.g. `conntrack -D -s <project_subnet>` and `conntrack -D -d <project_subnet>`). Global flushing (`conntrack -F`) is prohibited on multi-tenant hosts as it terminates active connections across unrelated host workloads.
+> Terminal drops in `chain forward` and `chain input` ensure that unapproved *new* flows cannot be established. However, in Linux Netfilter, pre-existing connections present in the conntrack table prior to firewall insertion could persist if packet tuples match established flow rules. The reference ruleset mitigates this by strictly scoping all established rules to exact directional flags (`ct direction reply`), pairwise interfaces, and transport port selectors. If an operator requires guaranteed immediate eviction of active conntrack entries for project subnets without disrupting other host workloads, scoped tuple deletion can be executed by matching project subnets (e.g. `conntrack -D -s <project_subnet>` and `conntrack -D -d <project_subnet>`). Global flushing (`conntrack -F`) is prohibited on multi-tenant hosts as it terminates active connections across unrelated host workloads. The exact command sequence for conntrack lifecycle management remains dependent on host qualification and operator environment.
 
 ---
 
@@ -332,14 +335,17 @@ Each supported package manager toolchain must successfully fetch package metadat
 | `POS-0D-07` | `curl -f -s -S -o /dev/null https://repo1.maven.org/maven2/org/apache/commons/commons-lang3/maven-metadata.xml` | HTTP 200 OK via proxy | `0` |
 
 #### Negative Qualification Probes (Prohibited Destinations & Bypass Attempts)
-All unauthorized requests must fail closed with connection timeouts or immediate network unreachable errors. To rigorously verify Layer-3 kernel filtering (rather than Layer-7 proxy filtering), probes testing direct network paths explicitly disable or bypass proxy environment variables (`--noproxy "*"` or `env -u HTTP_PROXY -u HTTPS_PROXY`):
+All unauthorized requests must fail closed with connection timeouts or immediate network unreachable errors. To rigorously verify Layer-3 kernel filtering (rather than Layer-7 proxy filtering), probes testing direct network paths explicitly disable or bypass proxy environment variables (`--noproxy "*"` or `env -u HTTP_PROXY -u HTTPS_PROXY`).
+
+> **CRITICAL QUALIFICATION TESTBED MANDATE:**
+> Probes must **never** target `169.254.169.254` or any live cloud provider instance metadata service (IMDS). Probing real metadata endpoints risks accidental data retrieval or credential exposure on cloud VMs. All negative destination tests must run inside an isolated, disposable Linux test host or QEMU/KVM VM using controlled canary listeners (e.g. a dedicated canary container on a dummy IP or blocked host gateway port). Every negative probe must have a corresponding positive control verifying that the canary listener is actively reachable when firewall rules are deliberately absent, and reliably blocked when rules are active:
 
 | Test ID | Target / Test Condition | Command Inside Container | Expected Behavior / Error Assertion |
 |---|---|---|---|
-| `NEG-0D-01` | Cloud Metadata Service (L3 Drop) | `curl --noproxy "*" -m 2 http://169.254.169.254/latest/meta-data/` | Timeout (28) or Network unreachable (7) |
-| `NEG-0D-02` | Host Gateway IP (L3 Drop) | `curl --noproxy "*" -m 2 http://172.30.1.1:8080/health` | Timeout (28) or Connection refused/unreachable |
-| `NEG-0D-03` | Host SSH Port (L3 Drop) | `curl --noproxy "*" -m 2 http://172.30.1.1:22` | Timeout (28) or Connection dropped |
-| `NEG-0D-04` | Control Plane DB Port (L3 Drop) | `curl --noproxy "*" -m 2 http://172.28.0.2:5432` | Timeout (28) or Network unreachable (Distinct backend network `172.28.0.0/16`) |
+| `NEG-0D-01` | Controlled Canary Service (L3 Drop) | `curl --noproxy "*" -m 2 http://172.30.1.1:9999/canary` | Timeout (28) or Connection dropped (Controlled test canary listener) |
+| `NEG-0D-02` | Host Gateway Mock API (L3 Drop) | `curl --noproxy "*" -m 2 http://172.30.1.1:8080/health` | Timeout (28) or Connection refused/unreachable |
+| `NEG-0D-03` | Host Management Canary (L3 Drop) | `curl --noproxy "*" -m 2 http://172.30.1.1:2222` | Timeout (28) or Connection dropped (Mock SSH canary listener) |
+| `NEG-0D-04` | Control Plane DB Mock (L3 Drop) | `curl --noproxy "*" -m 2 http://172.28.0.2:5432` | Timeout (28) or Network unreachable (Mock DB on backend network `172.28.0.0/16`) |
 | `NEG-0D-05` | Peer Project Sandbox (L3 Drop) | `curl --noproxy "*" -m 2 http://172.30.2.2:80` | Timeout (28) or Host unreachable |
 | `NEG-0D-06` | Direct WAN IP (L3 Bypass) | `curl --noproxy "*" -m 2 http://1.1.1.1` | Timeout (28) or Network unreachable |
 | `NEG-0D-07` | Direct WAN IP without Env | `env -u HTTP_PROXY -u HTTPS_PROXY curl -m 2 http://1.1.1.1` | Timeout (28) or Network unreachable |
