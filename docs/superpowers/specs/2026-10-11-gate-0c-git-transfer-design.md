@@ -115,11 +115,16 @@ Per user decision, **both Git LFS (Large File Storage) and Git submodules are st
   - Has **zero network access** (`network_mode: none`).
   - Has **zero access to the Docker socket**.
   - Has **zero credentials, tokens, or auth headers**.
-  - Runs as an unprivileged user (`no-new-privileges:true`, `--cap-drop=ALL`, `--read-only` rootfs with ephemeral tmpfs scratch).
+  - Runs as an unprivileged user (`no-new-privileges:true`, `--cap-drop=ALL`, `--read-only` rootfs with ephemeral tmpfs scratch at `/tmp`).
   - Mounts **only** the target project's dedicated data volume at `/workspaces`.
-- **Git Execution Hardening:**
+- **Git Execution Hardening & Config Isolation:**
   - Does not communicate with any external remote.
-  - Acts solely on offline `git bundle` streams passed via standard input/output.
+  - Acts solely on offline `git bundle` files spooled into transient tmpfs scratch (`/tmp/scratch.bundle`).
+  - **Untrusted Volume Config Defenses:** Linked worktrees and repositories inside `/workspaces` may contain untrusted, attacker-controlled `.git/config` files written by sandbox task scripts. When invoked, every Git command in the Volume Transfer Helper must enforce strict configuration isolation:
+    - `-c core.hooksPath=/dev/null` (prevents arbitrary hook script execution).
+    - `-c core.fsmonitor=false` (prevents malicious file system monitor command injection).
+    - Fixed controller-defined options overriding untrusted volume directives.
+    - Never executes hooks, filters, or credential helpers.
 
 ---
 
@@ -127,21 +132,26 @@ Per user decision, **both Git LFS (Large File Storage) and Git submodules are st
 
 ### 5.1 Remote Ingestion & Initial Clone / Fetch Flow
 Official Git documentation (`git-bundle(1)`) defines a Git bundle as an offline archive of Git references and objects:
-- `git bundle create - <revisions>` writes a complete packfile bundle to standard output.
-- `git clone <bundle-file> <path>` or `git fetch <bundle-stream>` extracts objects and refs directly from a bundle.
+- `git bundle create <file> <revisions>` writes a complete packfile bundle. `git bundle create - <revisions>` writes the bundle to standard output.
+- `git clone <bundle-file> <path>` or `git fetch <bundle-file>` extracts objects and refs directly from a local bundle file.
+- *Bundle Input Semantics:* Per `git-bundle(1)`, `git clone --bare -` and `git fetch -` are invalid syntax (`fatal: repository '-' does not exist`, `fatal: strange pathname '-' blocked`). Git bundle ingestion commands require a valid filesystem path. The Volume Transfer Helper therefore spools incoming bundle byte streams into its private ephemeral tmpfs scratch path (`/tmp/scratch.bundle`) before invoking `git clone` or `git fetch`.
 
 **Step-by-Step Flow:**
 1. **Control Plane Staging:** The control plane spawns the Credentialed Git Worker.
 2. **Worker Fetch:** The worker performs `git fetch` against `https://github.com/<owner>/<repo>.git` using the in-memory PAT helper into a private bare staging repository.
 3. **Worker Inspection:** The worker verifies refs. If `.gitmodules` or LFS pointers are present in target trees, the operation is aborted.
 4. **Bundle Generation:** The worker executes `git bundle create - refs/heads/<base-branch>` writing the bundle to stdout.
-5. **Stream Relay:** The control plane reads the stdout stream from the worker and pipes it directly into the stdin of the Volume Transfer Helper.
+5. **Stream Relay & Tmpfs Spooling:** The control plane reads the stdout stream from the worker and pipes it into the Volume Transfer Helper, which writes the stream directly to ephemeral tmpfs scratch (`/tmp/scratch.bundle`).
 6. **Helper Ingestion:** The Volume Transfer Helper runs:
-   - If `/workspaces/<repo-id>/repository.git` does not exist: creates a bare mirror repository using `git clone --bare - /workspaces/<repo-id>/repository.git` (or unpacking the bundle stream).
-   - If it exists: runs `git fetch <bundle-input> refs/heads/<base-branch>:refs/heads/<base-branch>`.
-7. **Worktree Provisioning:** The helper creates the task worktree:
+   - If `/workspaces/<repo-id>/repository.git` does not exist: creates a bare mirror repository using `git clone --bare /tmp/scratch.bundle /workspaces/<repo-id>/repository.git`.
+   - If it exists: runs `git -C /workspaces/<repo-id>/repository.git -c core.hooksPath=/dev/null -c core.fsmonitor=false fetch /tmp/scratch.bundle refs/heads/<base-branch>:refs/heads/<base-branch>`.
+   - Ephemeral scratch file `/tmp/scratch.bundle` is immediately deleted after ingestion.
+7. **Worktree Provisioning:** The helper creates the task worktree with config isolation:
    ```bash
-   git -C /workspaces/<repo-id>/repository.git worktree add \
+   git -C /workspaces/<repo-id>/repository.git \
+     -c core.hooksPath=/dev/null \
+     -c core.fsmonitor=false \
+     worktree add \
      -b task/<task-id> \
      /workspaces/<repo-id>/tasks/<task-id> \
      <base-branch>
@@ -149,24 +159,37 @@ Official Git documentation (`git-bundle(1)`) defines a Git bundle as an offline 
 8. **Origin Sanitization:** The repository's configured origin inside `/workspaces/<repo-id>/repository.git` is explicitly set to a local placeholder (or points to the local bare path). No remote URLs containing userinfo, tokens, or credential-helper directives exist.
 
 ### 5.2 Task Push & Upstream Synchronization Flow
-Per `git-bundle(1)`, `git bundle` is an offline transport format; Git cannot execute `git push` into a bundle file. Therefore, pushing changes back to GitHub follows a verified two-phase reverse flow:
+Per `git-bundle(1)`, `git bundle` is an offline transport format; Git cannot execute `git push` into a bundle file. Furthermore, an incremental bundle (`task/<task-id> ^<base-branch>`) requires that the recipient repository already contains the exact prerequisite base commits. If fetched into a bare staging repository lacking base commits, `git fetch` aborts with `error: Repository lacks these prerequisite commits`.
+
+Therefore, pushing changes back to GitHub follows a verified, prerequisite-safe two-phase reverse flow:
 
 **Step-by-Step Flow:**
-1. **Helper Bundle Export:** When a task completes and commits code, the Volume Transfer Helper is invoked against the project volume. It verifies that commits on `task/<task-id>` contain no forbidden LFS pointers or submodules. It creates an incremental bundle of the task branch:
+1. **Helper Bundle Export:** When a task completes and commits code, the Volume Transfer Helper is invoked against the project volume. It verifies that commits on `task/<task-id>` contain no forbidden LFS pointers or submodules. It creates an incremental bundle of the task branch into tmpfs scratch with strict config isolation:
    ```bash
-   git -C /workspaces/<repo-id>/repository.git bundle create - \
+   git -C /workspaces/<repo-id>/repository.git \
+     -c core.hooksPath=/dev/null \
+     -c core.fsmonitor=false \
+     bundle create /tmp/export.bundle \
      refs/heads/task/<task-id> ^refs/heads/<base-branch>
    ```
-   and writes the bundle stream to stdout.
-2. **Stream Relay:** The control plane reads the bundle stream and pipes it into the Credentialed Git Worker.
-3. **Worker Import:** The worker fetches the bundle into an isolated bare staging repository:
-   ```bash
-   git -C /worker/staging.git fetch <bundle-input> \
-     refs/heads/task/<task-id>:refs/heads/task/<task-id>
-   ```
+   and streams `/tmp/export.bundle` to stdout (or pipes stdout directly using `git bundle create - refs/heads/task/<task-id> ^refs/heads/<base-branch>`), then wipes the tmpfs file.
+2. **Stream Relay & Worker Spooling:** The control plane reads the bundle stream and pipes it into the Credentialed Git Worker, which spools the payload into its ephemeral tmpfs scratch (`/tmp/task.bundle`).
+3. **Prerequisite-Safe Worker Staging Import:** To ensure prerequisite commits exist:
+   - The Credentialed Worker initializes its private bare staging repository (`/worker/staging.git`).
+   - The worker seeds `/worker/staging.git` with the remote base branch first (via authenticated `git fetch https://github.com/<owner>/<repo>.git refs/heads/<base-branch>:refs/heads/<base-branch>` using the in-memory PAT helper, or by retaining base objects from the initial staging session).
+   - The worker then safely fetches the incremental task bundle:
+     ```bash
+     git -C /worker/staging.git \
+       -c core.hooksPath=/dev/null \
+       fetch /tmp/task.bundle \
+       refs/heads/task/<task-id>:refs/heads/task/<task-id>
+     ```
+   - The temporary file `/tmp/task.bundle` is immediately unlinked.
 4. **Verified Upstream Push:** The worker executes a strictly validated push against the configured GitHub remote:
    ```bash
-   git -C /worker/staging.git push \
+   git -C /worker/staging.git \
+     -c core.hooksPath=/dev/null \
+     push \
      --porcelain \
      --atomic \
      https://github.com/<owner>/<repo>.git \
@@ -243,7 +266,9 @@ This section defines the formal, reproducible qualification battery required to 
 ### 9.1 Qualification Environment Setup
 1. **Host Environment:** Clean Ubuntu 24.04 LTS `linux/amd64` instance with native Docker CE 26+.
 2. **Isolated Volume:** Dedicated Docker volume `probe-gate0c-data`.
-3. **Fixture Git Repository:** A local bare Git server or mock HTTPS server serving a fixture repo over TLS.
+3. **Fixture Git Repository & Network Accommodation:**
+   - A fixture repository served over TLS by a mock HTTPS Git server running on the isolated test Docker network.
+   - *Harness Egress Accommodation:* Production worker policy enforces strict GitHub HTTPS (`github.com:443`). To allow the qualification test harness to validate the worker without modifying production container networking logic, the test harness maps `github.com` via internal container DNS / `/etc/hosts` to the mock fixture server's isolated test network IP, or mounts a test CA bundle into the worker's trust store. Outbound internet access remains completely blocked; no public network access is granted.
 4. **Synthetic Canary Credential:** A high-entropy synthetic canary token:
    `CANARY_TOKEN="ghp_ATM_CANARY_0C_7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c"`
    *Constraint:* The canary must exist solely in the test harness memory and ephemeral worker IPC. It must never appear in test container environment variables, command-line arguments, persistent files, or tracked git history.
@@ -254,21 +279,24 @@ This section defines the formal, reproducible qualification battery required to 
 - **Procedure:**
   1. Spawns Credentialed Worker with canary token via in-memory stdin helper.
   2. Worker fetches from fixture HTTPS repository and streams `git bundle` to Volume Transfer Helper.
-  3. Helper unpacks bundle into `probe-gate0c-data` at `/workspaces/repo-001/repository.git` and creates worktree `task-001`.
+  3. Helper spools bundle to tmpfs and unpacks into `probe-gate0c-data` at `/workspaces/repo-001/repository.git`, then creates worktree `task-001`.
 - **Assertions:**
   - Helper container exits with status `0`.
   - Directory `/workspaces/repo-001/tasks/task-001` exists and contains tracked repository files.
   - Worktree is on branch `task/task-001`.
 
-#### Probe 2: Canary Leakage Scan (Volume, Config, History, Env)
+#### Probe 2: Canary Leakage Scan (Volume, Config, History, Env, Args)
 - **Procedure:**
-  - Execute exhaustive redaction scan across the entire project data volume, Docker inspect metadata, and container process trees.
+  - Execute exhaustive redaction scan across the entire project data volume, Docker inspect metadata for all involved containers, and container process trees.
 - **Assertions:**
   1. `git -C /workspaces/repo-001/repository.git remote -v`: Must NOT contain credentials or auth headers.
   2. `cat /workspaces/repo-001/repository.git/config`: Must NOT contain `extraHeader`, `token`, `password`, or canary string.
   3. Volume file inspection: Full grep of `/workspaces` must return ZERO occurrences of `$CANARY_TOKEN` or `Authorization:`.
-  4. Docker inspect: `docker inspect <helper-container>` and `docker inspect <sandbox-container>` environment variables (`Env`) and arguments (`Args`) must contain ZERO occurrences of `$CANARY_TOKEN`.
-  5. Container stdout/stderr logs must contain ZERO occurrences of `$CANARY_TOKEN`.
+  4. Docker inspect across all containers:
+     - `docker inspect <credentialed-worker-container>`: Environment variables (`Config.Env`) and command arguments (`Config.Cmd`, `Config.Entrypoint`, `Args`) must contain ZERO occurrences of `$CANARY_TOKEN` or `Authorization:`.
+     - `docker inspect <helper-container>`: Environment variables (`Config.Env`) and command arguments (`Args`) must contain ZERO occurrences of `$CANARY_TOKEN` or `Authorization:`.
+     - `docker inspect <sandbox-container>`: Environment variables (`Config.Env`) and command arguments (`Args`) must contain ZERO occurrences of `$CANARY_TOKEN` or `Authorization:`.
+  5. Container stdout/stderr logs across all three containers (`credentialed-worker`, `helper`, `sandbox`) must contain ZERO occurrences of `$CANARY_TOKEN` or `Authorization:`.
 
 #### Probe 3: Positive Commit, Bundle Export & Push Round-Trip
 - **Procedure:**
