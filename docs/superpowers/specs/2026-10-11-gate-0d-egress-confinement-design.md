@@ -20,7 +20,7 @@ The core security objective of Gate 0D is to guarantee **strict default-deny egr
 2. Project containers must be isolated from peer project containers on the same host (zero inter-project lateral movement or cross-bridge traffic).
 3. Private internal networks (RFC 1918 `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), IPv6 Unique Local Addresses (ULA `fc00::/7`), and link-local / cloud provider instance metadata endpoints (`169.254.169.254`, `fe80::/10`) must be unreachable.
 4. Arbitrary outbound TCP, UDP, QUIC, and raw IP egress to the public internet must be strictly prohibited at Layer 3/Layer 4.
-5. Task sandboxes may reach external networks solely via an explicit, authenticated, and constrained HTTP(S) forward proxy enforcing an exact FQDN allowlist limited to approved package registries (npm, PyPI, Go proxy, Crates.io, NuGet, Maven Central) and verified package download CDNs. Direct GitHub egress remains blocked (governed by Gate 0C), and model provider endpoints remain blocked pending Gate 0G resolution.
+5. Task sandboxes may reach external networks solely via an explicit, unauthenticated, and constrained HTTP(S) forward proxy enforcing network-level ACLs (source IP/bridge filtering) and an exact FQDN allowlist limited to approved package registries (npm, PyPI, Go proxy, Crates.io, NuGet, Maven Central) and verified package download CDNs. Direct GitHub egress remains blocked (governed by Gate 0C), and model provider endpoints remain blocked pending Gate 0G resolution.
 
 **Non-Scope Boundaries:**
 Gate 0D addresses **network isolation only**. Filesystem mounts, shared volume segregation, host execution prevention, and Docker-socket isolation are governed and enforced by Gate 0B, Gate 0C, and the baseline container security configuration. Furthermore, ATM and OpenCode are strictly unprivileged control-plane components; they do not possess `CAP_NET_ADMIN` and must never mutate host firewall rules directly. Host network filtering is owned and operated by the host platform administrator.
@@ -119,7 +119,8 @@ The deployment topology strictly isolates project containers, control-plane mana
    - **Direction: Proxy -> External WAN:** Permitted for outbound proxy DNS and TLS connections (`iifname "atm-egress-dmz" oifname "<wan_interface>"`).
 4. **IPv4 and IPv6 Parity:**
    - Egress blocking applies identically to IPv6.
-   - Unless full IPv6 stateful proxying and FQDN filtering are explicitly configured and qualified, IPv6 forwarding from sandbox bridges is disabled at the host kernel (`disable_ipv6=1`) or rejected via `ip6tables`/`nftables` rules (`ip6 saddr ... drop`).
+   - Unless full IPv6 stateful proxying and FQDN filtering are explicitly configured and qualified, IPv6 forwarding from sandbox bridges is disabled per-interface at the host kernel (`sysctl -w net.ipv6.conf.<bridge_iface>.disable_ipv6=1` for each project bridge interface; never via host-global `net.ipv6.conf.all.disable_ipv6=1` which would break unrelated host workloads).
+   - In addition, kernel packet filtering must match both IPv4 and IPv6 families (`table inet`) and explicitly drop all IPv6 traffic from project bridge interfaces (`iifname "atm-proj-*" drop`).
 
 ---
 
@@ -164,20 +165,20 @@ The forward proxy enforces an exact FQDN allowlist. Broad wildcards (e.g. `*.com
 
 Approved destinations are limited to official package ecosystems:
 
-| Ecosystem | Approved Hostnames / FQDNs | Purpose & Official Documentation Reference | Status |
+| Ecosystem | Approved Hostnames / FQDNs | Purpose & Canonical Ecosystem Reference | Status |
 |---|---|---|---|
-| **Node / npm** | `registry.npmjs.org` | Primary npm registry metadata and package tarballs. | Approved |
-| | `registry.yarnpkg.com` | Yarn registry alias (redirects to npmjs). | Approved |
-| **Python / PyPI** | `pypi.org` | PyPI web UI and package index metadata. | Approved |
-| | `files.pythonhosted.org` | Official PyPI package distribution CDN artifact host. | Approved |
-| **Go** | `proxy.golang.org` | Official Go module mirror proxy. | Approved |
-| | `sum.golang.org` | Official Go module checksum database. | Approved |
-| **Rust / Crates** | `crates.io` | Official Cargo package index metadata. | Approved |
-| | `index.crates.io` | Sparse index endpoints (Cargo 1.68+). | Approved |
-| | `static.crates.io` | Package crate file downloads. | Approved |
-| **.NET / NuGet** | `api.nuget.org` | NuGet v3 service index and package downloads. | Approved |
-| **Java / Maven** | `repo1.maven.org` | Maven Central repository artifact server. | Approved |
-| | `repo.maven.apache.org` | Maven Central alias. | Approved |
+| **Node / npm** | `registry.npmjs.org` | Primary npm registry metadata and package tarballs ([npm Registry Docs](https://docs.npmjs.com/cli/v10/using-npm/registry)). | Approved |
+| | `registry.yarnpkg.com` | Yarn registry alias ([Yarn Configuration Docs](https://yarnpkg.com/configuration/yarnrc#npmRegistryServer)). | Approved |
+| **Python / PyPI** | `pypi.org` | PyPI web UI and package index metadata ([PyPI JSON API](https://warehouse.pypa.io/api-reference/json.html)). | Approved |
+| | `files.pythonhosted.org` | Official PyPI package distribution CDN artifact host ([Python Packaging Guide](https://packaging.python.org/en/latest/guides/index-mirrors/)). | Approved |
+| **Go** | `proxy.golang.org` | Official Go module mirror proxy ([Go Module Mirror Reference](https://proxy.golang.org/)). | Approved |
+| | `sum.golang.org` | Official Go module checksum database ([Go Checksum Database Reference](https://sum.golang.org/)). | Approved |
+| **Rust / Crates** | `crates.io` | Official Cargo package index metadata ([Cargo Reference - Registries](https://doc.rust-lang.org/cargo/reference/registries.html)). | Approved |
+| | `index.crates.io` | Sparse index endpoints (Cargo 1.68+ [RFC 2789](https://doc.rust-lang.org/cargo/reference/registry-index.html)). | Approved |
+| | `static.crates.io` | Package crate file downloads ([Cargo Configuration](https://doc.rust-lang.org/cargo/reference/config.html)). | Approved |
+| **.NET / NuGet** | `api.nuget.org` | NuGet v3 service index and package downloads ([NuGet v3 API Documentation](https://learn.microsoft.com/en-us/nuget/api/overview)). | Approved |
+| **Java / Maven** | `repo1.maven.org` | Maven Central repository artifact server ([Central Repository Documentation](https://central.sonatype.org/)). | Approved |
+| | `repo.maven.apache.org` | Maven Central alias ([Apache Maven Guides](https://maven.apache.org/guides/mini/guide-mirror-settings.html)). | Approved |
 
 #### Handling of Redirects and Dynamic CDNs
 Package managers frequently encounter HTTP 301/302 redirects during package tarball resolution.
@@ -241,24 +242,23 @@ table inet atm_confinement {
         # Priority filter hook with accept policy so unrelated host/docker forwarding is untouched
         type filter hook forward priority 0; policy accept;
 
-        # 1. Allow established and related traffic for all managed interfaces
-        ct state established,related accept
+        # 1. Conntrack rules scoped strictly to ATM interfaces to prevent dropping unrelated host traffic
+        iifname { "atm-proj-*", "atm-egress-dmz" } ct state invalid drop
+        iifname { "atm-proj-*", "atm-egress-dmz" } ct state established,related accept
+        oifname { "atm-proj-*", "atm-egress-dmz" } ct state established,related accept
 
-        # 2. Drop invalid connection states
-        ct state invalid drop
-
-        # 3. Allow traffic from any ATM project bridge to the proxy DMZ on the proxy port only
+        # 2. Allow traffic from any ATM project bridge to the proxy DMZ on the proxy port only (IPv4 TCP)
         iifname "atm-proj-*" oifname "atm-egress-dmz" ip daddr $PROXY_IP tcp dport $PROXY_PORT ct state new accept
 
-        # 4. Allow forward traffic from the proxy DMZ to WAN for upstream package registries & DNS
+        # 3. Allow forward traffic from the proxy DMZ to WAN for upstream package registries & DNS
         iifname "atm-egress-dmz" oifname $WAN_IFACE tcp dport 443 ct state new accept
         iifname "atm-egress-dmz" oifname $WAN_IFACE udp dport 53 ct state new accept
         iifname "atm-egress-dmz" oifname $WAN_IFACE tcp dport 53 ct state new accept
 
-        # 5. Drop any attempts by proxy to initiate new connections into project sandboxes
+        # 4. Drop any attempts by proxy to initiate new connections into project sandboxes
         iifname "atm-egress-dmz" oifname "atm-proj-*" drop
 
-        # 6. Default-deny for all other project bridge forwarding (drops direct WAN, inter-project bridge traffic)
+        # 5. Default-deny for all other project bridge forwarding (drops direct WAN, IPv6, inter-project bridge traffic)
         iifname "atm-proj-*" drop
     }
 
@@ -266,8 +266,8 @@ table inet atm_confinement {
         # Priority filter hook with accept policy to preserve unrelated host services
         type filter hook input priority 0; policy accept;
 
-        # Allow established/related return packets to host
-        ct state established,related accept
+        # Allow established/related return packets to host only for ATM interfaces
+        iifname { "atm-proj-*", "atm-egress-dmz" } ct state established,related accept
 
         # Default-deny: Project sandboxes must NEVER reach any host-bound listening service or gateway IP
         iifname "atm-proj-*" drop
@@ -307,31 +307,32 @@ Each supported package manager toolchain must successfully fetch package metadat
 |---|---|---|---|
 | `POS-0D-01` | `curl -f -s -S -o /dev/null https://registry.npmjs.org/express` | HTTP 200 OK via proxy | `0` |
 | `POS-0D-02` | `curl -f -s -S -o /dev/null https://pypi.org/pypi/requests/json` | HTTP 200 OK via proxy | `0` |
-| `POS-0D-03` | `curl -f -s -S -o /dev/null https://files.pythonhosted.org/` | HTTP 200/301/403 (Valid TLS handshake, not timeout) | `0` |
+| `POS-0D-03` | `curl -f -s -S -o /dev/null https://files.pythonhosted.org/packages/source/p/pip/pip-24.0.tar.gz` | HTTP 200 OK via proxy (verified tarball download) | `0` |
 | `POS-0D-04` | `curl -f -s -S -o /dev/null https://proxy.golang.org/github.com/gin-gonic/gin/@v/list` | HTTP 200 OK via proxy | `0` |
 | `POS-0D-05` | `curl -f -s -S -o /dev/null https://index.crates.io/co/nf/config` | HTTP 200 OK via proxy | `0` |
 | `POS-0D-06` | `curl -f -s -S -o /dev/null https://api.nuget.org/v3/index.json` | HTTP 200 OK via proxy | `0` |
 | `POS-0D-07` | `curl -f -s -S -o /dev/null https://repo1.maven.org/maven2/org/apache/commons/commons-lang3/maven-metadata.xml` | HTTP 200 OK via proxy | `0` |
 
 #### Negative Qualification Probes (Prohibited Destinations & Bypass Attempts)
-All unauthorized requests must fail closed with connection timeouts or immediate network unreachable errors:
+All unauthorized requests must fail closed with connection timeouts or immediate network unreachable errors. To rigorously verify Layer-3 kernel filtering (rather than Layer-7 proxy filtering), probes testing direct network paths explicitly disable or bypass proxy environment variables (`--noproxy "*"` or `env -u HTTP_PROXY -u HTTPS_PROXY`):
 
 | Test ID | Target / Test Condition | Command Inside Container | Expected Behavior / Error Assertion |
 |---|---|---|---|
-| `NEG-0D-01` | Cloud Metadata Service | `curl -m 2 http://169.254.169.254/latest/meta-data/` | Timeout (28) or Network unreachable (7) |
-| `NEG-0D-02` | Host Gateway IP | `curl -m 2 http://172.30.1.1:8080/health` | Timeout (28) or Connection refused/unreachable |
-| `NEG-0D-03` | Host SSH Port | `curl -m 2 http://172.30.1.1:22` | Timeout (28) or Connection dropped |
-| `NEG-0D-04` | Control Plane DB Port | `curl -m 2 http://172.30.200.1:5432` | Timeout (28) or Network unreachable |
-| `NEG-0D-05` | Peer Project Sandbox | `curl -m 2 http://172.30.2.2:80` | Timeout (28) or Host unreachable |
-| `NEG-0D-06` | Direct WAN IP (Proxy Bypass) | `curl -m 2 http://1.1.1.1` | Timeout (28) or Network unreachable |
+| `NEG-0D-01` | Cloud Metadata Service (L3 Drop) | `curl --noproxy "*" -m 2 http://169.254.169.254/latest/meta-data/` | Timeout (28) or Network unreachable (7) |
+| `NEG-0D-02` | Host Gateway IP (L3 Drop) | `curl --noproxy "*" -m 2 http://172.30.1.1:8080/health` | Timeout (28) or Connection refused/unreachable |
+| `NEG-0D-03` | Host SSH Port (L3 Drop) | `curl --noproxy "*" -m 2 http://172.30.1.1:22` | Timeout (28) or Connection dropped |
+| `NEG-0D-04` | Control Plane DB Port (L3 Drop) | `curl --noproxy "*" -m 2 http://172.28.0.2:5432` | Timeout (28) or Network unreachable (Distinct backend network `172.28.0.0/16`) |
+| `NEG-0D-05` | Peer Project Sandbox (L3 Drop) | `curl --noproxy "*" -m 2 http://172.30.2.2:80` | Timeout (28) or Host unreachable |
+| `NEG-0D-06` | Direct WAN IP (L3 Bypass) | `curl --noproxy "*" -m 2 http://1.1.1.1` | Timeout (28) or Network unreachable |
 | `NEG-0D-07` | Direct WAN IP without Env | `env -u HTTP_PROXY -u HTTPS_PROXY curl -m 2 http://1.1.1.1` | Timeout (28) or Network unreachable |
-| `NEG-0D-08` | GitHub Direct Access | `curl -m 2 https://github.com` | Blocked by proxy (HTTP 403 Forbidden) |
-| `NEG-0D-09` | Model Provider API | `curl -m 2 https://api.anthropic.com` | Blocked by proxy (HTTP 403 Forbidden) |
-| `NEG-0D-10` | Non-Allowed Domain | `curl -m 2 https://example.com` | Blocked by proxy (HTTP 403 Forbidden) |
-| `NEG-0D-11` | Raw UDP / QUIC | `nc -z -v -u -w 2 1.1.1.1 53` | Timeout or Network unreachable |
-| `NEG-0D-12` | Raw DNS Exfiltration | `dig @127.0.0.11 secret.example.com` | Connection timed out / No servers reachable |
+| `NEG-0D-08` | GitHub Direct Access (L7 Proxy) | `curl -m 2 https://github.com` | Blocked by proxy (HTTP 403 Forbidden) |
+| `NEG-0D-09` | Model Provider API (L7 Proxy) | `curl -m 2 https://api.anthropic.com` | Blocked by proxy (HTTP 403 Forbidden) |
+| `NEG-0D-10` | Non-Allowed Domain (L7 Proxy) | `curl -m 2 https://example.com` | Blocked by proxy (HTTP 403 Forbidden) |
+| `NEG-0D-11` | Raw UDP / QUIC (L3 Drop) | `nc -z -v -u -w 2 1.1.1.1 53` | Timeout or Network unreachable |
+| `NEG-0D-12` | Raw DNS Exfiltration (L3 Drop) | `dig @127.0.0.11 secret.example.com` | Connection timed out / No servers reachable (Host WAN `tcpdump port 53` must show 0 egress packets) |
 | `NEG-0D-13` | Proxy Reverse Connection | From proxy: `curl -m 2 http://172.30.1.2:80` | Dropped by host forward filter (Timeout) |
 | `NEG-0D-14` | Proxy Container Stopped | Stop proxy container; run `POS-0D-01` | Connection refused / Proxy unreachable (Fails closed) |
+| `NEG-0D-15` | Missing/Flushed Host Firewall | Flush `atm_confinement` ruleset; run canary | Canary fails; container launch aborted (Fails closed) |
 
 ---
 
