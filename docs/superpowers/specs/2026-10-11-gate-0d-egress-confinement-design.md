@@ -170,8 +170,8 @@ Approved destinations are limited to official package ecosystems:
 |---|---|---|---|
 | **Node / npm** | `registry.npmjs.org` | Primary npm registry metadata and package tarballs ([npm Registry Docs](https://docs.npmjs.com/cli/v10/using-npm/registry)). | Candidate / Pending Security Review and Gate 0D Qualification |
 | | `registry.yarnpkg.com` | Yarn registry alias ([Yarn Configuration Docs](https://yarnpkg.com/configuration/yarnrc#npmRegistryServer)). | Candidate / Pending Security Review and Gate 0D Qualification |
-| **Python / PyPI** | `pypi.org` | PyPI web UI and package index metadata ([PyPI JSON API](https://warehouse.pypa.io/api-reference/json.html)). | Candidate / Pending Security Review and Gate 0D Qualification |
-| | `files.pythonhosted.org` | Official PyPI package distribution CDN artifact host ([Python Packaging Guide](https://packaging.python.org/en/latest/guides/index-mirrors/)). | Candidate / Pending Security Review and Gate 0D Qualification |
+| **Python / PyPI** | `pypi.org` | PyPI web UI and package index metadata ([PyPI JSON API](https://docs.pypi.org/api/json/)). | Candidate / Pending Security Review and Gate 0D Qualification |
+| | `files.pythonhosted.org` | Official PyPI package distribution CDN artifact host ([Python Packaging Guide](https://packaging.python.org/en/latest/guides/index-mirrors-and-caches/)). | Candidate / Pending Security Review and Gate 0D Qualification |
 | **Go** | `proxy.golang.org` | Official Go module mirror proxy ([Go Module Mirror Reference](https://proxy.golang.org/)). | Candidate / Pending Security Review and Gate 0D Qualification |
 | | `sum.golang.org` | Official Go module checksum database ([Go Checksum Database Reference](https://sum.golang.org/)). | Candidate / Pending Security Review and Gate 0D Qualification |
 | **Rust / Crates** | `crates.io` | Official Cargo package index metadata ([Cargo Reference - Registries](https://doc.rust-lang.org/cargo/reference/registries.html)). | Candidate / Pending Security Review and Gate 0D Qualification |
