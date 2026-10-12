@@ -47,36 +47,30 @@
 
 ### Gate 0A: Native Non-Snap Linux Docker Host Qualification & Mandatory `no-new-privileges` Probe
 
-- **Status:** Mandatory Pre-Implementation Gate (Open / Unresolved).
-- **Background & Context:** Testing on the host running Docker Engine 29.8.0 via Snap (rev 3613, containerd 2.3.4, runc 1.5.1) confirmed that running containers with mandatory `--security-opt no-new-privileges:true` fails execution during container launch:
-  ```text
-  docker run --rm --pull=never --network none --read-only --cap-drop=ALL --security-opt no-new-privileges:true --user 65534:65534 --pids-limit 16 --memory 64m --cpus 0.5 --entrypoint /bin/sh alpine:latest -c 'grep "^NoNewPrivs:" /proc/self/status; exec /bin/true'
-  exec /bin/sh: operation not permitted (exit status 255)
-  ```
-  A control probe with NNP omitted succeeded (`NoNewPrivs: 0`, exit status 0). An informational test on Docker Desktop 29.2.1 passed (`NoNewPrivs: 1`, exit status 0), but Docker Desktop executes inside an isolated VM guest kernel and does not qualify a native host.
-- **Probe Specification:**
-  - Execute only on a pre-provisioned native non-Snap Linux Docker host (or dedicated native Linux VM).
-  - Use an existing local Alpine image (`--pull=never`). Zero host mounts, zero environment credentials, zero published ports, `--network none`.
-  - Command:
-    ```bash
-    docker run --rm --pull=never --network none --read-only --cap-drop=ALL \
-      --security-opt no-new-privileges:true --user 65534:65534 \
-      --pids-limit 16 --memory 64m --cpus 0.5 \
-      --entrypoint /bin/sh alpine:latest \
-      -c 'grep "^NoNewPrivs:" /proc/self/status; grep -q "^NoNewPrivs:[[:space:]]*1$" /proc/self/status; exec /bin/true'
-    ```
-- **Qualification Criteria:** Exit status 0, output contains `NoNewPrivs: 1`. Modifying the current host packages/services is strictly prohibited. If NNP fails, the platform fails closed; AppArmor/seccomp softening or NNP omission is strictly banned.
+- **Status:** QUALIFIED IN DEDICATED GUEST PROBE ONLY (Open for arbitrary production hosts; see `docs/superpowers/verification/2026-10-11-runtime-qualification-gates-0a-0b.md`). Tasks 1–9 remain blocked pending remaining gates.
+- **Background & Context:** Testing on the host running Docker Engine 29.8.0 via Snap (rev 3613, containerd 2.3.4, runc 1.5.1) confirmed that running containers with mandatory `--security-opt no-new-privileges:true` fails execution during container launch (`operation not permitted`, exit status 255). An informational test on Docker Desktop 29.2.1 passed (`NoNewPrivs: 1`, exit status 0) inside its VM guest, but did not qualify a native Linux environment.
+- **Probe Specification & Verification Result:**
+  - Qualified in dedicated Ubuntu 24.04 QEMU/KVM guest (`docker-ce` 29.8.0, containerd 2.3.4, runc 1.5.1, Linux 6.8 kernel).
+  - Executed under `--pull=never --network none --read-only --cap-drop=ALL --security-opt no-new-privileges:true --user 65534:65534 --pids-limit 16 --memory 64m --cpus 0.5`.
+  - Output: `NoNewPrivs: 1`, exit status `0`.
+- **Scope & Limitations:** Qualification applies strictly to the dedicated Ubuntu 24.04 guest probe. Snap Docker is confirmed incompatible. Arbitrary production hosts are NOT qualified. AppArmor/seccomp softening or NNP omission remains strictly prohibited.
 
 ### Gate 0B: OpenCode Candidate Image Provenance, Base OS ABI & Handshake Qualification
 
-- **Status:** Mandatory Pre-Implementation Gate (Open / Unresolved).
+- **Status:** CANDIDATE QUALIFIED IN DEDICATED GUEST PROBE ONLY (Open for publisher provenance, production password lifecycle, control-plane routing, and egress; see `docs/superpowers/verification/2026-10-11-runtime-qualification-gates-0a-0b.md`). Tasks 1–9 remain blocked pending remaining gates.
 - **Candidate Artifact:**
   - GHCR Tag: `ghcr.io/anomalyco/opencode:2.0.26`
   - Manifest Digest: `sha256:ea6c5d68d8d230923d2627bc793e7fa6a03f8e47c253b50397eb92bbde6db255`
-- **Architecture Questions:**
-  1. *Base OS Selection:* The candidate OpenCode binary is built for Alpine/musl (`linux-x64-baseline-musl`) with `libgcc`, `libstdc++`, and `ripgrep`. Determine whether to standardize ATM sandbox images on Alpine (`Option A`) or use multi-stage copy into Debian bookworm-slim (`Option B`) with verified musl/gcompat runtime compatibility.
-  2. *Provenance Attestation:* Verify upstream SLSA provenance attestation and document limitations (empty builder ID, resolvedDependencies=false).
-  3. *Startup & Auth Smoke Test:* Qualify in a test container that `opencode serve --hostname 0.0.0.0 --port 4096` starts cleanly, honors `OPENCODE_PASSWORD`, and responds with 401 Unauthorized without auth and 200 OK with `Authorization: Basic <base64(opencode:password)>` on `/api/info` and `/api/session`.
+- **Verification Results in Dedicated Guest:**
+  - Standalone binary CLI verified under strict isolation (`opencode --version` -> `opencode v2.0.26`, exit status 0).
+  - Dynamic ABI validated on Alpine Linux 3.24 musl libc (`/lib/ld-musl-x86_64.so.1`, `libstdc++.so.6`, `libgcc_s.so.1`).
+  - Loopback listener bound to `127.0.0.1:4096` under `--network none`.
+  - Inbound unauthenticated probes returned `401 Unauthorized` with `www-authenticate: Basic realm="Secure Area"`.
+  - Authorized positive probe using server-generated password held only in tmpfs returned HTTP `200` (`positive_auth_status=200`, exit status 0).
+- **Residual Open Blockers:**
+  - Upstream publisher signature/provenance remains unverified.
+  - Production password lifecycle (avoiding log scraping or stdout persistence) and control-plane integration remain open.
+  - Gate 0C (credential-safe Git transfer), Gate 0D (default-deny egress), and Tasks 1–9 remain blocked.
 
 ### Gate 0C: Credential-Safe Repository Clone, Sync & Push Data Transfer Mechanism
 

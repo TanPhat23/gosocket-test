@@ -249,43 +249,20 @@ The following items are unresolved architectural decisions and active implementa
 
 ### 7.2 Current Implementation Blockers
 
-1. **Candidate OpenCode GHCR Artifact Discovered but Not Fully Qualified:**
-   Following user approval, the official GHCR image digest (`ghcr.io/anomalyco/opencode:2.0.26`, linux/amd64 manifest `sha256:ea6c5d68d8d230923d2627bc793e7fa6a03f8e47c253b50397eb92bbde6db255`) has been selected as the candidate OpenCode content pin rather than requiring a standalone binary checksum. However, full qualification remains an active blocker due to:
-   - *Provenance & Build Identity:* Although a registry-attached SLSA provenance attestation exists referencing source repository `https://github.com/anomalyco/opencode` and commit `5e73d5cb1f788637b1b3d5cf1298ea694cbad0c5` (the parent of release tag `v2.0.26` commit `9b4ec5714d481559990db0a816d5dec19541a814`, differing only by version metadata), its `resolvedDependencies` field is false and builder ID is empty. It cannot be characterized as fully verified provenance or signed publisher identity.
-   - *Dependency Completeness & ABI Composition:* The binary is packaged in Alpine with `musl`, `libgcc`, `libstdc++`, and `ripgrep`. ABI compatibility and runtime dependencies for ATM container composition are not yet verified.
-   - *Runtime Handshake & Auth Smoke:* Container startup handshake, `OPENCODE_PASSWORD` authentication smoke tests, and command-line execution validation have not yet been run and qualified.
-2. **Native Non-Snap Docker Host Qualification & Mandatory `no-new-privileges` Probe:**
-   On the target Linux host running the default container daemon (Docker Engine 29.8.0 installed via Snap revision 3613, containerd 2.3.4, runc 1.5.1), running containers with mandatory `--security-opt no-new-privileges:true` fails during execution.
-   - **Target Qualification Requirement:** Initial deployment targets a native non-Snap Linux Docker Engine (or a dedicated native Linux VM). Before implementation can begin, the native non-Snap target host must pass the exact qualification probe (`NoNewPrivs: 1`, exit status 0).
-   - **Reproducible A/B Probe Facts (Snap Docker Failure):**
-     - Evaluated against existing local image `alpine:latest` (`--pull=never`). Minimal probe parameters applied: `--network none --read-only --cap-drop=ALL --user 65534:65534 --pids-limit 16 --memory 64m --cpus 0.5`, with zero host bind mounts, environment credentials, published ports, repository code, or registry download.
-     - **With NNP enabled:**
-       ```text
-       docker run --rm --pull=never --network none --read-only --cap-drop=ALL --security-opt no-new-privileges:true --user 65534:65534 --pids-limit 16 --memory 64m --cpus 0.5 --entrypoint /bin/sh alpine:latest -c 'grep "^NoNewPrivs:" /proc/self/status; exec /bin/true'
-       exec /bin/sh: operation not permitted (exit status 255)
-       ```
-     - **Control (otherwise identical probe, only NNP omitted):**
-       ```text
-       docker run --rm --pull=never --network none --read-only --cap-drop=ALL --user 65534:65534 --pids-limit 16 --memory 64m --cpus 0.5 --entrypoint /bin/sh alpine:latest -c 'grep "^NoNewPrivs:" /proc/self/status; exec /bin/true'
-       NoNewPrivs: 0 (exit status 0)
-       ```
-   - **Alternate Daemon Comparison (Docker Desktop Linux VM — Informational Only):**
-     - Docker Desktop daemon (Docker Engine 29.2.1, runc 1.3.4) was started temporarily for comparative testing. Only the pre-existing Alpine test image was copied from the default daemon into Desktop without pulling from any external registry.
-     - Running the exact same restricted probe with NNP enabled succeeded:
-       ```text
-       docker --context desktop-linux run --rm --pull=never --network none --read-only --cap-drop=ALL --security-opt no-new-privileges:true --user 65534:65534 --pids-limit 16 --memory 64m --cpus 0.5 --entrypoint /bin/sh alpine:latest -c 'grep "^NoNewPrivs:" /proc/self/status; grep -q "^NoNewPrivs:[[:space:]]*1$" /proc/self/status; exec /bin/true'
-       NoNewPrivs: 1 (exit status 0)
-       ```
-     - Four pre-existing Desktop containers showed `Exited (255)` upon Desktop startup and were completely untouched; none were running. Following the probe, Docker Desktop was stopped and the Docker context was restored to `default`.
-     - *Scope & Qualification Limitations:* Docker Desktop executes containers inside a dedicated Linux virtual machine, representing an alternate guest kernel and runtime stack. This pass serves solely as an informational VM comparison and development test candidate; it does **not** qualify a native Docker Engine host deployment or ATM's containerized OpenCode runtime.
-   - **Root Cause & Workaround Prohibitions:**
-     - The captured evidence localizes the execution failure specifically to the `no-new-privileges` interaction on this Snap-backed daemon installation. However, Snap confinement or AppArmor profile conflicts remain an unproven hypothesis, not an established root cause.
-     - Workarounds that disable AppArmor, relax Seccomp profiles, or silently omit/bypass `no-new-privileges` are **strictly prohibited**.
-     - In accordance with ATM's security specification, `no-new-privileges:true` is **strictly mandatory and fail-closed**. The Docker Desktop pass does not clear overall sandbox qualification, and implementation remains fully blocked until this runtime incompatibility is resolved on supported native hosts alongside other unapproved architectural decisions.
-   - **Untested Surface:**
-     - Prior probes evaluated only the Linux kernel execution barrier. They did **not** involve provider credentials, host config/data mounts, repository code, workspace volume mounts, OpenCode server runtime processes, authentication handshakes, or network egress filtering.
-3. **Gate D Provider Credential and Egress Validation Blocked:**
-   Validating and testing model provider credential injection and network egress allowlisting for containerized OpenCode servers remains blocked until the candidate OpenCode container artifact is qualified, dependency/ABI composition is resolved, the safe credential transfer mechanism is defined, and the container is runnable on a qualified native host with mandatory security options.
+1. **Gate 0A Qualification Status (Scoped Guest Probe Qualified; Snap Incompatible; Arbitrary Hosts Blocked):**
+   - *Qualification Report Reference:* See `docs/superpowers/verification/2026-10-11-runtime-qualification-gates-0a-0b.md`.
+   - Gate 0A is qualified strictly in the dedicated Ubuntu 24.04 QEMU/KVM guest probe environment running native `docker-ce` 29.8.0, containerd 2.3.4, and runc 1.5.1 under Linux 6.8 kernel (`NoNewPrivs: 1`, exit status 0).
+   - Snap Docker on Ubuntu remains verified **incompatible** (`operation not permitted`, exit status 255).
+   - This qualification does **not** qualify arbitrary production hosts, Docker Desktop, or unverified Linux distributions. Softening AppArmor/seccomp or omitting mandatory `no-new-privileges:true` remains strictly prohibited.
+
+2. **Gate 0B Qualification Status (Candidate In-Guest Probes Qualified; Provenance, Lifecycle, and Egress Gaps Remain):**
+   - *Qualification Report Reference:* See `docs/superpowers/verification/2026-10-11-runtime-qualification-gates-0a-0b.md`.
+   - Candidate image `ghcr.io/anomalyco/opencode:2.0.26` (linux/amd64 manifest `sha256:ea6c5d68d8d230923d2627bc793e7fa6a03f8e47c253b50397eb92bbde6db255`) passed in-guest standalone CLI inspection (`opencode v2.0.26`), musl ABI validation, unauthenticated challenge probing (401 with `www-authenticate: Basic realm="Secure Area"`), and one authorized loopback positive Basic-auth probe (`positive_auth_status=200`, exit status 0) under `--network none` and `--read-only`.
+   - *Residual Open Blockers:* Upstream publisher Cosign/Notary signatures and build provenance remain unverified. Production password lifecycle management (provisioning without stdout/log scraping into persisted Docker logs or task volumes) and control-plane routing remain unresolved. Gate 0B is qualified only for candidate runtime behavior in the dedicated guest, not full production release readiness.
+
+3. **Gate 0C, Gate 0D, and Tasks 1–9 Remain Blocked:**
+   - Gate 0C (credential-safe Git clone/fetch/push transfer without host bind mounts) and Gate 0D (default-deny outbound egress mechanism, blocking metadata `169.254.169.254` and subnets) remain open architectural blockers.
+   - Tasks 1 through 9 of the implementation plan and broader self-hosting implementation remain blocked until all gates are signed off.
 
 ---
 
