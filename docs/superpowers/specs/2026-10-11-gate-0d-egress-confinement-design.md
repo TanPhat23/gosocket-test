@@ -109,12 +109,14 @@ The deployment topology strictly isolates project containers, control-plane mana
 2. **Dedicated Egress DMZ Network (`atm_egress_dmz`):**
    - The forward proxy container (`atm-egress-proxy`) runs attached only to `atm_egress_dmz`.
    - Host routing forwards packets between the project bridge interfaces and the DMZ interface, strictly filtered by host firewall rules.
+   - The proxy container must be permitted outbound forwarding to the host WAN interface for DNS (`udp/tcp dport 53`) and outbound HTTPS (`tcp dport 443`) to resolve and connect to allowlisted upstream package registries.
 3. **Stateful Forwarding Rules (Host Kernel):**
-   - **Direction: Sandbox -> Proxy:** Allowed solely for `tcp dport 3128` destined to the proxy IP `172.30.200.10`.
+   - **Direction: Sandbox -> Proxy:** Allowed solely for `tcp dport 3128` destined to the proxy IP (e.g., `172.30.200.10`).
    - **Direction: Proxy -> Sandbox:** Established and related connections only (`ct state established,related accept`). New inbound connections initiated by the proxy into the sandbox are **strictly dropped**.
    - **Direction: Sandbox -> Direct External WAN:** Dropped.
-   - **Direction: Sandbox -> Host Gateway / Host IP (INPUT chain):** Dropped. Prevents sandbox from reaching host-bound ports (SSH, Docker socket proxies, local management).
+   - **Direction: Sandbox -> Host Gateway / Host IP (INPUT chain):** Default dropped (`iifname "atm-proj-*" drop`). Prevents sandbox from reaching any host-bound services (SSH, Docker socket proxies, local management, control plane).
    - **Direction: Sandbox A -> Sandbox B (Inter-project forwarding):** Dropped.
+   - **Direction: Proxy -> External WAN:** Permitted for outbound proxy DNS and TLS connections (`iifname "atm-egress-dmz" oifname "<wan_interface>"`).
 4. **IPv4 and IPv6 Parity:**
    - Egress blocking applies identically to IPv6.
    - Unless full IPv6 stateful proxying and FQDN filtering are explicitly configured and qualified, IPv6 forwarding from sandbox bridges is disabled at the host kernel (`disable_ipv6=1`) or rejected via `ip6tables`/`nftables` rules (`ip6 saddr ... drop`).
@@ -218,38 +220,57 @@ To prevent DNS-based data exfiltration:
 
 ---
 
-## 7. Concrete Packet Filtering Specifications (Reference nftables Ruleset)
+## 7. Concrete Packet Filtering Specifications (Illustrative nftables Ruleset)
 
-The following reference `nftables` ruleset illustrates the required stateful packet filtering topology. It is deployed and maintained exclusively by the host platform operator:
+The following reference `nftables` ruleset illustrates the required stateful packet filtering topology. It is deployed and maintained exclusively by the host platform operator.
+
+> **CRITICAL OPERATIONAL & SYNTACTIC CONSTRAINTS:**
+> - **Illustrative Snippet:** This ruleset is an architectural reference only and must be validated by the host operator using `nft -c` against the host's active firewall configuration before deployment. It has not been compiled or applied to a live host in this documentation phase.
+> - **Host Project Isolation (No Global Hook Drop):** The ruleset uses `policy accept` on host-wide base hooks and explicitly scopes all restrictive filtering to ATM-managed interfaces (`atm-proj-*`, `atm-egress-dmz`). It **must never** set a global `policy drop` on the host's `forward` or `input` hooks, as doing so would break unrelated Docker containers, default bridges (`docker0`), virtual machines, or other non-ATM workloads sharing the host.
+> - **Interface & Address Placeholders:** Bridge names (`atm-proj-*`, `atm-egress-dmz`), WAN interfaces (`eth0`), and IP addresses (`172.30.200.10`) are illustrative placeholders. Operators must select non-conflicting subnets and map exact interface names matching their host network configuration.
+> - **Proxy WAN Egress & Control-Plane Paths:** The forward filter explicitly allows proxy WAN egress for upstream package retrieval and DNS resolution. Separate control-plane management paths (e.g. Traefik to OpenCode) operate over distinct internal networks and are not routed through project egress bridges.
 
 ```nftables
 table inet atm_confinement {
-    # Define network interface patterns and IP addresses
+    # Illustrative placeholders: operator must configure non-overlapping values
     define PROXY_IP = 172.30.200.10
     define PROXY_PORT = 3128
+    define WAN_IFACE = "eth0"
 
     chain forward {
-        type filter hook forward priority 0; policy drop;
+        # Priority filter hook with accept policy so unrelated host/docker forwarding is untouched
+        type filter hook forward priority 0; policy accept;
 
-        # 1. Allow established and related traffic (return traffic from proxy or WAN)
+        # 1. Allow established and related traffic for all managed interfaces
         ct state established,related accept
 
         # 2. Drop invalid connection states
         ct state invalid drop
 
-        # 3. Allow traffic from any project bridge to the proxy DMZ on the proxy port only
+        # 3. Allow traffic from any ATM project bridge to the proxy DMZ on the proxy port only
         iifname "atm-proj-*" oifname "atm-egress-dmz" ip daddr $PROXY_IP tcp dport $PROXY_PORT ct state new accept
 
-        # 4. Explicitly drop all other inter-project and outbound forwarding
+        # 4. Allow forward traffic from the proxy DMZ to WAN for upstream package registries & DNS
+        iifname "atm-egress-dmz" oifname $WAN_IFACE tcp dport 443 ct state new accept
+        iifname "atm-egress-dmz" oifname $WAN_IFACE udp dport 53 ct state new accept
+        iifname "atm-egress-dmz" oifname $WAN_IFACE tcp dport 53 ct state new accept
+
+        # 5. Drop any attempts by proxy to initiate new connections into project sandboxes
+        iifname "atm-egress-dmz" oifname "atm-proj-*" drop
+
+        # 6. Default-deny for all other project bridge forwarding (drops direct WAN, inter-project bridge traffic)
         iifname "atm-proj-*" drop
     }
 
     chain input {
+        # Priority filter hook with accept policy to preserve unrelated host services
         type filter hook input priority 0; policy accept;
 
-        # Block project containers from reaching host-bound ports (SSH, Docker, Control Plane)
-        iifname "atm-proj-*" ip daddr { 127.0.0.0/8, 169.254.169.254 } drop
-        iifname "atm-proj-*" tcp dport { 22, 2375, 2376, 5432, 6379, 5556, 8080 } drop
+        # Allow established/related return packets to host
+        ct state established,related accept
+
+        # Default-deny: Project sandboxes must NEVER reach any host-bound listening service or gateway IP
+        iifname "atm-proj-*" drop
     }
 }
 ```
@@ -264,12 +285,13 @@ The qualification probe for Gate 0D must be executed on an explicitly authorized
 
 ### 8.1 Test Matrix & Verification Commands
 
-All qualification probes are executed from within a candidate project container (`atm-project-probe`):
+All qualification probes are executed from within a candidate project container (`atm-project-probe`). Note that `--dns=127.0.0.1` is explicitly specified to test local resolver confinement per §6.2:
 
 ```bash
 # Setup candidate probe container attached to test project bridge
 docker run -d --name atm-project-probe \
   --network atm-project-test \
+  --dns=127.0.0.1 \
   --cap-drop=ALL \
   --security-opt no-new-privileges:true \
   --read-only \
