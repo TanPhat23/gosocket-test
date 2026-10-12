@@ -34,12 +34,12 @@ Under the target self-hosting operating model defined in `docs/superpowers/specs
 
 ## 2. Current Implementation vs. Proposed Architecture Warning (SEC-0G-06)
 
-> **WARNING: CURRENT CODE DOES NOT IMPLEMENT THIS SPECIFICATION AND EXPOSES HOST CREDENTIALS**
-> Inspection of current ATM implementation code reveals severe credential exposure risks that fail Gate 0G invariants:
+> **WARNING: CURRENT CODE DOES NOT IMPLEMENT THIS SPECIFICATION AND MAY EXPOSE HOST CREDENTIALS IF A HOST PROFILE HAS THEM**
+> Inspection of current ATM implementation code reveals structural configuration patterns that violate Gate 0G requirements if populated host credentials exist:
 > 1. **Host Directory Bind Mounts:** In `internal/runner/task_runner.go:848-853`, `runInDocker` bind-mounts host OpenCode directories into the task container:
 >    - `r.cfg.OpenCodeConfigDir` is mounted read-only to `/root/.config/opencode`.
 >    - `r.cfg.OpenCodeDataDir` is mounted read-write to `/root/.local/share/opencode`.
->    Per `internal/config/config.go:85-86`, these default to host user paths `/home/ghug/.config/opencode` and `/home/ghug/.local/share/opencode`. Per official OpenCode documentation, `~/.local/share/opencode/auth.json` is the standard auth storage location for provider credentials. Consequently, **any task process executing inside the container today can inspect host provider credentials**.
+>    Per `internal/config/config.go:85-86`, these default to host user paths `/home/ghug/.config/opencode` and `/home/ghug/.local/share/opencode`. Per official OpenCode documentation, `~/.local/share/opencode/auth.json` is the standard auth storage location for provider credentials. Consequently, **if the host profile contains populated credentials, any task process executing inside the container today may inspect host provider credentials**. The presence of credentials in the host environment was not inspected and is environment-dependent; however, the code paths unconditionally mount these host directories into the container.
 > 2. **Inspectable Process Environment:** In `internal/runner/task_runner.go:797-805` and `internal/runner/task_runner.go:837`, `OPENCODE_PASSWORD` is injected directly into `containerCfg.Env`, making it permanently inspectable via `docker inspect`.
 >
 > **Explicit Non-Remediation Boundary:**
@@ -70,14 +70,14 @@ To analyze credential security correctly, the system is partitioned into three d
 +---------------------------------------------------------------------------------------------------+
 | ZONE 1: SEMI-TRUSTED RUNTIME AGENT DAEMON (OpenCode Server Process)                               |
 |                                                                                                   |
-|  - Runs as unprivileged user `opencode` (UID 1000) inside container `atm-project-<id>`.            |
+|  - Proposed Target Sandbox Architecture: Runs as unprivileged user `opencode` (UID 1000).         |
 |  - Holds dynamic `OPENCODE_PASSWORD` (or session auth token) for HTTP Basic auth.                 |
 |  - Configured with custom provider `baseURL` pointing to Control-Plane LLM Gateway over TLS.      |
 |  - Holds short-lived Attempt Gateway Capability Token (NOT a provider API key).                   |
 |  - Executes agent orchestration logic and dispatches tool execution commands.                     |
 +---------------------------------------------------------------------------------------------------+
                                          |
-                   SAME CONTAINER TRUST BOUNDARY (Same UID 1000, Mounts, Network)
+                   SHARED CONTAINER TRUST BOUNDARY (Target: Shared UID 1000, Mounts, Network)
                                          |
                                          v
 +---------------------------------------------------------------------------------------------------+
@@ -92,10 +92,10 @@ To analyze credential security correctly, the system is partitioned into three d
 
 ### 3.2 Realistic Security Boundary Analysis: Zone 1 vs. Zone 2
 
-In a single-container architecture where the OpenCode server daemon and the task execution commands run inside the same container under the same Linux user (`UID 1000`):
+In the proposed target sandbox architecture, where the OpenCode server daemon and the task execution commands are assumed to run inside the same container under the same Linux user (`UID 1000`):
 
-1. **The Shared Process Namespace Risk:**
-   If task commands run in the same PID namespace under the same UID as the OpenCode server, any child command or malicious script (e.g. from an `npm postinstall` hook) can:
+1. **The Shared Process Namespace Threat Assumption:**
+   If task commands run in the same PID namespace under the same UID as the OpenCode server daemon, any child command or malicious script (e.g. from an `npm postinstall` hook) can:
    - Read `/proc/<opencode_pid>/environ` (permitted for processes with matching UID).
    - Inspect `/proc/<opencode_pid>/cmdline`.
    - Attach debugging tools or issue `ptrace` system calls (unless blocked by seccomp/Yama ptrace scope).
@@ -106,7 +106,7 @@ In a single-container architecture where the OpenCode server daemon and the task
    Any network route or socket accessible to the OpenCode daemon is physically accessible to every process running in that container's network namespace. A malicious task script can issue requests to whatever local port or gateway endpoint OpenCode can reach.
 
 **Fundamental Architectural Conclusion:**
-Processes within the same project sandbox share a single trust boundary. Therefore:
+Processes within the same project sandbox share a single trust boundary under the target runtime assumption. Therefore:
 - Long-lived provider API keys must **never** be placed inside Zone 1 or Zone 2.
 - Protecting provider keys requires keeping them entirely in Zone 0 (outside the sandbox).
 - Any capability granted to Zone 1 must be assumed discoverable or callable by Zone 2, requiring strict server-side scoping, rate limiting, and spend caps.
@@ -120,7 +120,7 @@ Processes within the same project sandbox share a single trust boundary. Therefo
 | **Location of Raw Provider Keys** | Outside sandbox (Zone 0 control plane only). | Inside container (Zone 1 OpenCode process memory/env). | Inside container (local broker daemon) or host-mounted socket. |
 | **Exposure to `/proc/<pid>/environ` & Memory** | **Zero exposure.** Keys never enter container memory or process tree. | **High Risk.** Same-UID processes can read parent `/proc/<pid>/environ` or dump memory. | Moderate/High. Broker holds keys or tokens in container memory. |
 | **Resistance to Malicious Dependencies (`postinstall`)** | Complete protection against raw key exfiltration. (Workload can only consume attempt-scoped budget). | **Zero protection.** Malicious script extracts long-lived provider key and exfiltrates it. | Weak. Malicious script talks to local broker socket and requests keys or signatures. |
-| **Egress Filter Compatibility (Gate 0D)** | Natural fit. Container routes only to control-plane gateway; public provider endpoints remain blocked. | Poor fit. Requires punching FQDN holes for Anthropic, OpenAI, etc., in egress firewall. | Mixed. Still requires local socket exposure or external network access. |
+| **Egress Filter Compatibility (Gate 0D)** | **Compatible only after narrow exception qualified.** Not reachable under baseline Gate 0D rules; requires dedicated exception without opening host ports. | Poor fit. Requires punching FQDN holes for Anthropic, OpenAI, etc., in egress firewall. | Mixed. Still requires local socket exposure or external network access. |
 | **Abuse & Spend Containment** | Strong. Control plane enforces per-attempt and per-project token/rate/spend hard caps. | None. Exfiltrated key allows unbounded out-of-band usage against provider account. | Partial. Broker could enforce rate limits, but adds complex IPC inside container. |
 | **Recommendation** | **RECOMMENDED DESIGN DIRECTION** | **REJECTED AS AN ISOLATION BOUNDARY** | **REJECTED (Adds IPC complexity without solving same-UID trust boundary)** |
 
@@ -132,7 +132,7 @@ Processes within the same project sandbox share a single trust boundary. Therefo
 
 #### Option B: Scoped OpenCode Environment with Child-Process Stripping (Rejected)
 - **Mechanism:** The ATM control plane injects `ANTHROPIC_API_KEY` into the OpenCode daemon startup environment. OpenCode's subprocess runner strips these environment variables before invoking bash tools or task scripts.
-- **Why it Fails:** This option falsely treats child-process environment inheritance as an isolation boundary. Under Linux, any process running with the same UID (UID 1000) can read `/proc/<pid>/environ` of its sibling or parent processes unless strict PID namespace isolation, ptrace blocking, and Yama LSM protections are flawlessly configured. Furthermore, memory scraping, core dumps, and shell inspection easily leak the key. Stripping child environments is necessary hygiene, but **cannot serve as a security boundary**. Option B is rejected.
+- **Why it Fails:** This option falsely treats child-process environment inheritance as an isolation boundary. Under Linux, any process running with the same UID (target UID 1000) can read `/proc/<pid>/environ` of its sibling or parent processes unless strict PID namespace isolation, ptrace blocking, and Yama LSM protections are flawlessly configured. Furthermore, memory scraping, core dumps, and shell inspection easily leak the key. Stripping child environments is necessary hygiene, but **cannot serve as a security boundary**. Option B is rejected.
 
 #### Option C: Local In-Sandbox Secret Broker Daemon (Rejected)
 - **Mechanism:** A local broker daemon runs alongside OpenCode to sign requests or mint short-lived tokens.
@@ -165,13 +165,13 @@ The Control-Plane LLM Gateway is a **narrow, purpose-built model API adapter**, 
    When ATM dispatches a task attempt, it mints a short-lived capability token (e.g., HMAC-SHA256 signed JWT or random 32-byte opaque token in Redis) bound to `{project_id, task_id, attempt_id, expires_at}` with a maximum lifetime matching the task timeout (e.g., 60 minutes). When the attempt completes, fails, or is cancelled, the token is immediately invalidated in the control plane.
 5. **Strip Caller-Supplied Upstream Credentials:**
    The gateway must strip any incoming `Authorization`, `x-api-key`, or `proxy-authorization` headers provided by the client, replacing them solely with the control-plane-managed secret for the targeted upstream provider.
-6. **Pre-Allocation, In-Flight Clamping & Hard Spend Enforcement (SEC-0G-01):**
-   Because untrusted code sharing the project sandbox could issue requests to the local gateway endpoint, and because streaming usage data often arrives only at stream completion, the gateway cannot rely solely on post-hoc end-of-stream cumulative accounting. To prevent concurrent streaming spend bypasses:
-   - **Atomic Worst-Case Pre-Allocation:** Before dispatching an upstream request, the gateway atomically calculates and reserves an estimated worst-case budget based on estimated prompt tokens plus the maximum permissible completion tokens for the request. If available project or attempt budget cannot cover this worst-case reservation, the request is rejected immediately with HTTP 429/402 without contacting the provider.
-   - **Enforced Per-Request Completion Caps:** The gateway clamps or overrides `max_tokens` / `max_completion_tokens` on every outbound request to ensure an upper bound on output generation.
-   - **Active In-Flight Stream Accounting & Cancellation:** The gateway actively tracks concurrent in-flight streams per attempt. If cumulative consumption (reserved plus committed) hits the hard quota boundary, active upstream connections are immediately aborted and cancelled.
-   - **Post-Stream Reconciliation:** Upon stream completion or termination, actual token usage is reconciled against the reservation, releasing unconsumed reservation back to the attempt budget.
-   - **Fail-Closed on Unboundable Providers:** If a provider or protocol does not support deterministic maximum token bounding or stream cancellation, it must **fail closed** and be excluded from supported gateway destinations.
+6. **Conservative Pre-Allocation, In-Flight Clamping & Hard Spend Enforcement (SEC-0G-01):**
+   Because untrusted code sharing the project sandbox could issue requests to the local gateway endpoint, and because streaming usage data often arrives only at stream completion, a simple point estimate cannot provide a guaranteed hard financial spend cap. To prevent concurrent streaming spend bypasses and maintain hard bounds:
+   - **Atomic Conservative Upper-Bound Reservation:** Before dispatching an upstream request, the gateway atomically calculates and reserves a conservative upper-bound budget based on the model's pricing: input prompt token cost (conservatively bounded) plus the enforced maximum output token cost for the request. If the remaining project or attempt budget cannot cover this full conservative reservation across all active in-flight streams, the request is rejected immediately with HTTP 429/402 without contacting the provider.
+   - **Enforced Per-Request Completion Caps:** The gateway strictly enforces, clamps, or overrides `max_tokens` / `max_completion_tokens` on every outbound request according to model/provider limits, establishing a deterministic maximum output token ceiling.
+   - **Active In-Flight Stream Accounting & Cancellation:** The gateway actively tracks concurrent in-flight streams per attempt. If cumulative consumption (reserved plus committed) reaches the quota boundary, or if a provider exceeds enforceable bounds, active upstream connections are immediately aborted and cancelled.
+   - **Post-Stream Reconciliation:** Upon stream completion or termination, actual token usage is reconciled against the reservation, releasing unconsumed reserve back to the attempt budget.
+   - **Fail-Closed on Unboundable Providers/Models:** If prompt cost, token usage, or output ceilings cannot be safely bounded prior to dispatch for a specific provider or model, the gateway must **fail closed** for that provider/model, or enforce strictly a token/request quota rather than claiming a guaranteed financial spend cap. The exact tokenizer and pricing catalog implementation remains open engineering work; this architecture specifies the bounding contract rather than claiming an existing pricing engine is already operational.
 7. **Strict Request & Streaming Bounds:**
    - Maximum request payload size (e.g., 20 MB for large context windows).
    - Maximum request timeout and streaming idle timeout (e.g., 30s idle disconnect).
@@ -203,7 +203,7 @@ The Control-Plane LLM Gateway is a **narrow, purpose-built model API adapter**, 
 |  2. Authenticate Token: Validate Bearer token signature, expiry, and revocation state.            |
 |  3. Resolve Context: Extract project_id and attempt_id from token state (reject untrusted input). |
 |  4. Verify Attempt State: Confirm task attempt is currently in status 'running'.                 |
-|  5. Atomic Worst-Case Pre-Allocation: Reserve estimated prompt + max_tokens budget (SEC-0G-01).  |
+|  5. Atomic Upper-Bound Reservation: Reserve input + max_tokens budget (SEC-0G-01).               |
 |  6. Sanitize Request: Clamp max_tokens; strip inbound headers; validate model in catalog.        |
 |  7. Inject Upstream Secret: Load encrypted provider API key from Control Plane Vault.             |
 |  8. Dispatch Upstream: Forward HTTPS request to allowlisted provider (No Redirects, SEC-0G-02).   |
@@ -218,7 +218,7 @@ The Control-Plane LLM Gateway is a **narrow, purpose-built model API adapter**, 
 
 #### In-Sandbox Capability vs. Network Transport Invariants (SEC-0G-04)
 - **Mandatory TLS Transport:** The network hop from sandbox to gateway must use TLS with strict certificate and endpoint validation. Plaintext HTTP carrying bearer capability tokens over Docker bridge networks is strictly prohibited.
-- **Same-Project Process Boundary Reality:** Transport TLS protects credentials against network eavesdropping and external bridge interception. However, **within the container**, any process running under `UID 1000` that can access OpenCode configuration or network sockets can invoke this capability. Therefore, the bearer capability does not constitute a cross-process secrecy boundary within the sandbox. The system relies entirely on server-side active-attempt state, rate limits, atomic budget reservations, and hard spend caps to constrain same-project abuse.
+- **Same-Project Process Boundary Reality:** Transport TLS protects credentials against network eavesdropping and external bridge interception. However, **within the container**, any process running under `UID 1000` (target architecture) that can access OpenCode configuration or network sockets can invoke this capability. Therefore, the bearer capability does not constitute a cross-process secrecy boundary within the sandbox. The system relies entirely on server-side active-attempt state, rate limits, atomic budget reservations, and hard spend caps to constrain same-project abuse.
 
 ---
 
@@ -292,18 +292,18 @@ To prevent leaking the password into `docker inspect` or persisted Docker logs, 
 |---|---|---|---|
 | **Mechanism** | Control plane mounts a private, memory-backed `tmpfs` volume (`/run/secrets/opencode:rw,noexec,nosuid,size=1m`) into the container. ATM writes the generated password file prior to OpenCode startup. OpenCode reads the file on boot. | Container starts with OpenCode listening on a private Unix socket, or connects to a private control-plane socket to receive the password via local IPC before opening HTTP ports. | Container starts with OpenCode generating a random pairing code. ATM redeems `/auth/connect/:code` over HTTP to establish a 30-day HMAC session token. |
 | **Docker Inspect Safety** | **High.** `tmpfs` contents are not inspectable via `docker inspect`. | **High.** Socket IPC is not inspectable via `docker inspect`. | **High.** Pairing code is generated dynamically; no static password passed via Docker env. |
-| **Docker Log Driver Safety** | **High.** No secret emitted to stdout/stderr. | **High.** No secret emitted to stdout/stderr. | **Mixed/Poor.** Pairing code is printed to stdout/logs on startup unless explicitly suppressed. |
-| **Race & Revocation Posture (SEC-0G-05)** | **No Window Race.** Written before container process starts. However, file remains readable by same-UID task processes unless immediately unlinked. | **No Window Race.** Private IPC handshake. Requires custom agent IPC support. | **UNSAFE / UNQUALIFIED AS-IS.** 5-minute redemption window introduces a race condition: any in-container process could redeem the code before ATM. Redeeming mints a 30-day HMAC token that does not match per-task/instance revocation. |
-| **Compatibility with v2.0.26 Binary** | **Requires Wrapper.** v2.0.26 source reads env. Consuming a file requires an entrypoint wrapper that reads the file into env right before `exec`, leaving `/proc/<pid>/environ` exposure. | **Requires Custom Code.** OpenCode v2.0.26 does not natively support an external control-plane socket handshake. | **Native v2.0.26 Support.** Supported in protocol (`packages/server/src/pairing.ts`), but unsafe due to race and long-lived session token. |
-| **Residual Same-UID Risk** | Any process running with UID 1000 can read the file or `/proc` environ. | Any process running with UID 1000 can connect to the Unix socket. | Any process running with UID 1000 can reach loopback and redeem pairing code during the 5-minute window. |
+| **Docker Log Driver Safety** | **High.** No secret emitted to stdout/stderr. | **High.** No secret emitted to stdout/stderr. | **Unspecified / Risk.** In pinned v2.0.26 source ([packages/server/src/pairing.ts](https://github.com/anomalyco/opencode/blob/v2.0.26/packages/server/src/pairing.ts)), the pairing code is generated and returned via API; log exposure is unspecified. Separately, [packages/cli/src/server-process.ts](https://github.com/anomalyco/opencode/blob/v2.0.26/packages/cli/src/server-process.ts) prints `server password ...` to stdout in foreground mode when no password env var is set. Neither can be assumed safe from log capture without verification. |
+| **Race & Revocation Posture (SEC-0G-05)** | **Avoids Network Pairing Flow; File Read Race Persists.** Avoids a network pairing race. However, the file remains readable by same-UID task processes until a safe handoff, unlink, or isolation mechanism is proven. Not recommended as fully secure. | **No Network Pairing Flow.** Private IPC handshake. Avoids network pairing race, but requires custom agent IPC support. | **UNSAFE / UNQUALIFIED AS-IS.** The 5-minute single-use pairing window creates a race condition if the code is discoverable or reachable by an in-container process. Redeeming the code issues a 30-day HMAC session token that does not fit per-task/instance revocation. |
+| **Compatibility with v2.0.26 Binary** | **Requires Wrapper.** v2.0.26 source reads env. Consuming a file requires an entrypoint wrapper that reads the file into env right before `exec`, leaving `/proc/<pid>/environ` exposure. | **Requires Custom Code.** OpenCode v2.0.26 does not natively support an external control-plane socket handshake. | **Native v2.0.26 Protocol.** Supported in protocol ([packages/server/src/pairing.ts](https://github.com/anomalyco/opencode/blob/v2.0.26/packages/server/src/pairing.ts)), but unsafe due to discoverability/race risks and 30-day token lifetime. |
+| **Residual Same-UID Risk** | Any process running with target UID 1000 can read the file or `/proc` environ. | Any process running with target UID 1000 can connect to the Unix socket. | Any process running with target UID 1000 can reach loopback and attempt redemption during the 5-minute window if the code is discoverable. |
 
 ### 7.5 Realistic Risk Analysis & Unresolved Decision Status
 
-**The Same-Container Process Inspection Reality:**
-Because OpenCode and untrusted task code currently run within the same container namespace under `UID 1000`, **any secret known to the OpenCode process is vulnerable to local inspection** by an adversary capable of executing arbitrary code inside the container (e.g. via `/proc/<pid>/environ`, `/proc/<pid>/mem`, or open file descriptors).
+**The Shared-Process Namespace Threat Assumption:**
+Under the target runtime design assumption that OpenCode and task commands share a container namespace under `UID 1000`, **any secret known to the OpenCode process is vulnerable to local inspection** by an adversary capable of executing arbitrary code inside the container (e.g. via `/proc/<pid>/environ`, `/proc/<pid>/mem`, or open file descriptors).
 
 **Decision Status (SEC-0G-05):**
-- **Candidate 3 is marked UNSAFE and UNQUALIFIED AS-IS** due to the 5-minute redemption race condition, unverified stdout logging, and excessive 30-day token lifetime.
+- **Candidate 3 is marked UNSAFE and UNQUALIFIED AS-IS** because code acquisition/race prevention is unproven, stdout logging behavior requires verification, and the 30-day session token does not match per-task/instance revocation.
 - **Candidate 1 is NOT recommended as fully secure** because same-UID task processes can inspect `/run/secrets` or `/proc/<pid>/environ` if an entrypoint wrapper is used.
 - **No candidate is chosen or approved.** The exact mechanism for dynamic password delivery remains strictly **UNRESOLVED** pending formal qualification and adversary-resistant prototyping.
 
@@ -357,7 +357,7 @@ To maintain strict implementation boundaries, the following items are declared *
 | **0G-PROBE-09** | Forged / Missing Capability Token | From container to gateway: request without `Authorization` or with forged signature | Gateway rejects immediately with HTTP 401 Unauthorized; fail closed. | Gateway processes unauthenticated request. |
 | **0G-PROBE-10** | Expired / Cancelled Capability Token | From container to gateway: request using token from a completed/cancelled attempt | Gateway rejects immediately with HTTP 401/403. | Expired or revoked attempt can continue invoking models. |
 | **0G-PROBE-11** | Cross-Project Capability Isolation | Use Project A capability token to request models for Project B context | Gateway authorization fails closed (token strictly bound to Project A). | Gateway permits cross-project billing or resource consumption. |
-| **0G-PROBE-12** | Atomic Pre-Allocation & Spend Cap (SEC-0G-01) | Simulate attempt exceeding budget or dispatching concurrent streams beyond remaining reserve | Gateway rejects pre-allocation with HTTP 429/402 before upstream dispatch; in-flight streams aborted when cap reached. | Gateway permits streaming spend beyond hard quota. |
+| **0G-PROBE-12** | Atomic Upper-Bound Reservation & Spend Cap (SEC-0G-01) | Simulate attempt exceeding budget or dispatching concurrent streams beyond remaining reserve | Gateway rejects reservation with HTTP 429/402 before upstream dispatch; in-flight streams aborted when quota boundary hit. | Gateway permits streaming spend beyond enforceable quota. |
 | **0G-PROBE-13** | Upstream Provider Key Rotation | Rotate provider key in control plane during active system operation | Gateway immediately adopts new key; zero container restart required; no keys leak in error logs. | Gateway fails to rotate or exposes key in retry/error response. |
 | **0G-PROBE-14** | Streaming Cancellation Verification | Client initiates streaming completion, then aborts TCP connection after 2 tokens | Gateway immediately terminates upstream HTTPS connection; upstream token consumption halts. | Upstream connection remains open, burning provider tokens after client abort. |
 | **0G-PROBE-15** | Error & Log Redaction Probe | Induce upstream 4xx/5xx errors (e.g. invalid request format, upstream rate limit) | Gateway returns sanitized error; gateway logs record status code and metadata only, no raw prompts or keys. | Raw upstream credentials or prompts leak in error body or log output. |
@@ -376,8 +376,8 @@ To maintain strict implementation boundaries, the following items are declared *
 | **Network LLM Egress** | **RECOMMENDED DESIGN DIRECTION** | Reverse-proxy all sandbox LLM traffic through a narrow Control-Plane LLM Gateway over TLS. |
 | **Direct Model Egress** | **STRICTLY PROHIBITED** | Direct egress to provider APIs remains default-deny; must be blocked at network boundary. |
 | **Redirects & Upstream SSRF** | **TERMINAL ERROR (ZERO REDIRECTS)** | Upstream redirects treated as fatal errors; credentials never forwarded (SEC-0G-02). |
-| **Spend & Stream Accounting** | **ATOMIC PRE-ALLOCATION & CLAMPING** | Pre-allocate worst-case prompt+output budget; clamp in-flight streams; fail closed (SEC-0G-01). |
+| **Spend & Stream Accounting** | **ATOMIC CONSERVATIVE RESERVATION** | Atomically reserve upper-bound prompt+output budget; clamp in-flight streams; fail closed if unbounded (SEC-0G-01). |
 | **Gate 0D Route Reconciliation** | **HARD UNRESOLVED BLOCKER** | Gate 0D must explicitly qualify dedicated gateway exception without opening host INPUT (SEC-0G-03). |
 | **Dynamic OpenCode Password** | **UNRESOLVED CANDIDATES** | Candidates compared; pairing code marked unsafe; tmpfs not fully safe for same-UID (SEC-0G-05). |
-| **Current Codebase Drift** | **WARNING DOCUMENTED** | Bind mounts (`/home/ghug/...`) and env password delivery fail Gate 0G; downstream fix required (SEC-0G-06). |
+| **Current Codebase Drift** | **WARNING DOCUMENTED** | Bind mounts (`/home/ghug/...`) and env password delivery fail Gate 0G if credentials populated; downstream fix required (SEC-0G-06). |
 | **Gate 0G Overall Status** | **BLOCKED / UNQUALIFIED** | Requires adversarial qualification probe execution, operator review, and prototype sign-off. |
