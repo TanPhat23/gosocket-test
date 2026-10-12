@@ -15,7 +15,7 @@ This document records the durable, redacted technical qualification evidence for
 - **Environment Confinement:** Qualification applies **strictly and exclusively** to the dedicated Ubuntu 24.04 QEMU/KVM guest probe environment described herein.
 - **Incompatible Hosts:** Host Snap Docker Engine is verified **incompatible** with mandatory `no-new-privileges:true` (exiting with status 255 `operation not permitted`). This verification does **not** qualify Snap Docker or arbitrary production hosts.
 - **Blockers Preserved:** This qualification does **not** mark the broader self-hosting implementation as ready or unblock Tasks 1–9 of the runtime implementation plan.
-- **Open Release Blockers:** Gates 0C (credential-safe Git transfer), 0D (default-deny egress filtering and allowlist), 0E, 0F, 0G, publisher signature/provenance verification, dynamic OpenCode password lifecycle management (avoiding persisted Docker logs / stdout scraping), and runtime catalog approval remain open and actively block implementation.
+- **Open Release Blockers:** Gates 0C (credential-safe Git transfer), 0D (default-deny egress filtering and allowlist), 0E, 0F, 0G, publisher signature/provenance verification, cross-image ABI/base OS composition (Alpine/musl vs. Debian/glibc), dynamic OpenCode password lifecycle management (avoiding persisted Docker logs / stdout scraping), minimum production CPU instruction set definition, and runtime catalog approval remain open and actively block implementation.
 
 ---
 
@@ -55,16 +55,26 @@ This document records the durable, redacted technical qualification evidence for
 - **Candidate Image Reference:** `ghcr.io/anomalyco/opencode:2.0.26`
 - **Candidate Linux/amd64 Manifest Digest:** `sha256:ea6c5d68d8d230923d2627bc793e7fa6a03f8e47c253b50397eb92bbde6db255`
 - **OCI Index Digest:** `sha256:15b62c742c702b9750b7636cf3979823c653ef212e66ab217376ca0f32c1ca71`
-- **Base OS:** Alpine Linux v3.24 (Alpine Linux 3.24.2, musl libc)
+- **Base OS (Candidate Image):** Alpine Linux v3.24 (Alpine Linux 3.24.2, musl libc)
 - **Binary Architecture & Path:** `/usr/local/bin/opencode` (`linux/amd64`, standalone compiled Bun binary)
-- **Dynamic Linkage (`ldd`):**
+- **Dynamic Linkage in Candidate Image (`ldd`):**
   - `/lib/ld-musl-x86_64.so.1`
   - `libstdc++.so.6 => /usr/lib/libstdc++.so.6`
   - `libc.musl-x86_64.so.1 => /lib/ld-musl-x86_64.so.1`
   - `libgcc_s.so.1 => /usr/lib/libgcc_s.so.1`
+- **Cross-Image ABI Limitation:** Gate 0B tested the candidate strictly within its native Alpine/musl image. Cross-image ABI compatibility, dynamic link compatibility, and multi-stage composition into ATM's planned Debian/glibc baseline (`debian:bookworm-slim`) were not tested and remain unresolved (Option A vs. Option B in runtime design spec §7.1).
 - **Provenance Status:** Upstream SLSA provenance contains empty builder ID and unverified dependencies; publisher cosign/notary cryptographic signature is unverified. Candidate digest is pinned strictly as a content hash.
 
-### 3.2. CLI Confinement Smoke Probes
+### 3.2. Guest Network Boundary During Pull vs. Container Isolation
+- **Egress Boundary During Pull:** In the isolated qualification VM, QEMU user-mode NAT permitted general outbound network access solely for the single exact-digest image pull. That boundary was procedural, not an enforced GHCR-only domain allowlist. This does not qualify or validate the production default-deny egress filter required for Gate 0D.
+- **Strict Container Isolation During Execution:** All subsequent container executions, inspections, CLI checks, and HTTP probes were executed strictly under `--network none`, ensuring 100% container network isolation with zero outbound traffic.
+
+### 3.3. CPU Instruction Requirements & Hardware Baseline
+- **Observed Execution Hang Under Generic CPU:** Booting the qualification VM with generic QEMU CPU emulation (`qemu64`) caused the Bun-compiled `opencode` binary to hang in a tight instruction loop/spin due to lack of modern x86_64 instruction extensions (such as AVX/SSE4/BMI).
+- **Resolution in Guest:** Probes succeeded only when the hypervisor was passed the host processor capabilities (`-cpu host`).
+- **Production Implication:** Production container hosts and hypervisors must expose modern x86_64 CPU instructions; a formal minimum supported CPU feature floor remains undefined and unstandardized.
+
+### 3.4. CLI Confinement Smoke Probes
 Executed strictly under: `--pull=never --network none --read-only --cap-drop=ALL --security-opt no-new-privileges:true --user 65534:65534 --pids-limit 100 --memory 1g --cpus 1.0 --tmpfs /tmp:rw,noexec,nosuid,size=64m --tmpfs /home/nobody:rw,noexec,nosuid,size=64m`.
 - **Command:** `opencode --version`
   - **Output:** `opencode v2.0.26`
@@ -73,7 +83,7 @@ Executed strictly under: `--pull=never --network none --read-only --cap-drop=ALL
   - **Output:** Start the v2 API and web server (`--hostname`, `--port`, `--cors`, `--service`, `--stdio`)
   - **Exit Status:** `0`
 
-### 3.3. HTTP Loopback Authentication Probes
+### 3.5. HTTP Loopback Authentication Probes
 Probing executed on in-container loopback `127.0.0.1:4096` with `--network none` and `--read-only`:
 1. **Unauthenticated Challenge (`GET /api/info`):**
    - **Status:** `401 Unauthorized`
@@ -98,7 +108,9 @@ Probing executed on in-container loopback `127.0.0.1:4096` with `--network none`
 
 ## 4. Unresolved Risks & Architecture Gaps
 
-1. **Publisher Signature & Provenance:** No cryptographic Cosign/Notary publisher signature verified for `anomalyco/opencode:2.0.26`.
-2. **Production Password Lifecycle:** In-container execution generated passwords to stdout; production architecture requires a deterministic, non-persisted credential injection mechanism without log scraping.
-3. **Control-Plane Routing & Network Egress:** Production default-deny egress controls (Gate 0D) and credential-safe repository transfer (Gate 0C) remain unvalidated.
-4. **Hardware CPU Instruction Requirements:** Standalone Bun binary requires modern x86_64 instruction extensions (hypervisors must pass host CPU features).
+1. **Cross-Image ABI & Base OS Composition:** The candidate binary was qualified only inside its native Alpine/musl image. Dynamic linkage, C library dependencies, and multi-stage extraction into ATM's planned Debian bookworm-slim baseline (runtime spec §7.1 Options A vs. B) remain unvalidated and open.
+2. **Egress Boundary During Pull vs. Production Default-Deny:** Unrestricted guest outbound access occurred during the single image pull via QEMU user-mode NAT; although candidate container runs were strictly `--network none`, production Gate 0D default-deny egress filtering and domain allowlists remain unvalidated.
+3. **Hardware CPU Instruction Baseline:** Bun requires modern x86_64 extensions (AVX/SSE4/BMI); execution hung under generic `qemu64` and required `-cpu host`. A minimum supported CPU instruction floor for production hosts is not established.
+4. **Publisher Signature & Provenance:** No cryptographic Cosign/Notary publisher signature verified for `anomalyco/opencode:2.0.26`.
+5. **Production Password Lifecycle:** In-container execution generated passwords to stdout; production architecture requires a deterministic, non-persisted credential injection mechanism without log scraping into persisted Docker logs or task volumes.
+6. **Control-Plane Routing & Git Transfer:** Production control-plane API routing, credential-safe Git transfer (Gate 0C), and runtime catalog approval remain open release blockers.

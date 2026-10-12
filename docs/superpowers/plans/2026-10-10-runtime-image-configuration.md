@@ -57,7 +57,7 @@
 
 ### Gate 0B: OpenCode Candidate Image Provenance, Base OS ABI & Handshake Qualification
 
-- **Status:** CANDIDATE QUALIFIED IN DEDICATED GUEST PROBE ONLY (Open for publisher provenance, production password lifecycle, control-plane routing, and egress; see `docs/superpowers/verification/2026-10-11-runtime-qualification-gates-0a-0b.md`). Tasks 1–9 remain blocked pending remaining gates.
+- **Status:** CANDIDATE QUALIFIED IN DEDICATED GUEST PROBE ONLY (Open for publisher provenance, base OS composition, CPU requirements, password lifecycle, control-plane routing, and egress; see `docs/superpowers/verification/2026-10-11-runtime-qualification-gates-0a-0b.md`). Tasks 1–9 remain blocked pending remaining gates.
 - **Candidate Artifact:**
   - GHCR Tag: `ghcr.io/anomalyco/opencode:2.0.26`
   - Manifest Digest: `sha256:ea6c5d68d8d230923d2627bc793e7fa6a03f8e47c253b50397eb92bbde6db255`
@@ -68,6 +68,9 @@
   - Inbound unauthenticated probes returned `401 Unauthorized` with `www-authenticate: Basic realm="Secure Area"`.
   - Authorized positive probe using server-generated password held only in tmpfs returned HTTP `200` (`positive_auth_status=200`, exit status 0).
 - **Residual Open Blockers:**
+  - Cross-image ABI/base OS composition (Option A Alpine vs. Option B Debian multi-stage from spec §7.1) remains unresolved; candidate was probed only within its native Alpine image.
+  - General outbound internet access was active during the guest image pull via QEMU user-mode NAT; candidate container probes ran with `--network none`, but production default-deny egress filtering (Gate 0D) remains unvalidated.
+  - Modern x86_64 CPU instructions were required (`-cpu host`); generic `qemu64` hung, and a production minimum CPU instruction floor is not defined.
   - Upstream publisher signature/provenance remains unverified.
   - Production password lifecycle (avoiding log scraping or stdout persistence) and control-plane integration remain open.
   - Gate 0C (credential-safe Git transfer), Gate 0D (default-deny egress), and Tasks 1–9 remain blocked.

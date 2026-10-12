@@ -255,10 +255,15 @@ The following items are unresolved architectural decisions and active implementa
    - Snap Docker on Ubuntu remains verified **incompatible** (`operation not permitted`, exit status 255).
    - This qualification does **not** qualify arbitrary production hosts, Docker Desktop, or unverified Linux distributions. Softening AppArmor/seccomp or omitting mandatory `no-new-privileges:true` remains strictly prohibited.
 
-2. **Gate 0B Qualification Status (Candidate In-Guest Probes Qualified; Provenance, Lifecycle, and Egress Gaps Remain):**
+2. **Gate 0B Qualification Status (Candidate In-Guest Probes Qualified; Provenance, Composition, Lifecycle, and Egress Gaps Remain):**
    - *Qualification Report Reference:* See `docs/superpowers/verification/2026-10-11-runtime-qualification-gates-0a-0b.md`.
    - Candidate image `ghcr.io/anomalyco/opencode:2.0.26` (linux/amd64 manifest `sha256:ea6c5d68d8d230923d2627bc793e7fa6a03f8e47c253b50397eb92bbde6db255`) passed in-guest standalone CLI inspection (`opencode v2.0.26`), musl ABI validation, unauthenticated challenge probing (401 with `www-authenticate: Basic realm="Secure Area"`), and one authorized loopback positive Basic-auth probe (`positive_auth_status=200`, exit status 0) under `--network none` and `--read-only`.
-   - *Residual Open Blockers:* Upstream publisher Cosign/Notary signatures and build provenance remain unverified. Production password lifecycle management (provisioning without stdout/log scraping into persisted Docker logs or task volumes) and control-plane routing remain unresolved. Gate 0B is qualified only for candidate runtime behavior in the dedicated guest, not full production release readiness.
+   - *Residual Open Blockers:*
+     - Cross-image ABI compatibility and base OS composition (Option A Alpine vs. Option B Debian multi-stage from §7.1) remain unvalidated.
+     - General outbound egress was available during image pull via QEMU user-mode NAT; container network isolation was verified only via `--network none`, leaving production Gate 0D default-deny egress mechanisms and allowlists unvalidated.
+     - Execution required modern x86_64 CPU instructions (`-cpu host` in VM); generic `qemu64` hung, and a production minimum CPU instruction floor is not defined.
+     - Upstream publisher Cosign/Notary signatures and build provenance remain unverified.
+     - Production password lifecycle management (provisioning without stdout/log scraping into persisted Docker logs or task volumes) and control-plane routing remain unresolved. Gate 0B is qualified only for candidate runtime behavior in the dedicated guest, not full production release readiness.
 
 3. **Gate 0C, Gate 0D, and Tasks 1–9 Remain Blocked:**
    - Gate 0C (credential-safe Git clone/fetch/push transfer without host bind mounts) and Gate 0D (default-deny outbound egress mechanism, blocking metadata `169.254.169.254` and subnets) remain open architectural blockers.
