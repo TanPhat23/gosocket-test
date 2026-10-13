@@ -2,6 +2,9 @@ package integrations_test
 
 import (
 	"context"
+	"errors"
+	"sort"
+	"strings"
 	"testing"
 
 	"agent-task-manager/internal/integrations"
@@ -285,5 +288,69 @@ func TestPullRequestProvider(t *testing.T) {
 	}
 	if url != "https://example.com/pr/1" {
 		t.Errorf("unexpected pr url: %s", url)
+	}
+}
+
+func TestRegistry_ZeroValueAndParity(t *testing.T) {
+	var reg integrations.Registry // zero value must be usable
+
+	if got := reg.List(); got != nil {
+		t.Fatalf("empty List() = %v, want nil", got)
+	}
+	if _, err := reg.Get(models.IntegrationGitHub); !errors.Is(err, integrations.ErrProviderNotFound) {
+		t.Fatalf("Get on empty = %v, want ErrProviderNotFound", err)
+	}
+
+	first := &mockSyncProvider{provider: models.IntegrationGitHub}
+	second := &mockSyncProvider{provider: models.IntegrationGitHub}
+	if err := reg.Register(first); err != nil {
+		t.Fatal(err)
+	}
+	// LoadOrStore parity: duplicate rejected, first registration wins.
+	err := reg.Register(second)
+	if !errors.Is(err, integrations.ErrProviderAlreadyRegistered) || err.Error() != "provider already registered: github" {
+		t.Fatalf("duplicate error = %v", err)
+	}
+	got, err := reg.Get(models.IntegrationGitHub)
+	if err != nil || got != integrations.SyncProvider(first) {
+		t.Fatalf("Get returned %v, %v; want first provider", got, err)
+	}
+	if err := reg.Register(nil); !errors.Is(err, integrations.ErrProviderNil) {
+		t.Fatalf("nil register = %v", err)
+	}
+
+	jira := &mockSyncProvider{provider: models.IntegrationJira}
+	trello := &mockSyncProvider{provider: models.IntegrationTrello}
+	_ = reg.Register(jira)
+	_ = reg.Register(trello)
+	// List order is unspecified (sync.Map.Range); assert membership only.
+	var names []string
+	for _, p := range reg.List() {
+		names = append(names, string(p.Provider()))
+	}
+	sort.Strings(names)
+	if strings.Join(names, ",") != "github,jira,trello" {
+		t.Fatalf("List() providers = %v", names)
+	}
+}
+
+func TestMemoryIdempotencyStore_ZeroValue(t *testing.T) {
+	var store integrations.MemoryIdempotencyStore
+	ctx := context.Background()
+	if ok, err := store.RecordEvent(ctx, "github", "p", "e1"); err != nil || !ok {
+		t.Fatalf("first RecordEvent = %v, %v", ok, err)
+	}
+	if ok, err := store.RecordEvent(ctx, "github", "p", "e1"); err != nil || ok {
+		t.Fatalf("duplicate RecordEvent = %v, %v", ok, err)
+	}
+	if ok, _ := store.RecordEvent(ctx, "github", "other", "e1"); !ok {
+		t.Fatal("different project must be a distinct key")
+	}
+	if err := store.MarkProcessed(ctx, "github", "p", "e1"); err != nil {
+		t.Fatal(err)
+	}
+	err := store.MarkFailed(ctx, "github", "p", "missing", "x")
+	if err == nil || err.Error() != "webhook event not found: github/p/missing" {
+		t.Fatalf("MarkFailed missing = %v", err)
 	}
 }

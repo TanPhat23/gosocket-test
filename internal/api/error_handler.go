@@ -7,7 +7,6 @@ import (
 	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/service"
 	"github.com/gofiber/fiber/v3"
-	"gorm.io/gorm"
 )
 
 // CentralErrorHandler processes all errors returned by routes and middlewares in Fiber v3.
@@ -85,8 +84,7 @@ func CentralErrorHandler(c fiber.Ctx, err error) error {
 			clientMessage = err.Error()
 
 		// 404 Not Found
-		case errors.Is(err, common.ErrNotFound),
-			errors.Is(err, gorm.ErrRecordNotFound):
+		case common.IsNotFound(err):
 			statusCode = fiber.StatusNotFound
 			clientMessage = "resource not found"
 		case errors.Is(err, service.ErrProjectNotFound),
@@ -118,4 +116,16 @@ func CentralErrorHandler(c fiber.Ctx, err error) error {
 	return c.Status(statusCode).JSON(fiber.Map{
 		"error": clientMessage,
 	})
+}
+
+// badRequest writes a 400 response whose JSON body is {"error": err.Error()}.
+func badRequest(c fiber.Ctx, err error) error {
+	return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+}
+
+// bindBody decodes and validates the request body into a new T via Fiber's Bind().Body.
+func bindBody[T any](c fiber.Ctx) (T, error) {
+	var req T
+	err := c.Bind().Body(&req)
+	return req, err
 }

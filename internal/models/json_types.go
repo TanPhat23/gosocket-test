@@ -70,3 +70,10 @@ func (m *JSONMap) Scan(value any) error {
 	*m = res
 	return nil
 }
+
+// ConfigValue returns m[key] as T. It reports false when the key is absent,
+// the map is nil, or the stored value is not a T (the zero T is returned).
+func ConfigValue[T any](m JSONMap, key string) (T, bool) {
+	v, ok := m[key].(T)
+	return v, ok
+}

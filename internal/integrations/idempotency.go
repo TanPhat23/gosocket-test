@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
+	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/models"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -33,9 +33,10 @@ type memoryEventRecord struct {
 	processedAt  *time.Time
 }
 
-// MemoryIdempotencyStore provides an in-memory implementation for tests using sync.Map.
+// MemoryIdempotencyStore provides an in-memory implementation for tests using common.SafeMap.
 type MemoryIdempotencyStore struct {
-	events sync.Map // map[memoryEventKey]*memoryEventRecord
+	// Value (not pointer) so the zero MemoryIdempotencyStore stays usable.
+	events common.SafeMap[memoryEventKey, *memoryEventRecord]
 }
 
 // NewMemoryIdempotencyStore creates an in-memory IdempotencyStore.
@@ -71,7 +72,7 @@ func (m *MemoryIdempotencyStore) MarkProcessed(ctx context.Context, provider str
 		return fmt.Errorf("webhook event not found: %s/%s/%s", provider, projectID, providerEventID)
 	}
 
-	rec := val.(*memoryEventRecord)
+	rec := val
 	now := time.Now().UTC()
 	rec.status = models.WebhookProcessed
 	rec.processedAt = &now
@@ -90,7 +91,7 @@ func (m *MemoryIdempotencyStore) MarkFailed(ctx context.Context, provider string
 		return fmt.Errorf("webhook event not found: %s/%s/%s", provider, projectID, providerEventID)
 	}
 
-	rec := val.(*memoryEventRecord)
+	rec := val
 	now := time.Now().UTC()
 	rec.status = models.WebhookFailed
 	rec.processedAt = &now

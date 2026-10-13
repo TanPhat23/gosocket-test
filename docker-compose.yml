@@ -63,10 +63,12 @@ services:
     command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-secretredis}"]
     volumes:
       - redis_data:/data
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD:-secretredis}
     networks:
       - backend
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-secretredis}", "ping"]
+      test: ["CMD-SHELL", "test -n \"$$REDISCLI_AUTH\" && [ \"$$(redis-cli ping 2>&1)\" = \"PONG\" ]"]
       interval: 5s
       timeout: 5s
       retries: 5

@@ -27,11 +27,7 @@ func NewCredentialRepository(db *gorm.DB) CredentialRepository {
 }
 
 func (r *credRepo) GetByID(ctx context.Context, id string) (*models.Credential, error) {
-	cred, err := gorm.G[models.Credential](r.db).Where("id = ?", id).First(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &cred, nil
+	return findFirst[models.Credential](ctx, r.db, "id = ?", id)
 }
 
 func (r *credRepo) ListByTeamID(ctx context.Context, teamID string) ([]models.Credential, error) {
@@ -39,11 +35,7 @@ func (r *credRepo) ListByTeamID(ctx context.Context, teamID string) ([]models.Cr
 }
 
 func (r *credRepo) GetByIDAndTeam(ctx context.Context, id, teamID string) (*models.Credential, error) {
-	cred, err := gorm.G[models.Credential](r.db).Where("id = ? AND team_id = ?", id, teamID).First(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &cred, nil
+	return findFirst[models.Credential](ctx, r.db, "id = ? AND team_id = ?", id, teamID)
 }
 
 func (r *credRepo) Create(ctx context.Context, cred *models.Credential) error {

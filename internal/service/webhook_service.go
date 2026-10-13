@@ -185,7 +185,7 @@ func (s *webhookService) HandleGitHubWebhook(ctx context.Context, payload []byte
 	// Secret resolution: check integration.Config["webhook_secret"] first; fallback to credential PAT
 	var hmacSecret string
 	if integration.Config != nil {
-		if sec, ok := integration.Config["webhook_secret"].(string); ok && sec != "" {
+		if sec, ok := models.ConfigValue[string](integration.Config, "webhook_secret"); ok && sec != "" {
 			hmacSecret = sec
 		}
 	}
@@ -212,17 +212,15 @@ func (s *webhookService) HandleGitHubWebhook(ctx context.Context, payload []byte
 		return nil, ErrInvalidSignature
 	}
 
-	if s.idempotencyStore != nil {
-		firstSeen, err := s.idempotencyStore.RecordEvent(ctx, string(models.IntegrationGitHub), integration.ProjectID, deliveryID)
-		if err != nil {
-			return nil, fmt.Errorf("idempotency check failed: %w", err)
-		}
-		if !firstSeen {
-			return &dto.WebhookResultDTO{
-				Status:     "duplicate",
-				DeliveryID: deliveryID,
-			}, nil
-		}
+	dup, err := s.recordOnce(ctx, models.IntegrationGitHub, integration.ProjectID, deliveryID)
+	if err != nil {
+		return nil, err
+	}
+	if dup {
+		return &dto.WebhookResultDTO{
+			Status:     "duplicate",
+			DeliveryID: deliveryID,
+		}, nil
 	}
 
 	var taskIDCreated string
@@ -232,7 +230,7 @@ func (s *webhookService) HandleGitHubWebhook(ctx context.Context, payload []byte
 		// Check filter_label if configured in integration config
 		filterLabel := ""
 		if integration.Config != nil {
-			if fl, ok := integration.Config["filter_label"].(string); ok && fl != "" {
+			if fl, ok := models.ConfigValue[string](integration.Config, "filter_label"); ok && fl != "" {
 				filterLabel = fl
 			}
 		}
@@ -296,13 +294,7 @@ func (s *webhookService) HandleGitHubWebhook(ctx context.Context, payload []byte
 	if ghPayload.CheckRun != nil {
 		checkRun := ghPayload.CheckRun
 		if checkRun.Conclusion != "failure" {
-			if s.idempotencyStore != nil {
-				_ = s.idempotencyStore.MarkProcessed(ctx, string(models.IntegrationGitHub), integration.ProjectID, deliveryID)
-			}
-			return &dto.WebhookResultDTO{
-				Status:     "ignored",
-				DeliveryID: deliveryID,
-			}, nil
+			return s.ignoredGitHub(ctx, integration.ProjectID, deliveryID), nil
 		}
 
 		headBranch := checkRun.CheckSuite.HeadBranch
@@ -327,15 +319,7 @@ func (s *webhookService) HandleGitHubWebhook(ctx context.Context, payload []byte
 				diagOutput,
 			)
 
-			task.Prompt = feedbackPrompt
-			task.Status = models.TaskStatusQueued
-			task.UpdatedAt = time.Now().UTC()
-			_ = s.taskRepo.Update(ctx, task)
-
-			if s.queueClient != nil {
-				_, _ = s.queueClient.EnqueueTask(ctx, task)
-			}
-
+			s.requeueFailedTask(ctx, task, feedbackPrompt)
 			taskIDCreated = task.ID
 		}
 	}
@@ -344,13 +328,7 @@ func (s *webhookService) HandleGitHubWebhook(ctx context.Context, payload []byte
 	if ghPayload.WorkflowRun != nil {
 		wfRun := ghPayload.WorkflowRun
 		if wfRun.Conclusion != "failure" {
-			if s.idempotencyStore != nil {
-				_ = s.idempotencyStore.MarkProcessed(ctx, string(models.IntegrationGitHub), integration.ProjectID, deliveryID)
-			}
-			return &dto.WebhookResultDTO{
-				Status:     "ignored",
-				DeliveryID: deliveryID,
-			}, nil
+			return s.ignoredGitHub(ctx, integration.ProjectID, deliveryID), nil
 		}
 
 		headBranch := wfRun.HeadBranch
@@ -365,15 +343,7 @@ func (s *webhookService) HandleGitHubWebhook(ctx context.Context, payload []byte
 				wfRun.HTMLURL,
 			)
 
-			task.Prompt = feedbackPrompt
-			task.Status = models.TaskStatusQueued
-			task.UpdatedAt = time.Now().UTC()
-			_ = s.taskRepo.Update(ctx, task)
-
-			if s.queueClient != nil {
-				_, _ = s.queueClient.EnqueueTask(ctx, task)
-			}
-
+			s.requeueFailedTask(ctx, task, feedbackPrompt)
 			taskIDCreated = task.ID
 		}
 	}
@@ -411,15 +381,54 @@ func (s *webhookService) HandleGitHubWebhook(ctx context.Context, payload []byte
 		}
 	}
 
-	if s.idempotencyStore != nil {
-		_ = s.idempotencyStore.MarkProcessed(ctx, string(models.IntegrationGitHub), integration.ProjectID, deliveryID)
-	}
+	s.markProcessed(ctx, models.IntegrationGitHub, integration.ProjectID, deliveryID)
 
 	return &dto.WebhookResultDTO{
 		Status:     "processed",
 		DeliveryID: deliveryID,
 		TaskID:     taskIDCreated,
 	}, nil
+}
+
+// recordOnce records the event with the idempotency store (if configured) and
+// reports whether it was already seen.
+func (s *webhookService) recordOnce(ctx context.Context, provider models.IntegrationProvider, projectID, eventID string) (bool, error) {
+	if s.idempotencyStore == nil {
+		return false, nil
+	}
+	firstSeen, err := s.idempotencyStore.RecordEvent(ctx, string(provider), projectID, eventID)
+	if err != nil {
+		return false, fmt.Errorf("idempotency check failed: %w", err)
+	}
+	return !firstSeen, nil
+}
+
+// markProcessed marks the event processed when an idempotency store is configured.
+func (s *webhookService) markProcessed(ctx context.Context, provider models.IntegrationProvider, projectID, eventID string) {
+	if s.idempotencyStore != nil {
+		_ = s.idempotencyStore.MarkProcessed(ctx, string(provider), projectID, eventID)
+	}
+}
+
+// ignoredGitHub marks a GitHub delivery processed and returns the "ignored" result.
+func (s *webhookService) ignoredGitHub(ctx context.Context, projectID, deliveryID string) *dto.WebhookResultDTO {
+	s.markProcessed(ctx, models.IntegrationGitHub, projectID, deliveryID)
+	return &dto.WebhookResultDTO{
+		Status:     "ignored",
+		DeliveryID: deliveryID,
+	}
+}
+
+// requeueFailedTask resets the task prompt to the CI feedback prompt and re-enqueues it.
+func (s *webhookService) requeueFailedTask(ctx context.Context, task *models.Task, prompt string) {
+	task.Prompt = prompt
+	task.Status = models.TaskStatusQueued
+	task.UpdatedAt = time.Now().UTC()
+	_ = s.taskRepo.Update(ctx, task)
+
+	if s.queueClient != nil {
+		_, _ = s.queueClient.EnqueueTask(ctx, task)
+	}
 }
 
 func (s *webhookService) findTaskByBranch(ctx context.Context, projectID, branchName string) *models.Task {
@@ -493,19 +502,17 @@ func (s *webhookService) HandleJiraWebhook(ctx context.Context, payload []byte, 
 		}, nil
 	}
 
-	if s.idempotencyStore != nil {
-		firstSeen, err := s.idempotencyStore.RecordEvent(ctx, string(models.IntegrationJira), integration.ProjectID, eventID)
-		if err != nil {
-			return nil, fmt.Errorf("idempotency check failed: %w", err)
-		}
-		if !firstSeen {
-			return &dto.WebhookResultDTO{
-				Status:  "duplicate",
-				EventID: eventID,
-			}, nil
-		}
-		_ = s.idempotencyStore.MarkProcessed(ctx, string(models.IntegrationJira), integration.ProjectID, eventID)
+	dup, err := s.recordOnce(ctx, models.IntegrationJira, integration.ProjectID, eventID)
+	if err != nil {
+		return nil, err
 	}
+	if dup {
+		return &dto.WebhookResultDTO{
+			Status:  "duplicate",
+			EventID: eventID,
+		}, nil
+	}
+	s.markProcessed(ctx, models.IntegrationJira, integration.ProjectID, eventID)
 
 	return &dto.WebhookResultDTO{
 		Status:  "processed",
@@ -551,19 +558,17 @@ func (s *webhookService) HandleTrelloWebhook(ctx context.Context, payload []byte
 		}, nil
 	}
 
-	if s.idempotencyStore != nil {
-		firstSeen, err := s.idempotencyStore.RecordEvent(ctx, string(models.IntegrationTrello), integration.ProjectID, eventID)
-		if err != nil {
-			return nil, fmt.Errorf("idempotency check failed: %w", err)
-		}
-		if !firstSeen {
-			return &dto.WebhookResultDTO{
-				Status:  "duplicate",
-				EventID: eventID,
-			}, nil
-		}
-		_ = s.idempotencyStore.MarkProcessed(ctx, string(models.IntegrationTrello), integration.ProjectID, eventID)
+	dup, err := s.recordOnce(ctx, models.IntegrationTrello, integration.ProjectID, eventID)
+	if err != nil {
+		return nil, err
 	}
+	if dup {
+		return &dto.WebhookResultDTO{
+			Status:  "duplicate",
+			EventID: eventID,
+		}, nil
+	}
+	s.markProcessed(ctx, models.IntegrationTrello, integration.ProjectID, eventID)
 
 	return &dto.WebhookResultDTO{
 		Status:  "processed",

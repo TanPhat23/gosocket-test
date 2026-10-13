@@ -3,6 +3,8 @@ package common
 import (
 	"errors"
 	"fmt"
+
+	"gorm.io/gorm"
 )
 
 // Standard system errors
@@ -39,3 +41,10 @@ func NewAppError(code int, message string, underlying error) *AppError {
 	}
 }
 
+
+// IsNotFound reports whether err is, or wraps, a "not found" condition from
+// either the domain layer (ErrNotFound) or the persistence layer
+// (gorm.ErrRecordNotFound).
+func IsNotFound(err error) bool {
+	return errors.Is(err, ErrNotFound) || errors.Is(err, gorm.ErrRecordNotFound)
+}

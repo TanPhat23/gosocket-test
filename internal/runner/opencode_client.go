@@ -196,6 +196,21 @@ func (c *openCodeClient) doRequest(ctx context.Context, method, endpoint string,
 	return resp, nil
 }
 
+// mapStatus maps an HTTP status code to a sanitised error (AC-SEC-04): the
+// response body is never included. 404 -> ErrNotFound, 5xx -> ErrServiceUnavailable,
+// other 4xx -> a generic status error with an optional suffix. Codes below 400 yield nil.
+func mapStatus(statusCode int, suffix string) error {
+	switch {
+	case statusCode == http.StatusNotFound:
+		return common.ErrNotFound
+	case statusCode >= 500:
+		return common.ErrServiceUnavailable
+	case statusCode >= 400:
+		return fmt.Errorf("opencode server returned status %d%s", statusCode, suffix)
+	}
+	return nil
+}
+
 func (c *openCodeClient) GetSession(ctx context.Context, sessionID string) (*OpenCodeSessionDTO, error) {
 	escapedID, err := validateSessionID(sessionID)
 	if err != nil {
@@ -208,14 +223,8 @@ func (c *openCodeClient) GetSession(ctx context.Context, sessionID string) (*Ope
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, common.ErrNotFound
-	}
-	if resp.StatusCode >= 500 {
-		return nil, common.ErrServiceUnavailable
-	}
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("opencode server returned status %d", resp.StatusCode)
+	if err := mapStatus(resp.StatusCode, ""); err != nil {
+		return nil, err
 	}
 
 	buf, err := readResponseBody(resp.Body)
@@ -258,15 +267,8 @@ func (c *openCodeClient) GetSession(ctx context.Context, sessionID string) (*Ope
 	}
 
 	if err := json.Unmarshal(respBody, &wrapper); err == nil && wrapper.Data.ID != "" {
-		var createdAt, updatedAt *time.Time
-		if wrapper.Data.Time.Created > 0 {
-			t := time.UnixMilli(wrapper.Data.Time.Created)
-			createdAt = &t
-		}
-		if wrapper.Data.Time.Updated > 0 {
-			t := time.UnixMilli(wrapper.Data.Time.Updated)
-			updatedAt = &t
-		}
+		createdAt := millisToTimePtr(wrapper.Data.Time.Created)
+		updatedAt := millisToTimePtr(wrapper.Data.Time.Updated)
 
 		status := wrapper.Data.Outcome
 		if status == "" {
@@ -309,6 +311,25 @@ func (c *openCodeClient) GetSession(ctx context.Context, sessionID string) (*Ope
 	return &direct, nil
 }
 
+// millisToTimePtr converts Unix milliseconds to a time pointer; non-positive values yield nil.
+func millisToTimePtr(ms int64) *time.Time {
+	if ms <= 0 {
+		return nil
+	}
+	t := time.UnixMilli(ms)
+	return &t
+}
+
+// sortMessagesByCreatedAt orders messages oldest first; pairs with a nil CreatedAt compare equal.
+func sortMessagesByCreatedAt(msgs []OpenCodeMessageDTO) {
+	slices.SortFunc(msgs, func(a, b OpenCodeMessageDTO) int {
+		if a.CreatedAt == nil || b.CreatedAt == nil {
+			return 0
+		}
+		return a.CreatedAt.Compare(*b.CreatedAt)
+	})
+}
+
 func (c *openCodeClient) GetSessionMessages(ctx context.Context, sessionID string) ([]OpenCodeMessageDTO, error) {
 	escapedID, err := validateSessionID(sessionID)
 	if err != nil {
@@ -321,14 +342,8 @@ func (c *openCodeClient) GetSessionMessages(ctx context.Context, sessionID strin
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, common.ErrNotFound
-	}
-	if resp.StatusCode >= 500 {
-		return nil, common.ErrServiceUnavailable
-	}
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("opencode server returned status %d", resp.StatusCode)
+	if err := mapStatus(resp.StatusCode, ""); err != nil {
+		return nil, err
 	}
 
 	buf, err := readResponseBody(resp.Body)
@@ -357,16 +372,8 @@ func (c *openCodeClient) GetSessionMessages(ctx context.Context, sessionID strin
 	if err := json.Unmarshal(respBody, &wrapper); err == nil && wrapper.Data != nil {
 		messages := make([]OpenCodeMessageDTO, len(wrapper.Data))
 		for i, m := range wrapper.Data {
-			var createdAt *time.Time
-			if m.Time.Created > 0 {
-				t := time.UnixMilli(m.Time.Created)
-				createdAt = &t
-			}
-			var completedAt *time.Time
-			if m.Time.Completed > 0 {
-				t := time.UnixMilli(m.Time.Completed)
-				completedAt = &t
-			}
+			createdAt := millisToTimePtr(m.Time.Created)
+			completedAt := millisToTimePtr(m.Time.Completed)
 			var contentObj any
 			if len(m.Content) > 0 {
 				_ = json.Unmarshal(m.Content, &contentObj)
@@ -380,12 +387,9 @@ func (c *openCodeClient) GetSessionMessages(ctx context.Context, sessionID strin
 			}
 			roleVal := m.Role
 			if roleVal == "" {
-				if m.Type == "user" {
-					roleVal = "user"
-				} else if m.Type == "assistant" {
-					roleVal = "assistant"
-				} else if m.Type == "system" {
-					roleVal = "system"
+				switch m.Type {
+				case "user", "assistant", "system":
+					roleVal = m.Type
 				}
 			}
 			messages[i] = OpenCodeMessageDTO{
@@ -400,17 +404,7 @@ func (c *openCodeClient) GetSessionMessages(ctx context.Context, sessionID strin
 			}
 		}
 		// Sort messages chronologically (oldest first, newest last)
-		slices.SortFunc(messages, func(a, b OpenCodeMessageDTO) int {
-			if a.CreatedAt == nil || b.CreatedAt == nil {
-				return 0
-			}
-			if a.CreatedAt.Before(*b.CreatedAt) {
-				return -1
-			} else if a.CreatedAt.After(*b.CreatedAt) {
-				return 1
-			}
-			return 0
-		})
+		sortMessagesByCreatedAt(messages)
 		return messages, nil
 	}
 
@@ -418,17 +412,7 @@ func (c *openCodeClient) GetSessionMessages(ctx context.Context, sessionID strin
 	if err := json.Unmarshal(respBody, &direct); err != nil {
 		return nil, fmt.Errorf("failed to parse opencode messages: %w", err)
 	}
-	slices.SortFunc(direct, func(a, b OpenCodeMessageDTO) int {
-		if a.CreatedAt == nil || b.CreatedAt == nil {
-			return 0
-		}
-		if a.CreatedAt.Before(*b.CreatedAt) {
-			return -1
-		} else if a.CreatedAt.After(*b.CreatedAt) {
-			return 1
-		}
-		return 0
-	})
+	sortMessagesByCreatedAt(direct)
 	return direct, nil
 }
 
@@ -541,17 +525,7 @@ func (c *openCodeClient) CompactSession(ctx context.Context, sessionID string) e
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusNotFound {
-		return common.ErrNotFound
-	}
-	if resp.StatusCode >= 500 {
-		return common.ErrServiceUnavailable
-	}
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("opencode server returned status %d", resp.StatusCode)
-	}
-
-	return nil
+	return mapStatus(resp.StatusCode, "")
 }
 
 func (c *openCodeClient) InterruptSession(ctx context.Context, sessionID string) error {
@@ -569,14 +543,7 @@ func (c *openCodeClient) InterruptSession(ctx context.Context, sessionID string)
 	if resp.StatusCode == http.StatusNotFound {
 		return nil
 	}
-	if resp.StatusCode >= 500 {
-		return common.ErrServiceUnavailable
-	}
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("opencode server returned status %d", resp.StatusCode)
-	}
-
-	return nil
+	return mapStatus(resp.StatusCode, "")
 }
 
 func (c *openCodeClient) InterruptSessionTree(ctx context.Context, rootSessionID string) error {
@@ -665,15 +632,5 @@ func (c *openCodeClient) EnsureSessionAtLocation(ctx context.Context, sessionID,
 	if moveResp.StatusCode == http.StatusOK || moveResp.StatusCode == http.StatusNoContent {
 		return nil
 	}
-	if moveResp.StatusCode == http.StatusNotFound {
-		return common.ErrNotFound
-	}
-	if moveResp.StatusCode >= 500 {
-		return common.ErrServiceUnavailable
-	}
-	if moveResp.StatusCode >= 400 {
-		return fmt.Errorf("opencode server returned status %d on move", moveResp.StatusCode)
-	}
-
-	return nil
+	return mapStatus(moveResp.StatusCode, " on move")
 }

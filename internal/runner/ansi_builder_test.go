@@ -98,3 +98,13 @@ func TestANSIBuilder_ConcurrentPool(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestANSIBuilder_ColorGolden(t *testing.T) {
+	b := AcquireANSIBuilder()
+	defer b.Release()
+	b.Yellow("y").Green("g").Red("r").Cyan("c").Yellow("")
+	want := "\x1b[33my\x1b[0m\x1b[32mg\x1b[0m\x1b[31mr\x1b[0m\x1b[36mc\x1b[0m\x1b[33m\x1b[0m"
+	if got := b.String(); got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}

@@ -432,7 +432,7 @@ func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attemp
 		repoSlug := ghInteg.ExternalID
 		baseBranch := "main"
 		if ghInteg.Config != nil {
-			if b, ok := ghInteg.Config["base_branch"].(string); ok && b != "" {
+			if b, ok := models.ConfigValue[string](ghInteg.Config, "base_branch"); ok && b != "" {
 				baseBranch = b
 			}
 		}
@@ -682,7 +682,7 @@ func (r *AgentTaskRunner) maybeAutoCreatePR(
 	// Check auto_pr flag
 	autoPR := true
 	if ghInteg.Config != nil {
-		if v, ok := ghInteg.Config["auto_pr"].(bool); ok {
+		if v, ok := models.ConfigValue[bool](ghInteg.Config, "auto_pr"); ok {
 			autoPR = v
 		}
 	}
@@ -704,10 +704,7 @@ func (r *AgentTaskRunner) maybeAutoCreatePR(
 	}
 
 	branchName := fmt.Sprintf("task/%s", task.ID)
-	remoteURL := fmt.Sprintf("https://github.com/%s.git", ghInteg.ExternalID)
-	if strings.HasPrefix(ghInteg.ExternalID, "http://") || strings.HasPrefix(ghInteg.ExternalID, "https://") || strings.HasPrefix(ghInteg.ExternalID, "file://") {
-		remoteURL = ghInteg.ExternalID
-	}
+	remoteURL := git.RemoteURL(ghInteg.ExternalID)
 
 	r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[36m[Agent Control Plane]\x1b[0m Pushing branch %s to remote %s...\r\n", branchName, ghInteg.ExternalID))
 	if err := git.PushBranch(ctx, localWorktreePath, remoteURL, token, branchName); err != nil {

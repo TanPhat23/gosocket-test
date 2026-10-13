@@ -25,19 +25,11 @@ func NewTeamRepository(db *gorm.DB) TeamRepository {
 }
 
 func (r *teamRepo) GetByID(ctx context.Context, id string) (*models.Team, error) {
-	team, err := gorm.G[models.Team](r.db).Where("id = ?", id).First(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &team, nil
+	return findFirst[models.Team](ctx, r.db, "id = ?", id)
 }
 
 func (r *teamRepo) GetMembership(ctx context.Context, teamID, userID string) (*models.TeamMembership, error) {
-	membership, err := gorm.G[models.TeamMembership](r.db).Where("team_id = ? AND user_id = ?", teamID, userID).First(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &membership, nil
+	return findFirst[models.TeamMembership](ctx, r.db, "team_id = ? AND user_id = ?", teamID, userID)
 }
 
 func (r *teamRepo) AddMembership(ctx context.Context, membership *models.TeamMembership) error {

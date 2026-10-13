@@ -26,10 +26,7 @@ func SyncGitHubRepo(ctx context.Context, repoPath, repoSlug, baseBranch, token s
 		baseBranch = "main"
 	}
 
-	remoteURL := fmt.Sprintf("https://github.com/%s.git", repoSlug)
-	if strings.HasPrefix(repoSlug, "http://") || strings.HasPrefix(repoSlug, "https://") || strings.HasPrefix(repoSlug, "file://") {
-		remoteURL = repoSlug
-	}
+	remoteURL := RemoteURL(repoSlug)
 	authHeader := fmt.Sprintf("Authorization: Basic %s", base64.StdEncoding.EncodeToString([]byte("x-access-token:"+token)))
 
 	gitDir := filepath.Join(repoPath, ".git")
@@ -173,4 +170,14 @@ fetchPost:
 		logFn(fmt.Sprintf("\x1b[32m✔ Repository %s synced with latest upstream %s.\x1b[0m\r\n", repoSlug, baseBranch))
 	}
 	return nil
+}
+
+// RemoteURL returns the git remote URL for a repository slug. Values that are
+// already http://, https:// or file:// URLs are returned unchanged; anything
+// else is treated as a GitHub "owner/repo" slug.
+func RemoteURL(slug string) string {
+	if strings.HasPrefix(slug, "http://") || strings.HasPrefix(slug, "https://") || strings.HasPrefix(slug, "file://") {
+		return slug
+	}
+	return fmt.Sprintf("https://github.com/%s.git", slug)
 }

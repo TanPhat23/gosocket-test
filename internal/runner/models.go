@@ -4,8 +4,9 @@ import (
 	"bytes"
 	"context"
 	"os/exec"
+	"slices"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"agent-task-manager/internal/config"
@@ -19,11 +20,14 @@ type ModelInfo struct {
 	Active   bool   `json:"active,omitempty"`
 }
 
-var (
-	modelCacheLock sync.RWMutex
-	cachedModels   []ModelInfo
-	cacheExpiry    time.Time
-)
+// modelCacheEntry is an immutable snapshot of the model list and its expiry.
+// It is published atomically so readers always observe a consistent pair.
+type modelCacheEntry struct {
+	models []ModelInfo
+	expiry time.Time
+}
+
+var modelCache atomic.Pointer[modelCacheEntry]
 
 // ParseModelEntry converts a raw provider/model string into a structured ModelInfo.
 func ParseModelEntry(entry string) ModelInfo {
@@ -86,14 +90,9 @@ func DefaultKnownModels() []ModelInfo {
 
 // ListAvailableModels queries OpenCode for models, falling back to default known models.
 func ListAvailableModels(cfg *config.Config) []ModelInfo {
-	modelCacheLock.RLock()
-	if len(cachedModels) > 0 && time.Now().Before(cacheExpiry) {
-		res := make([]ModelInfo, len(cachedModels))
-		copy(res, cachedModels)
-		modelCacheLock.RUnlock()
-		return res
+	if c := modelCache.Load(); c != nil && len(c.models) > 0 && time.Now().Before(c.expiry) {
+		return slices.Clone(c.models)
 	}
-	modelCacheLock.RUnlock()
 
 	var models []ModelInfo
 
@@ -150,10 +149,11 @@ func ListAvailableModels(cfg *config.Config) []ModelInfo {
 		}
 	}
 
-	modelCacheLock.Lock()
-	cachedModels = prioritized
-	cacheExpiry = time.Now().Add(1 * time.Minute)
-	modelCacheLock.Unlock()
+	modelCache.Store(&modelCacheEntry{
+		models: prioritized,
+		expiry: time.Now().Add(1 * time.Minute),
+	})
 
-	return prioritized
+	// Return a copy so callers cannot mutate the cached snapshot.
+	return slices.Clone(prioritized)
 }

@@ -25,19 +25,11 @@ func NewUserRepository(db *gorm.DB) UserRepository {
 }
 
 func (r *userRepo) GetByID(ctx context.Context, id string) (*models.User, error) {
-	user, err := gorm.G[models.User](r.db).Where("id = ?", id).First(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &user, nil
+	return findFirst[models.User](ctx, r.db, "id = ?", id)
 }
 
 func (r *userRepo) GetByIssuerSubject(ctx context.Context, issuer, subject string) (*models.User, error) {
-	user, err := gorm.G[models.User](r.db).Where("issuer = ? AND subject = ?", issuer, subject).First(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &user, nil
+	return findFirst[models.User](ctx, r.db, "issuer = ? AND subject = ?", issuer, subject)
 }
 
 func (r *userRepo) Create(ctx context.Context, user *models.User) error {
@@ -49,11 +41,5 @@ func (r *userRepo) Update(ctx context.Context, user *models.User, updates map[st
 		return nil
 	}
 	res := r.db.WithContext(ctx).Model(user).Updates(updates)
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected == 0 {
-		return gorm.ErrRecordNotFound
-	}
-	return nil
+	return notFoundIfNone(res)
 }

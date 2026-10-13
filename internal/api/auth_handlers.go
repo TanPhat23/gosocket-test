@@ -75,13 +75,7 @@ func (h *AuthHandlers) LoginWithCredentials(c fiber.Ctx) error {
 
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
 		"status": "authenticated",
-		"user": dto.UserResponseDTO{
-			ID:          user.ID,
-			Issuer:      user.Issuer,
-			Subject:     user.Subject,
-			Email:       user.Email,
-			DisplayName: user.DisplayName,
-		},
+		"user":   dto.ToUserResponse(user),
 	})
 }
 
@@ -133,13 +127,7 @@ func (h *AuthHandlers) Callback(c fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{
 		"status": "authenticated",
-		"user": dto.UserResponseDTO{
-			ID:          user.ID,
-			Issuer:      user.Issuer,
-			Subject:     user.Subject,
-			Email:       user.Email,
-			DisplayName: user.DisplayName,
-		},
+		"user":   dto.ToUserResponse(user),
 	})
 }
 
@@ -170,12 +158,6 @@ func (h *AuthHandlers) Me(c fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"user": dto.UserResponseDTO{
-			ID:          user.ID,
-			Issuer:      user.Issuer,
-			Subject:     user.Subject,
-			Email:       user.Email,
-			DisplayName: user.DisplayName,
-		},
+		"user": dto.ToUserResponse(user),
 	})
 }

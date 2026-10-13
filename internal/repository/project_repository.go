@@ -33,11 +33,7 @@ func (r *projectRepo) List(ctx context.Context, teamID string) ([]models.Project
 }
 
 func (r *projectRepo) GetByID(ctx context.Context, id string) (*models.Project, error) {
-	project, err := gorm.G[models.Project](r.db).Where("id = ?", id).First(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &project, nil
+	return findFirst[models.Project](ctx, r.db, "id = ?", id)
 }
 
 func (r *projectRepo) Create(ctx context.Context, p *models.Project) error {
