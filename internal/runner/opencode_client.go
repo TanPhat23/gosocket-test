@@ -95,6 +95,54 @@ type openCodeClient struct {
 	httpClient *http.Client
 }
 
+// NewProjectOpenCodeClient creates and validates an OpenCodeClient instance specifically for
+// communicating with an in-container project-scoped OpenCode server.
+// It requires an explicit HTTP or HTTPS endpointURL with non-empty host, rejects non-http schemes (file, ftp, unix),
+// strictly avoids host Unix socket fallbacks, disables redirects, and uses HTTP Basic Authentication.
+func NewProjectOpenCodeClient(endpointURL, password string, httpClient *http.Client) (OpenCodeClient, error) {
+	if endpointURL == "" {
+		return nil, errors.New("endpointURL cannot be empty")
+	}
+
+	parsedURL, err := url.Parse(endpointURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid endpointURL: %w", err)
+	}
+
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return nil, fmt.Errorf("invalid endpointURL scheme %q: must be http or https", parsedURL.Scheme)
+	}
+	if parsedURL.Host == "" {
+		return nil, errors.New("endpointURL host cannot be empty")
+	}
+
+	cleanBaseURL := strings.TrimRight(endpointURL, "/")
+
+	client := httpClient
+	if client == nil {
+		transport := &http.Transport{}
+		client = &http.Client{
+			Timeout:   30 * time.Second,
+			Transport: transport,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
+	} else {
+		clone := *client
+		clone.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+		client = &clone
+	}
+
+	return &openCodeClient{
+		baseURL:    cleanBaseURL,
+		password:   password,
+		httpClient: client,
+	}, nil
+}
+
 // NewOpenCodeClient creates and validates an OpenCodeClient instance.
 // AC-SEC-03: Strictly verifies HTTP/HTTPS URL scheme and disables redirects.
 // In containerized deployments, automatically bridges loopback port 49374 via local opencode.sock when present.

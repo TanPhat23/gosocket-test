@@ -96,6 +96,9 @@ func CentralErrorHandler(c fiber.Ctx, err error) error {
 			clientMessage = err.Error()
 
 		// 503 Service Unavailable
+		case errors.Is(err, common.ErrRuntimeQuarantined):
+			statusCode = fiber.StatusServiceUnavailable
+			clientMessage = "Task execution is temporarily unavailable"
 		case errors.Is(err, common.ErrServiceUnavailable):
 			statusCode = fiber.StatusServiceUnavailable
 			clientMessage = common.ErrServiceUnavailable.Error()

@@ -396,17 +396,8 @@ func (s *webhookService) HandleGitHubWebhook(ctx context.Context, payload []byte
 				}
 				taskIDCreated = task.ID
 
-				// If linked to an issue, close issue on GitHub and post completion comment
-				if task.ExternalID != nil && *task.ExternalID != "" && s.ghProvider != nil && s.cipher != nil {
-					cred, _ := s.credRepo.GetByID(ctx, integration.CredentialID)
-					if cred != nil {
-						token, _ := s.cipher.Decrypt(cred.EncryptedData)
-						if token != "" {
-							_ = s.ghProvider.UpdateIssueStatus(ctx, integration, token, *task.ExternalID, "closed")
-							_ = s.ghProvider.AddComment(ctx, integration, token, *task.ExternalID, fmt.Sprintf("Pull Request %s was merged. Task marked as completed.", pr.HTMLURL))
-						}
-					}
-				}
+				// Closing the linked GitHub issue (PAT decrypt + GitHub writes) is disabled pending
+				// Phase 1B/Gates 0C/0D/0G; see closeLinkedIssueOnMergeDisabledDraft.
 			}
 		}
 	}
@@ -420,6 +411,21 @@ func (s *webhookService) HandleGitHubWebhook(ctx context.Context, payload []byte
 		DeliveryID: deliveryID,
 		TaskID:     taskIDCreated,
 	}, nil
+}
+
+// closeLinkedIssueOnMergeDisabledDraft is the original merged-PR issue sync, intentionally unreferenced.
+func (s *webhookService) closeLinkedIssueOnMergeDisabledDraft(ctx context.Context, integration *models.ProjectIntegration, task *models.Task, prHTMLURL string) {
+	// If linked to an issue, close issue on GitHub and post completion comment
+	if task.ExternalID != nil && *task.ExternalID != "" && s.ghProvider != nil && s.cipher != nil {
+		cred, _ := s.credRepo.GetByID(ctx, integration.CredentialID)
+		if cred != nil {
+			token, _ := s.cipher.Decrypt(cred.EncryptedData)
+			if token != "" {
+				_ = s.ghProvider.UpdateIssueStatus(ctx, integration, token, *task.ExternalID, "closed")
+				_ = s.ghProvider.AddComment(ctx, integration, token, *task.ExternalID, fmt.Sprintf("Pull Request %s was merged. Task marked as completed.", prHTMLURL))
+			}
+		}
+	}
 }
 
 func (s *webhookService) findTaskByBranch(ctx context.Context, projectID, branchName string) *models.Task {

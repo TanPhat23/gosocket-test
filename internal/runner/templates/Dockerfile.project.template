@@ -1,0 +1,37 @@
+FROM {{.BaseImageRef}}
+
+# Base utilities and runtime dependencies required for tools and Alpine musl compatibility
+RUN apk add --no-cache \
+    ca-certificates \
+    git \
+    curl \
+    tar \
+    xz \
+    bash \
+    build-base \
+    libstdc++ \
+    gcompat
+
+# Multi-stage copy pinned OpenCode binary
+COPY --from=ghcr.io/anomalyco/opencode:2.0.26@{{.OpenCodeDigest}} /usr/local/bin/opencode /usr/local/bin/opencode
+
+# Unprivileged user and workspace directory
+RUN addgroup -g 1000 opencode && \
+    adduser -u 1000 -G opencode -s /bin/sh -D opencode && \
+    mkdir -p /workspaces && \
+    chown -R opencode:opencode /workspaces
+
+{{range .Toolchains}}
+# Toolchain: {{.Runtime}} {{.Version}}
+RUN set -eu; \
+    mkdir -p {{.ExtractPath}}; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o /tmp/atm-toolchain.archive "{{.ArchiveURL}}"; \
+    echo "{{requireSHA256 .SHA256}}  /tmp/atm-toolchain.archive" | sha256sum -c -; \
+    tar -x{{tarFlag .ArchiveFormat}}f /tmp/atm-toolchain.archive -C {{.ExtractPath}} --strip-components=1; \
+    rm -f /tmp/atm-toolchain.archive; \
+    chown -R root:root {{.ExtractPath}}
+ENV PATH="{{.ExtractPath}}/bin:${PATH}"
+{{end}}
+
+WORKDIR /workspaces
+USER opencode:opencode

@@ -31,6 +31,7 @@ func setupIntegrationTestDB(t *testing.T) *gorm.DB {
 			team_id TEXT NOT NULL,
 			name TEXT NOT NULL,
 			repo_path TEXT NOT NULL,
+			runtime_config TEXT NOT NULL DEFAULT '{}',
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);`,

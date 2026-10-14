@@ -141,15 +141,15 @@ func (s *Server) setupRoutes() {
 	// Task routes
 	if s.TaskService != nil {
 		taskHandlers := NewTaskHandlers(s.TaskService)
-		v1.Get("/tasks", taskHandlers.List)
-		v1.Get("/tasks/:task_id", taskHandlers.Get)
-		v1.Post("/tasks", taskHandlers.Create)
+		v1.Get("/tasks", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.List)
+		v1.Get("/tasks/:task_id", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.Get)
+		v1.Post("/tasks", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.Create)
 		v1.Post("/tasks/:task_id/cancel", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.Cancel)
 		v1.Post("/tasks/:id/cancel", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.Cancel)
-		v1.Post("/tasks/:id/pr", taskHandlers.CreatePR)
-		v1.Post("/tasks/:id/sync-pr", OptionalAuth(s.AuthService, s.SessionManager), taskHandlers.SyncPR)
-		v1.Post("/tasks/:id/pr/sync", OptionalAuth(s.AuthService, s.SessionManager), taskHandlers.SyncPR)
-		v1.Get("/tasks/:id/diff", OptionalAuth(s.AuthService, s.SessionManager), taskHandlers.GetDiff)
+		v1.Post("/tasks/:id/pr", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.CreatePR)
+		v1.Post("/tasks/:id/sync-pr", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.SyncPR)
+		v1.Post("/tasks/:id/pr/sync", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.SyncPR)
+		v1.Get("/tasks/:id/diff", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.GetDiff)
 
 		// OpenCode session endpoints (AC-SEC-01: Protected by RequireAuth)
 		sessionGroup := v1.Group("/tasks/:id/session", RequireAuth(s.AuthService, s.SessionManager))

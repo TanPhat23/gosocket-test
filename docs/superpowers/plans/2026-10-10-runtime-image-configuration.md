@@ -77,21 +77,26 @@
 
 ### Gate 0C: Credential-Safe Repository Clone, Sync & Push Data Transfer Mechanism
 
-- **Status:** Mandatory Pre-Implementation Gate (Open / Unresolved).
-- **Problem Statement:** Host bind mounts are eliminated. Raw GitHub personal access tokens remain solely in the ATM control plane and must never be placed inside the project container, `/workspaces`, `.git/config`, or task-visible environment variables.
-- **Deliverable:**
-  - Design and qualify an exact mechanism to transfer repository data and perform authenticated fetch/push operations between the control plane and persistent volume `atm-project-data-<project_id>`.
-  - Evaluate candidates: control-plane daemon-driven archive streaming (`docker cp` / tar stream over Docker SDK), dedicated transient control-plane Git credential helper pipe, or authenticated proxy sidecar on an internal network.
-  - Require formal security review and coordinator sign-off before proceeding to implementation tasks (specifically blocking Task 5 `WorkspaceManager` and dependent tasks).
+- **Status:** PLANNING DIRECTION SELECTED (Option A Proposed by User Planning Input); Security Review, Qualification Probes & Checkpoints A/B Pending. Implementation Blocked.
+- **Approved Architecture (Option A):** Host bind mounts are eliminated. Raw GitHub personal access tokens remain solely in the ATM control plane and are never placed inside the project container, `/workspaces`, `.git/config`, or task-visible environment variables. Ephemeral unprivileged Git workers stream credential-free `git bundle` payloads into non-networked volume helpers attached to `atm-project-data-<project_id>`. Git LFS and submodules are explicitly disabled and rejected fail-closed in v1.
+- **Deliverable:** `docs/superpowers/specs/2026-10-11-gate-0c-git-transfer-design.md`. Qualification probe execution governs Task 5 integration.
 
 ### Gate 0D: Container Egress Filtering Mechanism & Endpoint Allowlisting
 
-- **Status:** Mandatory Pre-Implementation Gate (Open / Unresolved).
-- **Problem Statement:** Project sandbox containers must enforce default-deny egress, explicitly blocking access to host/control-plane private networks (RFC 1918, RFC 6598), Docker bridge gateways, IPv4/IPv6 link-local addresses, and cloud provider metadata (`169.254.169.254`, `[fd00:ec2::254]`).
-- **Deliverable:**
-  - Qualify the filtering implementation: host-managed iptables/nftables rules applied to the project Docker bridge network vs. container egress proxy sidecar.
-  - Document specific allowed external destinations: LLM model provider endpoints (Anthropic, OpenAI) and approved public package registries.
-  - Require formal security review and coordinator sign-off before proceeding to implementation tasks (specifically blocking Task 4 `ProjectSandboxManager` and dependent tasks).
+- **Status:** PLANNING DIRECTION SELECTED (Option C Proposed by User Planning Input); Security Review, Qualification Probes & Checkpoints A/B Pending. Implementation Blocked.
+- **Approved Architecture (Option C):** Project sandbox containers execute on isolated per-project Docker bridge networks enforcing kernel-level default-deny outbound filtering (blocking private subnets, host bridge interfaces, link-local, and cloud metadata endpoints `169.254.169.254` / `[fd00:ec2::254]`). Outbound HTTP/HTTPS traffic routes strictly via an unauthenticated, constrained forward proxy on a dedicated DMZ bridge, enforcing exact FQDN allowlists for approved package registries. Direct internet access is blocked at Layer 3/Layer 4.
+- **Deliverable:** `docs/superpowers/specs/2026-10-11-gate-0d-egress-confinement-design.md`. Qualification probe execution governs Task 4 integration.
+
+### Gate 0G: Model Provider Credential Delivery & OpenCode Password Lifecycle
+
+- **Status:** PLANNING DIRECTION SELECTED (Option A Gateway Proposed for Planning); Password Delivery Unresolved; Security Review, Qualification & Checkpoints A/B Pending. Implementation Blocked.
+- **Approved Architecture (Option A):** Project containers have zero model provider API keys and zero direct internet access to provider endpoints. The control plane operates a narrow, authenticating, rate-limited, spend-capped LLM reverse proxy gateway. Project sandboxes receive only short-lived, revocable, per-attempt capability tokens. OpenCode HTTP API authentication password (`OPENCODE_PASSWORD`) dynamic provisioning mechanism remains **UNRESOLVED**; private tmpfs delivery (`/run/secrets/opencode`) is not approved as fully secure and lacks daemon entrypoint consumption.
+- **Deliverable:** `docs/superpowers/specs/2026-10-11-gate-0g-model-credential-isolation-design.md`.
+
+### Runtime Catalog Baseline & Licensing Approval
+
+- **Catalog Baseline:** Candidate version selections chosen by user for planning baseline (Go 1.27.2, Node 24.21.0, Python 3.11.17, Java 25.0.4.1+1, Rust 1.99.0, .NET 10.0.401, OpenCode 2.0.26 OCI candidate pin). Selection of catalog versions does not establish upstream availability, checksum verification, or provenance.
+- **Repository License:** MIT License chosen by user. Tracked `LICENSE` file creation is governed by `docs/superpowers/plans/2026-10-11-deployment-and-hardening.md`.
 
 ---
 
@@ -144,7 +149,7 @@ type RuntimeCatalog interface {
 }
 ```
 
-- [ ] **Step 1: Write failing tests for models.Project RuntimeConfig and RuntimeCatalog**
+- [ ] **Step 1: Write failing tests for models.Project RuntimeConfig and RuntimeCatalog** (Draft tests implemented, verification pending / isolated qualification required)
   - Create `internal/runner/runtime_catalog_test.go` asserting baseline versions:
     - `go`: `"1.27.2"`, `node`: `"24.21.0"`, `python`: `"3.11.17"` (default enabled).
     - `java`: `"25.0.4.1+1"`, `rust`: `"1.99.0"`, `dotnet`: `"10.0.401"` (default `"false"`).
@@ -153,11 +158,11 @@ type RuntimeCatalog interface {
 - [ ] **Step 2: Run focused test to verify failure**
   - Command: `go test -v ./internal/runner -run TestRuntimeCatalog`
   - Expected: FAIL (`undefined: runner.NewDefaultRuntimeCatalog`)
-- [ ] **Step 3: Implement Runtime types, catalog, and Project model update**
+- [ ] **Step 3: Implement Runtime types, catalog, and Project model update** (Draft implemented, verification pending; catalog SHA256 fields empty)
   - In `internal/models/models.go`, add `RuntimeConfig JSONMap gorm:"type:jsonb;not null;default:'{}'" json:"runtime_config"` to `Project`.
   - Update `cmd/server/main.go` and `cmd/migrate/main.go` to include updated model in `modelList`.
   - Implement `internal/runner/runtime_types.go` and `internal/runner/runtime_catalog.go`.
-- [ ] **Step 4: Run focused tests to verify green**
+- [ ] **Step 4: Run focused tests to verify green** (Verification pending; prior bare host run not accepted as isolated qualification)
   - Command: `go test -v ./internal/runner -run TestRuntimeCatalog`
   - Command: `go test -v ./internal/models -run TestProject`
   - Expected: PASS
@@ -195,7 +200,7 @@ type RuntimeResolver interface {
 }
 ```
 
-- [ ] **Step 1: Write unit tests for multi-repo union, conflict fail-closed, and hashing**
+- [ ] **Step 1: Write unit tests for multi-repo union, conflict fail-closed, and hashing** (Draft tests implemented, verification pending)
   - In `internal/runner/runtime_resolver_test.go`:
     - Test 1: Single repo with no manifest resolves to catalog baseline.
     - Test 2: Multi-repo union: Repo A specifies `rust: "1.99.0"`, Repo B specifies `rust: false`; resolved profile includes `rust: "1.99.0"`.
@@ -208,11 +213,11 @@ type RuntimeResolver interface {
 - [ ] **Step 2: Run focused test to verify failure**
   - Command: `go test -v ./internal/runner -run TestRuntimeResolver`
   - Expected: FAIL (`undefined: runner.NewRuntimeResolver`)
-- [ ] **Step 3: Implement RuntimeResolver**
+- [ ] **Step 3: Implement RuntimeResolver** (Draft implemented, verification pending; Blocked: hashing currently hashes only runtimes ignoring full profile)
   - Implement `internal/runner/runtime_resolver.go`.
   - Validate all manifest entries against `RuntimeCatalog`.
   - Encode canonical JSON with sorted runtime keys and compute SHA256 tag.
-- [ ] **Step 4: Run focused tests to verify green**
+- [ ] **Step 4: Run focused tests to verify green** (Verification pending; bare host execution not accepted)
   - Command: `go test -v ./internal/runner -run TestRuntimeResolver`
   - Expected: PASS
 - [ ] **Step 5: Commit scoped changes**
@@ -221,6 +226,8 @@ type RuntimeResolver interface {
 ---
 
 ### Task 3: Docker Sandbox Client Extension & Deterministic Image Builder
+
+> **Status (2026-10-14):** Superseded in part by Phase 1B (`2026-10-14-phase-1b-image-build-integrity.md`), implemented and verified offline only (unit tests and mutation checks in atm-guest; race detector not yet run). The template now lives at `internal/runner/templates/Dockerfile.project.template` (embedded, SHA-256 pinned); `deploy/sandbox/Dockerfile.project.template` is retired. `ComputeCacheTag` was replaced by `ComputeImageIdentity`. Catalog checksums and the base image digest are `PENDING-INDEPENDENT-VERIFICATION` sentinels, so every build is refused. The Phase 1A quarantine is still active. Live builds (AG-3/AG-4) and checksum population (AG-2) remain unapproved.
 
 **Goal:** Extend `sandbox.DockerClient` to support image, network, and volume operations matching `github.com/docker/docker v27.5.1+incompatible`, and implement `RuntimeImageBuilder` with in-flight build coalescing based on the Gate 0B base OS decision.
 
@@ -266,7 +273,7 @@ type DockerClient interface {
 }
 ```
 
-- [ ] **Step 1: Write unit tests for DockerClient extensions and ImageBuilder build coalescing**
+- [ ] **Step 1: Write unit tests for DockerClient extensions and ImageBuilder build coalescing** (Draft tests implemented, verification pending)
   - Create `internal/runner/image_builder_test.go`:
     - Test 1: Cached image tag found via `ImageList` returns immediately without building.
     - Test 2: Uncached image generates tar context and calls `ImageBuild`.
@@ -275,11 +282,11 @@ type DockerClient interface {
 - [ ] **Step 2: Run focused test to verify failure**
   - Command: `go test -v ./internal/runner -run TestRuntimeImageBuilder`
   - Expected: FAIL
-- [ ] **Step 3: Implement DockerClient extensions and RuntimeImageBuilder**
+- [ ] **Step 3: Implement DockerClient extensions and RuntimeImageBuilder** (Draft implemented, verification pending; Blocked: image_builder discards Docker JSON error stream; template curl|tar lacks checksum verification)
   - Update `internal/sandbox/docker.go` with Docker SDK v27.5.1 signatures.
   - Implement `internal/runner/image_builder.go`.
   - Create `deploy/sandbox/Dockerfile.project.template` reflecting the approved base OS from Gate 0B.
-- [ ] **Step 4: Run focused tests to verify green**
+- [ ] **Step 4: Run focused tests to verify green** (Verification pending; bare host execution not accepted)
   - Command: `go test -v ./internal/sandbox -run TestDocker`
   - Command: `go test -v ./internal/runner -run TestRuntimeImageBuilder`
   - Expected: PASS
@@ -290,7 +297,7 @@ type DockerClient interface {
 
 ### Task 4: Project Sandbox Container Lifecycle Manager & OpenCode Server Bootstrap
 
-**Goal:** Implement `ProjectSandboxManager` to manage `atm-project-<project_id>` containers on dedicated bridge networks with outbound default-deny egress filtering (blocking private subnets, host bridge interfaces, link-local, and cloud metadata endpoints `169.254.169.254` / `[fd00:ec2::254]`) per Gate 0D, volume mounts (`atm-project-data-<project_id>` and `atm-project-state-<project_id>`), read-only root, tmpfs scratch, mandatory `no-new-privileges:true`, and `OPENCODE_PASSWORD` HTTP Basic authentication.
+**Goal:** Implement `ProjectSandboxManager` to manage `atm-project-<project_id>` containers on dedicated bridge networks with outbound default-deny egress filtering via Gate 0D DMZ forward proxy (blocking direct internet egress, private subnets, host bridge interfaces, link-local, and cloud metadata endpoints `169.254.169.254` / `[fd00:ec2::254]`), volume mounts (`atm-project-data-<project_id>` and `atm-project-state-<project_id>`), read-only root, tmpfs scratch, mandatory `no-new-privileges:true`, dynamic `OPENCODE_PASSWORD` injection via tmpfs secret exchange (`/run/secrets/opencode`) per Gate 0G, and LLM mediation through the control plane LLM gateway.
 
 **Files:**
 - Create: `internal/runner/project_sandbox_manager.go`
@@ -327,27 +334,28 @@ type ProjectSandboxManager interface {
 }
 ```
 
-- [ ] **Step 1: Write unit tests for ProjectSandboxManager and Network Egress Filtering**
+- [ ] **Step 1: Write unit tests for ProjectSandboxManager and Network Egress Filtering** (Draft tests implemented, verification pending / blocked by quality defect report)
   - Create `internal/runner/project_sandbox_manager_test.go`:
     - Test 1: Container configuration applies `CapDrop: ["ALL"]`, `SecurityOpt: ["no-new-privileges:true"]`, `ReadonlyRootfs: true`.
     - Test 2: Mounts persistent volumes `atm-project-data-<project_id>:/workspaces:rw` and `atm-project-state-<project_id>:/var/lib/opencode:rw`.
     - Test 3: Mounts bounded tmpfs scratch at `/tmp:rw,noexec,nosuid,size=512m`.
     - Test 4: Zero host bind mounts configured.
-    - Test 5: Injects `OPENCODE_PASSWORD` environment variable.
-    - Test 6: Daemon inspection retrieves container IP on dedicated bridge; returns verified `ProjectRouteHandle`.
+    - Test 5: Injects `OPENCODE_PASSWORD` via memory-backed tmpfs secret exchange (`/run/secrets/opencode`), NOT inspectable `container.Config.Env`.
+    - Test 6: Injects LLM gateway capability token and configures OpenCode upstream URL to point strictly to the control-plane LLM gateway (Gate 0G).
+    - Test 7: Daemon inspection retrieves container IP on dedicated bridge; returns verified `ProjectRouteHandle`.
   - Create `internal/sandbox/egress_filter_test.go`:
-    - Test 7: Bridge network configuration creates isolated user-defined Docker bridge without published host ports.
-    - Test 8: Egress filter enforces default-deny outbound policy: explicitly drops packets to private host/control-plane subnets (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16), Docker bridge gateways, IPv4/IPv6 link-local addresses, and cloud provider metadata endpoints (`169.254.169.254` and `[fd00:ec2::254]`), while allowing traffic to qualified model provider endpoints.
+    - Test 8: Bridge network configuration creates isolated user-defined Docker bridge routing through DMZ forward proxy.
+    - Test 9: Egress filter enforces default-deny outbound policy: explicitly drops packets to private host/control-plane subnets (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16), Docker bridge gateways, IPv4/IPv6 link-local addresses, and cloud provider metadata endpoints (`169.254.169.254` and `[fd00:ec2::254]`), with zero direct outbound internet access. Package registry traffic is forwarded strictly through the DMZ proxy allowlist.
 - [ ] **Step 2: Run focused test to verify failure**
   - Command: `go test -v ./internal/runner -run TestProjectSandboxManager`
   - Command: `go test -v ./internal/sandbox -run TestEgressFilter`
   - Expected: FAIL
-- [ ] **Step 3: Implement ProjectSandboxManager and Egress Filtering**
+- [ ] **Step 3: Implement ProjectSandboxManager and Egress Filtering** (Draft implemented, verification pending; Blocked: bridge lacks firewall confinement; password lifecycle in /run/secrets lacks daemon entrypoint/lifecycle)
   - Implement `internal/sandbox/egress_filter.go` according to the mechanism qualified in Gate 0D.
   - Implement `internal/runner/project_sandbox_manager.go`.
   - Wire network creation to apply egress filter rules prior to container attachment.
   - Validate fail-closed behavior if container creation, NNP, or egress setup fails.
-- [ ] **Step 4: Run focused tests to verify green**
+- [ ] **Step 4: Run focused tests to verify green** (Verification pending; prior test execution ran on bare host and does not count as isolated qualification)
   - Command: `go test -v ./internal/runner -run TestProjectSandboxManager`
   - Command: `go test -v ./internal/sandbox -run TestEgressFilter`
   - Expected: PASS
@@ -382,19 +390,23 @@ type WorkspaceManager interface {
 }
 ```
 
-- [ ] **Step 1: Write unit tests for WorkspaceManager**
+- [ ] **Step 1: Write unit tests for WorkspaceManager** (Draft tests implemented, verification pending)
   - Create `internal/runner/workspace_manager_test.go`:
     - Test 1: Provisions task worktree inside `/workspaces/<repo>/tasks/<task_id>`.
     - Test 2: Tasks default to single selected repository worktree.
     - Test 3: Bounded per-task scratch directory in `/tmp` is purged on `CleanupTaskScratch`.
     - Test 4: Persistent worktree and git data in `/workspaces` are retained intact across task ends (manual retention).
+    - Test 5: In-container repository population streams credential-free `git bundle` payloads via isolated unprivileged transfer helper (Gate 0C).
+    - Test 6: Repository containing Git submodules (`.gitmodules` / `mode 160000`) fails closed immediately with error `repository contains submodules, which are not supported in v1`.
+    - Test 7: Repository containing Git LFS pointers (`version https://git-lfs.github.com/spec/v1`) fails closed immediately with error `repository contains Git LFS pointers, which are not supported in v1`.
 - [ ] **Step 2: Run focused test to verify failure**
   - Command: `go test -v ./internal/runner -run TestWorkspaceManager`
   - Expected: FAIL
-- [ ] **Step 3: Implement WorkspaceManager using Gate 0C mechanism**
+- [ ] **Step 3: Implement WorkspaceManager using Gate 0C mechanism** (Draft implemented, verification pending; Blocked: task_runner and workspace_manager retain host git execution; bundle transfer helper missing)
   - Implement `internal/runner/workspace_manager.go`.
-  - Ensure zero raw tokens are passed into container Git configurations or command arguments.
-- [ ] **Step 4: Run focused tests to verify green**
+  - Ensure zero raw tokens are passed into container Git configurations, environment variables, worktrees, or command arguments.
+  - Implement fail-closed rejection for submodules and Git LFS.
+- [ ] **Step 4: Run focused tests to verify green** (Verification pending; prior test execution ran on bare host and does not count as isolated qualification)
   - Command: `go test -v ./internal/runner -run TestWorkspaceManager`
   - Expected: PASS
 - [ ] **Step 5: Commit scoped changes**
@@ -590,7 +602,7 @@ npm test --prefix web -- --run
 cd web && npx tsc -b
 ```
 
-> **Execution Status Note:** The commands above are documented for the future implementation phase. In accordance with the documentation specialist brief, no code tests, dependency installations, or build commands were run while authoring this plan.
+> **Execution Status Note:** The commands above are documented for the future implementation phase. Checkpoints A and B remain pending required security review, qualification probe execution, and formal authorization. Implementation drafts exist in the repository tree for Tasks 1-5 and partial Task 6, but verification is pending; isolated qualification and full quality passes have not been performed. In accordance with the documentation brief, no product code edits, tests, dependency installations, or build commands are authorized during this planning phase.
 
 ---
 

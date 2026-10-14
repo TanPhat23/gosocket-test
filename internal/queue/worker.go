@@ -125,5 +125,10 @@ func (ws *WorkerServer) handleExecuteAgentTask(ctx context.Context, asynqTask *a
 		return nil
 	}
 
-	return ws.executor.ExecuteTask(ctx, payload.TaskID, ws.runner)
+	err = ws.executor.ExecuteTask(ctx, payload.TaskID, ws.runner)
+	if errors.Is(err, common.ErrRuntimeQuarantined) {
+		// Quarantine is not transient: do not retry.
+		return fmt.Errorf("%w: %w", err, asynq.SkipRetry)
+	}
+	return err
 }

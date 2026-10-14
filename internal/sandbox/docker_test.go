@@ -8,9 +8,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/volume"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"agent-task-manager/internal/sandbox"
@@ -69,8 +71,52 @@ func (m *mockDockerClient) ContainerRemove(ctx context.Context, containerID stri
 	return m.removeErr
 }
 
+func (m *mockDockerClient) ContainerInspect(ctx context.Context, containerID string) (types.ContainerJSON, error) {
+	return types.ContainerJSON{}, nil
+}
+
 func (m *mockDockerClient) ImagePull(ctx context.Context, refStr string, options image.PullOptions) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader("")), nil
+}
+
+func (m *mockDockerClient) ImageBuild(ctx context.Context, buildContext io.Reader, options types.ImageBuildOptions) (types.ImageBuildResponse, error) {
+	return types.ImageBuildResponse{Body: io.NopCloser(strings.NewReader(""))}, nil
+}
+
+func (m *mockDockerClient) ImageList(ctx context.Context, options image.ListOptions) ([]image.Summary, error) {
+	return nil, nil
+}
+
+func (m *mockDockerClient) ImageInspectWithRaw(ctx context.Context, imageID string) (types.ImageInspect, []byte, error) {
+	return types.ImageInspect{}, nil, nil
+}
+
+func (m *mockDockerClient) NetworkCreate(ctx context.Context, name string, options network.CreateOptions) (network.CreateResponse, error) {
+	return network.CreateResponse{}, nil
+}
+
+func (m *mockDockerClient) NetworkInspect(ctx context.Context, networkID string, options network.InspectOptions) (network.Inspect, error) {
+	return network.Inspect{}, nil
+}
+
+func (m *mockDockerClient) NetworkRemove(ctx context.Context, networkID string) error {
+	return nil
+}
+
+func (m *mockDockerClient) VolumeCreate(ctx context.Context, options volume.CreateOptions) (volume.Volume, error) {
+	return volume.Volume{}, nil
+}
+
+func (m *mockDockerClient) VolumeInspect(ctx context.Context, volumeID string) (volume.Volume, error) {
+	return volume.Volume{}, nil
+}
+
+func (m *mockDockerClient) VolumeRemove(ctx context.Context, volumeID string, force bool) error {
+	return nil
+}
+
+func (m *mockDockerClient) CopyToContainer(ctx context.Context, containerID, dstPath string, content io.Reader, options container.CopyToContainerOptions) error {
+	return nil
 }
 
 func TestSecurityHardeningDefaults(t *testing.T) {

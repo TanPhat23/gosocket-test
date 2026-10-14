@@ -2,16 +2,14 @@ package runner
 
 import (
 	"context"
-	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"time"
 )
 
 // InstallDependencies detects package manifests in worktreePath (package.json, go.mod)
-// and ensures dependencies are installed. To avoid redundant re-downloading across tasks,
-// it shares/caches persistent dependencies from baseRepoPath.
+// and reuses pre-cached dependencies from baseRepoPath via safe filesystem symlinks if available.
+// In accordance with host execution eradication standards, it never spawns package managers on the host.
+// If dependencies are not pre-cached, it logs that dependency installation will occur inside the container sandbox.
 func InstallDependencies(ctx context.Context, worktreePath, baseRepoPath string, logFn func(string)) error {
 	if worktreePath == "" {
 		return nil
@@ -39,51 +37,11 @@ func InstallDependencies(ctx context.Context, worktreePath, baseRepoPath string,
 					}
 					return nil
 				}
-			} else {
-				// Base repo doesn't have node_modules yet, install in base repo so future tasks can reuse it!
-				if logFn != nil {
-					logFn("\x1b[36m[Agent Control Plane]\x1b[0m Installing project dependencies to persistent cache (npm install)...\r\n")
-				}
-				installCtx, cancel := context.WithTimeout(ctx, 4*time.Minute)
-				defer cancel()
-
-				cmd := exec.CommandContext(installCtx, "npm", "install", "--no-audit", "--no-fund")
-				cmd.Dir = baseRepoPath
-				if out, err := cmd.CombinedOutput(); err != nil {
-					if logFn != nil {
-						logFn(fmt.Sprintf("\x1b[33m[Agent Control Plane] Warning: npm install in base repo exited with: %s\x1b[0m\r\n", string(out)))
-					}
-				} else {
-					_ = os.MkdirAll(baseNodeModules, 0777)
-					_ = exec.CommandContext(ctx, "chmod", "-R", "0777", baseNodeModules).Run()
-					// Now symlink to worktree
-					_ = os.Remove(nodeModulesPath)
-					if symErr := os.Symlink(baseNodeModules, nodeModulesPath); symErr == nil {
-						if logFn != nil {
-							logFn("\x1b[32m✔ Project dependencies cached and attached to worktree.\x1b[0m\r\n")
-						}
-						return nil
-					}
-				}
 			}
 		}
 
-		// Fallback: install directly in worktreePath
 		if logFn != nil {
-			logFn("\x1b[36m[Agent Control Plane]\x1b[0m Installing project dependencies in worktree (npm install)...\r\n")
-		}
-
-		installCtx, cancel := context.WithTimeout(ctx, 4*time.Minute)
-		defer cancel()
-
-		cmd := exec.CommandContext(installCtx, "npm", "install", "--no-audit", "--no-fund")
-		cmd.Dir = worktreePath
-		_ = cmd.Run()
-		_ = os.MkdirAll(nodeModulesPath, 0777)
-		_ = exec.CommandContext(ctx, "chmod", "-R", "0777", nodeModulesPath).Run()
-
-		if logFn != nil {
-			logFn("\x1b[32m✔ Project dependencies installed.\x1b[0m\r\n")
+			logFn("\x1b[36m[Agent Control Plane]\x1b[0m Node.js dependencies not cached on host; installation will occur inside the container sandbox.\r\n")
 		}
 	}
 
@@ -91,13 +49,8 @@ func InstallDependencies(ctx context.Context, worktreePath, baseRepoPath string,
 	goModPath := filepath.Join(worktreePath, "go.mod")
 	if _, err := os.Stat(goModPath); err == nil {
 		if logFn != nil {
-			logFn("\x1b[36m[Agent Control Plane]\x1b[0m Downloading Go module dependencies...\r\n")
+			logFn("\x1b[36m[Agent Control Plane]\x1b[0m Go module dependencies will be resolved inside the container sandbox.\r\n")
 		}
-		goCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		defer cancel()
-		cmd := exec.CommandContext(goCtx, "go", "mod", "download")
-		cmd.Dir = worktreePath
-		_ = cmd.Run()
 	}
 
 	return nil

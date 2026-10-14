@@ -42,12 +42,13 @@ type APIToken struct {
 }
 
 type Project struct {
-	CreatedAt time.Time `gorm:"type:timestamptz;not null;default:CURRENT_TIMESTAMP" json:"created_at"`
-	UpdatedAt time.Time `gorm:"type:timestamptz;not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
-	ID        string    `gorm:"type:uuid;primaryKey" json:"id" validate:"required"`
-	TeamID    string    `gorm:"type:uuid;not null;index:idx_projects_team;uniqueIndex:idx_projects_team_name,priority:1" json:"team_id" validate:"required"`
-	Name      string    `gorm:"type:text;not null;uniqueIndex:idx_projects_team_name,priority:2" json:"name" validate:"required,min=1,max=100"`
-	RepoPath  string    `gorm:"type:text;not null" json:"repo_path" validate:"required"`
+	CreatedAt     time.Time `gorm:"type:timestamptz;not null;default:CURRENT_TIMESTAMP" json:"created_at"`
+	UpdatedAt     time.Time `gorm:"type:timestamptz;not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
+	ID            string    `gorm:"type:uuid;primaryKey" json:"id" validate:"required"`
+	TeamID        string    `gorm:"type:uuid;not null;index:idx_projects_team;uniqueIndex:idx_projects_team_name,priority:1" json:"team_id" validate:"required"`
+	Name          string    `gorm:"type:text;not null;uniqueIndex:idx_projects_team_name,priority:2" json:"name" validate:"required,min=1,max=100"`
+	RepoPath      string    `gorm:"type:text;not null" json:"repo_path" validate:"required"`
+	RuntimeConfig JSONMap   `gorm:"type:jsonb;not null;default:'{}'" json:"runtime_config"`
 }
 
 type ProjectIntegration struct {
