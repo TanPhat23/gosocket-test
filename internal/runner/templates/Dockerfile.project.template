@@ -10,7 +10,12 @@ RUN apk add --no-cache \
     bash \
     build-base \
     libstdc++ \
-    gcompat
+    libgcc \
+    gcompat \
+    icu-libs \
+    libintl \
+    libssl3 \
+    zlib
 
 # Multi-stage copy pinned OpenCode binary
 COPY --from=ghcr.io/anomalyco/opencode:2.0.26@{{.OpenCodeDigest}} /usr/local/bin/opencode /usr/local/bin/opencode
@@ -21,16 +26,28 @@ RUN addgroup -g 1000 opencode && \
     mkdir -p /workspaces && \
     chown -R opencode:opencode /workspaces
 
-{{range .Toolchains}}
+{{range .Toolchains}}{{$layout := requireInstallLayout .InstallLayout}}
 # Toolchain: {{.Runtime}} {{.Version}}
 RUN set -eu; \
     mkdir -p {{.ExtractPath}}; \
     curl --proto '=https' --tlsv1.2 -fsSL -o /tmp/atm-toolchain.archive "{{.ArchiveURL}}"; \
     echo "{{requireSHA256 .SHA256}}  /tmp/atm-toolchain.archive" | sha256sum -c -; \
+{{- if eq $layout "rust-installer"}}
+    mkdir -p /tmp/atm-toolchain-src; \
+    tar -x{{tarFlag .ArchiveFormat}}f /tmp/atm-toolchain.archive -C /tmp/atm-toolchain-src --strip-components=1; \
+    (cd /tmp/atm-toolchain-src && ./install.sh --prefix={{.ExtractPath}} --disable-ldconfig --without=rust-docs); \
+    rm -rf /tmp/atm-toolchain-src; \
+{{- else}}
     tar -x{{tarFlag .ArchiveFormat}}f /tmp/atm-toolchain.archive -C {{.ExtractPath}} --strip-components=1; \
+{{- end}}
     rm -f /tmp/atm-toolchain.archive; \
     chown -R root:root {{.ExtractPath}}
+{{- if eq $layout "dotnet-root"}}
+ENV DOTNET_ROOT="{{.ExtractPath}}"
+ENV PATH="{{.ExtractPath}}:${PATH}"
+{{- else}}
 ENV PATH="{{.ExtractPath}}/bin:${PATH}"
+{{- end}}
 {{end}}
 
 WORKDIR /workspaces

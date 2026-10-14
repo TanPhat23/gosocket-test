@@ -26,6 +26,7 @@ func FixtureCatalogForTest() RuntimeCatalog {
 			SHA256:        pfSHA,
 			ExtractPath:   ext,
 			ArchiveFormat: format,
+			InstallLayout: "bin-dir",
 		}
 	}
 	return pfCatalogOf(
@@ -35,6 +36,20 @@ func FixtureCatalogForTest() RuntimeCatalog {
 		mk("rust", "1.99.0", "/usr/local/rust", "tar.gz"),
 	)
 }
+
+// PendingFixtureCatalogForTest returns FixtureCatalogForTest's entries with every checksum
+// replaced by the PendingSHA256 sentinel.
+func PendingFixtureCatalogForTest() RuntimeCatalog {
+	c := FixtureCatalogForTest().(*pfCatalog)
+	for k, e := range c.entries {
+		e.SHA256 = PendingSHA256
+		c.entries[k] = e
+	}
+	return c
+}
+
+// PendingBaseRefForTest is a base reference carrying the PendingSHA256 sentinel.
+var PendingBaseRefForTest = "alpine:3.24@sha256:" + PendingSHA256
 
 // FixtureBaseRefForTest is a synthetic digest-pinned base reference.
 var FixtureBaseRefForTest = pfBase

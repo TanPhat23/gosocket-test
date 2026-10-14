@@ -80,14 +80,14 @@ type TemplateData struct {
 	Toolchains     []RuntimeCatalogEntry
 }
 
-// Image label keys and value. The scheme label value is the short literal "v2". It names the
+// Image label keys and value. The scheme label value is the short literal "v3". It names the
 // label format and is deliberately not the ImageIdentityScheme constant
-// ("atm-runtime-identity/v2"), which versions the canonical identity document that is hashed
+// ("atm-runtime-identity/v3"), which versions the canonical identity document that is hashed
 // into the tag. Both are bumped together when the identity scheme changes.
 const (
 	labelRuntimeIdentity       = "io.atm.runtime.identity"
 	labelRuntimeIdentityScheme = "io.atm.runtime.identity-scheme"
-	labelIdentitySchemeValue   = "v2"
+	labelIdentitySchemeValue   = "v3"
 )
 
 // BuildOrGetImage validates, renders and identifies the image first, with zero Docker calls:

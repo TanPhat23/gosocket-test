@@ -40,7 +40,7 @@ func invalid(field string) error {
 }
 
 // validateCatalogEntry fails closed on a pending, empty or malformed checksum and on any
-// URL, extract path, archive format, runtime name or version that could be unsafe to
+// URL, extract path, archive format, install layout, runtime name or version that could be unsafe to
 // interpolate into a Dockerfile.
 func validateCatalogEntry(entry RuntimeCatalogEntry) error {
 	if !isSafeToolchainToken(entry.Runtime) {
@@ -66,7 +66,27 @@ func validateCatalogEntry(entry RuntimeCatalogEntry) error {
 	if !strings.HasSuffix(url, "."+entry.ArchiveFormat) {
 		return invalid("archive_format")
 	}
+	if !isKnownInstallLayout(entry.InstallLayout) {
+		return invalid("install_layout")
+	}
 	return nil
+}
+
+// Install layouts are a closed set; each selects one fixed branch of the Dockerfile template.
+const (
+	installLayoutBinDir        = "bin-dir"
+	installLayoutRustInstaller = "rust-installer"
+	installLayoutDotnetRoot    = "dotnet-root"
+)
+
+// isKnownInstallLayout reports whether s is exactly one of the supported install layouts.
+// There is no default: an empty layout is rejected.
+func isKnownInstallLayout(s string) bool {
+	switch s {
+	case installLayoutBinDir, installLayoutRustInstaller, installLayoutDotnetRoot:
+		return true
+	}
+	return false
 }
 
 // isSafeToolchainToken reports whether s is a bounded token with no whitespace or shell

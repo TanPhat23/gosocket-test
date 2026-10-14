@@ -21,6 +21,7 @@ func pfValidEntry() RuntimeCatalogEntry {
 		SHA256:        pfSHA,
 		ExtractPath:   "/usr/local/go",
 		ArchiveFormat: "tar.gz",
+		InstallLayout: "bin-dir",
 	}
 }
 
@@ -189,18 +190,14 @@ func TestValidateCatalogEntry_ArchiveFormatMatchesURL(t *testing.T) {
 	}
 }
 
-func TestDefaultCatalog_AllEntriesFailClosedUntilVerified(t *testing.T) {
+func TestDefaultCatalog_EntriesWellFormed(t *testing.T) {
 	entries := NewDefaultRuntimeCatalog().List()
 	if len(entries) == 0 {
 		t.Fatal("expected default catalog entries")
 	}
 	for _, e := range entries {
-		if e.SHA256 == "" {
-			t.Errorf("%s: empty SHA256 is forbidden", e.Runtime)
-			continue
-		}
-		if e.SHA256 != PendingSHA256 && !sha256HexRe.MatchString(e.SHA256) {
-			t.Errorf("%s: SHA256 must be 64 lowercase hex or PendingSHA256", e.Runtime)
+		if !sha256HexRe.MatchString(e.SHA256) {
+			t.Errorf("%s: shipped SHA256 must be 64 lowercase hex", e.Runtime)
 		}
 		if e.ArchiveFormat != "tar.gz" && e.ArchiveFormat != "tar.xz" {
 			t.Errorf("%s: unexpected archive format %q", e.Runtime, e.ArchiveFormat)
@@ -208,24 +205,6 @@ func TestDefaultCatalog_AllEntriesFailClosedUntilVerified(t *testing.T) {
 		if !strings.HasSuffix(e.ArchiveURL, "."+e.ArchiveFormat) {
 			t.Errorf("%s: archive format %q does not match URL suffix", e.Runtime, e.ArchiveFormat)
 		}
-	}
-}
-
-func TestDefaultCatalog_PreflightRefusesEveryProfile(t *testing.T) {
-	cat := NewDefaultRuntimeCatalog()
-	for _, e := range cat.List() {
-		p := pfValidProfile()
-		p.Runtimes = map[string]string{e.Runtime: e.Version}
-		err := validateProfile(p, cat)
-		if err == nil {
-			t.Fatalf("%s: expected default catalog to be refused while pending", e.Runtime)
-		}
-		if !errors.Is(err, ErrCatalogEntryUnverified) {
-			t.Fatalf("%s: expected ErrCatalogEntryUnverified, got %v", e.Runtime, err)
-		}
-	}
-	if err := validateProfile(pfValidProfile(), cat); err == nil {
-		t.Fatal("expected refusal for default go profile")
 	}
 }
 
@@ -342,7 +321,7 @@ func TestValidateProfile_RejectsInvalidCatalogEntryOfRequestedRuntime(t *testing
 func TestValidateProfile_RejectsUnpinnedBaseAndDigest(t *testing.T) {
 	mut := map[string]func(p *ResolvedRuntimeProfile){
 		"tag only base":        func(p *ResolvedRuntimeProfile) { p.BaseImageRef = "alpine:3.24" },
-		"pending base":         func(p *ResolvedRuntimeProfile) { p.BaseImageRef = DefaultBaseImageRef },
+		"pending base":         func(p *ResolvedRuntimeProfile) { p.BaseImageRef = "alpine:3.24@sha256:" + PendingSHA256 },
 		"pending base nontag":  func(p *ResolvedRuntimeProfile) { p.BaseImageRef = "alpine@sha256:" + PendingSHA256 },
 		"empty base":           func(p *ResolvedRuntimeProfile) { p.BaseImageRef = "" },
 		"uppercase base":       func(p *ResolvedRuntimeProfile) { p.BaseImageRef = "alpine:3.24@sha256:" + strings.Repeat("AB", 32) },
@@ -391,13 +370,10 @@ func TestPreflightErrors_FixedTextAndSentinels(t *testing.T) {
 	}
 }
 
-func TestDefaultBaseImageRef_IsPendingAndRejected(t *testing.T) {
-	if DefaultBaseImageRef != "alpine:3.24@sha256:"+PendingSHA256 {
-		t.Fatalf("unexpected DefaultBaseImageRef %q", DefaultBaseImageRef)
-	}
+func TestPendingBaseImageRef_Rejected(t *testing.T) {
 	p := pfValidProfile()
-	p.BaseImageRef = DefaultBaseImageRef
-	if err := validateProfile(p, pfCatalogOf(pfValidEntry())); err == nil {
-		t.Fatal("pending base must be refused")
+	p.BaseImageRef = "alpine:3.24@sha256:" + PendingSHA256
+	if err := validateProfile(p, pfCatalogOf(pfValidEntry())); !errors.Is(err, ErrInvalidRuntimeProfile) {
+		t.Fatalf("pending base must be refused, got %v", err)
 	}
 }

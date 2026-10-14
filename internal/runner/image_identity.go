@@ -51,6 +51,7 @@ func ComputeImageIdentity(profile *ResolvedRuntimeProfile, catalog RuntimeCatalo
 			SHA256:        entry.SHA256,
 			ExtractPath:   entry.ExtractPath,
 			ArchiveFormat: entry.ArchiveFormat,
+			InstallLayout: entry.InstallLayout,
 		})
 	}
 

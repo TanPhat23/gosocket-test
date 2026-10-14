@@ -160,7 +160,7 @@ func validInspect(tag, _ string) types.ImageInspect {
 		Architecture: "amd64",
 		Config: &container.Config{Labels: map[string]string{
 			"io.atm.runtime.identity":        strings.TrimPrefix(tag, "atm-runtime:"),
-			"io.atm.runtime.identity-scheme": "v2",
+			"io.atm.runtime.identity-scheme": "v3",
 		}},
 	}
 }
@@ -310,7 +310,11 @@ func TestRuntimeImageBuilder_ConcurrentCallsCoalesceSingleBuild(t *testing.T) {
 		tags[0], errs[0] = builder.BuildOrGetImage(context.Background(), profile)
 	}()
 
-	<-buildStarted
+	select {
+	case <-buildStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ImageBuild was never called")
+	}
 
 	// Callers 2 and 3 join concurrent in-flight build
 	for i := 1; i < 3; i++ {
@@ -327,7 +331,13 @@ func TestRuntimeImageBuilder_ConcurrentCallsCoalesceSingleBuild(t *testing.T) {
 
 	// Allow the single build to complete
 	close(continueBuild)
-	wg.Wait()
+	waitDone := make(chan struct{})
+	go func() { wg.Wait(); close(waitDone) }()
+	select {
+	case <-waitDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("callers did not return after the build completed")
+	}
 
 	for i := 0; i < 3; i++ {
 		if errs[i] != nil {
@@ -576,7 +586,7 @@ func TestBuilder_BuildOptionsPinned(t *testing.T) {
 		t.Errorf("Tags = %v, want [%s]", o.Tags, want)
 	}
 	if o.Labels["io.atm.runtime.identity"] != strings.TrimPrefix(want, "atm-runtime:") ||
-		o.Labels["io.atm.runtime.identity-scheme"] != "v2" || len(o.Labels) != 2 {
+		o.Labels["io.atm.runtime.identity-scheme"] != "v3" || len(o.Labels) != 2 {
 		t.Errorf("Labels = %v", o.Labels)
 	}
 }
@@ -1009,11 +1019,11 @@ func requireZeroCalls(t *testing.T, s *strictDockerClient) {
 }
 
 func TestBuilder_PreflightFailureMakesZeroDockerCalls(t *testing.T) {
-	shipped := runner.NewDefaultRuntimeCatalog() // every checksum is PendingSHA256
+	pending := runner.PendingFixtureCatalogForTest() // every checksum is PendingSHA256
 
-	t.Run("shipped catalog, pinned base: unverified checksum", func(t *testing.T) {
+	t.Run("pending catalog, pinned base: unverified checksum", func(t *testing.T) {
 		s := &strictDockerClient{t: t}
-		b := runner.NewRuntimeImageBuilderForTest(s, shipped, runner.EmbeddedTemplateForTest(), runner.ExpectedTemplateSHA256)
+		b := runner.NewRuntimeImageBuilderForTest(s, pending, runner.EmbeddedTemplateForTest(), runner.ExpectedTemplateSHA256)
 		_, profile := uncachedProfile()
 		tag, err := b.BuildOrGetImage(context.Background(), profile)
 		if !errors.Is(err, runner.ErrCatalogEntryUnverified) || tag != "" {
@@ -1022,11 +1032,11 @@ func TestBuilder_PreflightFailureMakesZeroDockerCalls(t *testing.T) {
 		requireZeroCalls(t, s)
 	})
 
-	t.Run("shipped catalog, shipped base ref: invalid profile", func(t *testing.T) {
+	t.Run("pending catalog, pending base ref: invalid profile", func(t *testing.T) {
 		s := &strictDockerClient{t: t}
-		b := runner.NewRuntimeImageBuilderForTest(s, shipped, runner.EmbeddedTemplateForTest(), runner.ExpectedTemplateSHA256)
+		b := runner.NewRuntimeImageBuilderForTest(s, pending, runner.EmbeddedTemplateForTest(), runner.ExpectedTemplateSHA256)
 		_, profile := uncachedProfile()
-		profile.BaseImageRef = runner.DefaultBaseImageRef
+		profile.BaseImageRef = runner.PendingBaseRefForTest
 		tag, err := b.BuildOrGetImage(context.Background(), profile)
 		if !errors.Is(err, runner.ErrInvalidRuntimeProfile) || tag != "" {
 			t.Fatalf("tag=%q err=%v, want ErrInvalidRuntimeProfile", tag, err)

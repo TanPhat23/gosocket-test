@@ -20,6 +20,12 @@ type RuntimeCatalogEntry struct {
 
 	// ArchiveFormat is the archive container ("tar.gz" or "tar.xz").
 	ArchiveFormat string `json:"archive_format"`
+
+	// InstallLayout selects one fixed install branch of the Dockerfile template:
+	// "bin-dir" (extract into ExtractPath, PATH gets ExtractPath/bin), "rust-installer"
+	// (extract to a temp dir, run the bundled install.sh into ExtractPath) or "dotnet-root"
+	// (extract into ExtractPath, PATH gets ExtractPath, DOTNET_ROOT=ExtractPath).
+	InstallLayout string `json:"install_layout"`
 }
 
 type RuntimeCatalog interface {
@@ -30,7 +36,7 @@ type RuntimeCatalog interface {
 }
 
 // ImageIdentityScheme is the version tag of the canonical image identity document.
-const ImageIdentityScheme = "atm-runtime-identity/v2"
+const ImageIdentityScheme = "atm-runtime-identity/v3"
 
 // ImageIdentity is the canonical, versioned document hashed into the image cache tag.
 // Field order is part of the canonical encoding; do not reorder.
@@ -53,4 +59,5 @@ type ToolchainIdentity struct {
 	SHA256        string `json:"sha256"`
 	ExtractPath   string `json:"extract_path"`
 	ArchiveFormat string `json:"archive_format"`
+	InstallLayout string `json:"install_layout"`
 }
