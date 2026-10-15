@@ -1173,3 +1173,15 @@ func TestAgentTaskRunner_NoHostFallbackOnSandboxFailure(t *testing.T) {
 	}
 	fb.assertNoSideEffects(t)
 }
+
+func (m *mockDockerClientForRunner) ContainerExecCreate(ctx context.Context, containerID string, options container.ExecOptions) (types.IDResponse, error) {
+	return types.IDResponse{ID: "exec-1"}, nil
+}
+
+func (m *mockDockerClientForRunner) ContainerExecAttach(ctx context.Context, execID string, config container.ExecAttachOptions) (types.HijackedResponse, error) {
+	return types.HijackedResponse{}, nil
+}
+
+func (m *mockDockerClientForRunner) ContainerExecInspect(ctx context.Context, execID string) (container.ExecInspect, error) {
+	return container.ExecInspect{}, nil
+}

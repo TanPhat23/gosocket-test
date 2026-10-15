@@ -1390,3 +1390,15 @@ func TestBuilder_ImageListDoesNotHoldBuilderMutex(t *testing.T) {
 		t.Errorf("no build expected, got %d", len(m.imageBuildCalls))
 	}
 }
+
+func (m *mockDockerClientForBuilder) ContainerExecCreate(ctx context.Context, containerID string, options container.ExecOptions) (types.IDResponse, error) {
+	return types.IDResponse{ID: "exec-1"}, nil
+}
+
+func (m *mockDockerClientForBuilder) ContainerExecAttach(ctx context.Context, execID string, config container.ExecAttachOptions) (types.HijackedResponse, error) {
+	return types.HijackedResponse{}, nil
+}
+
+func (m *mockDockerClientForBuilder) ContainerExecInspect(ctx context.Context, execID string) (container.ExecInspect, error) {
+	return container.ExecInspect{}, nil
+}

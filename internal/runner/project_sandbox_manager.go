@@ -1,13 +1,12 @@
 package runner
 
 import (
-	"archive/tar"
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
@@ -210,34 +209,11 @@ func (m *projectSandboxManager) ensureProjectContainerDisabledDraft(ctx context.
 		return rollback(fmt.Errorf("failed to start project container: %w", err))
 	}
 
-	// 8. Deliver OPENCODE_PASSWORD via tar archive into the running container's tmpfs at /run/secrets/opencode.
-	// It must follow start: a stopped container's tmpfs is mounted fresh at start, discarding earlier copies.
+	// 8. Deliver OPENCODE_PASSWORD over exec stdin into the running container's tmpfs.
+	// It must follow start: a stopped container's tmpfs is mounted fresh at start, discarding earlier writes.
 	// The entrypoint waits for the file, loads it into its own environment and unlinks it.
-	tarBuf := new(bytes.Buffer)
-	tw := tar.NewWriter(tarBuf)
-	secretContent := []byte(opencodePassword)
-	hdr := &tar.Header{
-		Name: "opencode",
-		// Owned by the unprivileged container user (opencode, 1000:1000); a root-owned file would be
-		// unreadable once the container drops privileges.
-		Uid:     opencodeUID,
-		Gid:     opencodeUID,
-		Mode:    0400,
-		Size:    int64(len(secretContent)),
-		ModTime: time.Now(),
-	}
-	if err := tw.WriteHeader(hdr); err != nil {
-		return rollback(fmt.Errorf("failed to write tar header for secret: %w", err))
-	}
-	if _, err := tw.Write(secretContent); err != nil {
-		return rollback(fmt.Errorf("failed to write secret content to tar: %w", err))
-	}
-	if err := tw.Close(); err != nil {
-		return rollback(fmt.Errorf("failed to close secret tar writer: %w", err))
-	}
-
-	if err := m.dockerCli.CopyToContainer(ctx, containerID, "/run/secrets", tarBuf, container.CopyToContainerOptions{}); err != nil {
-		return rollback(fmt.Errorf("failed to inject secret into container: %w", err))
+	if err := m.deliverSecret(ctx, containerID, opencodePassword); err != nil {
+		return rollback(err)
 	}
 
 	// 9. Inspect container to resolve IP address
@@ -305,4 +281,44 @@ func (m *projectSandboxManager) GetProjectRoute(ctx context.Context, projectID s
 	}
 
 	return route, true, nil
+}
+
+// deliverSecret writes the password to /run/secrets/opencode inside the running container.
+// docker cp is unusable here (it fails on a read-only rootfs and lands under tmpfs mounts), so the
+// password goes over the exec's stdin: never argv, env or docker inspect. The file is created
+// owner-only by the container user and published with an atomic rename, so the entrypoint never
+// observes a partial secret. Errors deliberately carry no exec output.
+func (m *projectSandboxManager) deliverSecret(ctx context.Context, containerID, password string) error {
+	const script = "umask 077 && cat > /run/secrets/opencode.tmp && mv /run/secrets/opencode.tmp /run/secrets/opencode"
+	created, err := m.dockerCli.ContainerExecCreate(ctx, containerID, container.ExecOptions{
+		User:         fmt.Sprintf("%d:%d", opencodeUID, opencodeUID),
+		Cmd:          []string{"sh", "-c", script},
+		AttachStdin:  true,
+		AttachStdout: true,
+		AttachStderr: true,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create secret delivery exec: %w", err)
+	}
+	hijacked, err := m.dockerCli.ContainerExecAttach(ctx, created.ID, container.ExecAttachOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to attach secret delivery exec: %w", err)
+	}
+	defer hijacked.Close()
+	if _, err := io.WriteString(hijacked.Conn, password); err != nil {
+		return errors.New("failed to write secret to container")
+	}
+	if err := hijacked.CloseWrite(); err != nil {
+		return errors.New("failed to close secret stdin")
+	}
+	// Draining until EOF means the command has finished.
+	_, _ = io.Copy(io.Discard, hijacked.Reader)
+	res, err := m.dockerCli.ContainerExecInspect(ctx, created.ID)
+	if err != nil {
+		return fmt.Errorf("failed to inspect secret delivery exec: %w", err)
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("secret delivery exited with code %d", res.ExitCode)
+	}
+	return nil
 }

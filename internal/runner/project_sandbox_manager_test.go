@@ -269,3 +269,15 @@ func TestProjectSandboxManager(t *testing.T) {
 		assertNoSandboxDockerCalls(t, mockCli)
 	})
 }
+
+func (m *mockDockerClientForSandboxManager) ContainerExecCreate(ctx context.Context, containerID string, options container.ExecOptions) (types.IDResponse, error) {
+	return types.IDResponse{ID: "exec-1"}, nil
+}
+
+func (m *mockDockerClientForSandboxManager) ContainerExecAttach(ctx context.Context, execID string, config container.ExecAttachOptions) (types.HijackedResponse, error) {
+	return types.HijackedResponse{}, nil
+}
+
+func (m *mockDockerClientForSandboxManager) ContainerExecInspect(ctx context.Context, execID string) (container.ExecInspect, error) {
+	return container.ExecInspect{}, nil
+}

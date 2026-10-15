@@ -224,3 +224,16 @@ func TestStopProjectContainer_UnchangedByQuarantine(t *testing.T) {
 		t.Errorf("expected zero disallowed Docker calls, got %d", n)
 	}
 }
+
+func (f *failingDockerClient) ContainerExecCreate(ctx context.Context, containerID string, options container.ExecOptions) (types.IDResponse, error) {
+	f.fail("ContainerExecCreate")
+	return types.IDResponse{}, errors.New("unexpected docker call")
+}
+func (f *failingDockerClient) ContainerExecAttach(ctx context.Context, execID string, config container.ExecAttachOptions) (types.HijackedResponse, error) {
+	f.fail("ContainerExecAttach")
+	return types.HijackedResponse{}, errors.New("unexpected docker call")
+}
+func (f *failingDockerClient) ContainerExecInspect(ctx context.Context, execID string) (container.ExecInspect, error) {
+	f.fail("ContainerExecInspect")
+	return container.ExecInspect{}, errors.New("unexpected docker call")
+}

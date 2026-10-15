@@ -1,12 +1,15 @@
 package runner
 
 import (
-	"archive/tar"
+	"bufio"
 	"context"
-	"io"
+	"errors"
+	"net"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 
 	"agent-task-manager/internal/models"
@@ -16,10 +19,27 @@ import (
 // Gate 0G: these tests drive the (quarantined, unreferenced) provisioning draft directly so the
 // secret-delivery contract is pinned before the quarantine can ever be lifted.
 
+// stdinConn is a net.Conn whose writes are captured and whose CloseWrite is observable.
+type stdinConn struct {
+	net.Conn
+	written     strings.Builder
+	closedWrite bool
+}
+
+func (c *stdinConn) Write(b []byte) (int, error) { return c.written.Write(b) }
+func (c *stdinConn) CloseWrite() error           { c.closedWrite = true; return nil }
+func (c *stdinConn) Close() error                { return nil }
+func (c *stdinConn) SetDeadline(time.Time) error { return nil }
+
 type secretRecordingClient struct {
 	*sandbox.MockDockerClient
-	copyDst     string
-	copyContent []byte
+	execOpts    container.ExecOptions
+	execAttach  container.ExecAttachOptions
+	conn        *stdinConn
+	execExit    int
+	execErr     error
+	inspectErr  error
+	removeCalls int
 	order       []string
 }
 
@@ -28,47 +48,98 @@ func (c *secretRecordingClient) ContainerStart(ctx context.Context, id string, o
 	return c.MockDockerClient.ContainerStart(ctx, id, o)
 }
 
-func (c *secretRecordingClient) CopyToContainer(ctx context.Context, id, dst string, content io.Reader, opts container.CopyToContainerOptions) error {
-	c.order = append(c.order, "copy")
-	c.copyDst = dst
-	b, err := io.ReadAll(content)
-	c.copyContent = b
-	return err
+func (c *secretRecordingClient) ContainerRemove(ctx context.Context, id string, o container.RemoveOptions) error {
+	c.removeCalls++
+	return c.MockDockerClient.ContainerRemove(ctx, id, o)
+}
+
+func (c *secretRecordingClient) ContainerExecCreate(ctx context.Context, id string, o container.ExecOptions) (types.IDResponse, error) {
+	c.order = append(c.order, "exec")
+	c.execOpts = o
+	if c.execErr != nil {
+		return types.IDResponse{}, c.execErr
+	}
+	return types.IDResponse{ID: "exec-secret"}, nil
+}
+
+func (c *secretRecordingClient) ContainerExecAttach(ctx context.Context, id string, o container.ExecAttachOptions) (types.HijackedResponse, error) {
+	c.execAttach = o
+	c.conn = &stdinConn{}
+	return types.HijackedResponse{Conn: c.conn, Reader: bufio.NewReader(strings.NewReader(""))}, nil
+}
+
+func (c *secretRecordingClient) ContainerExecInspect(ctx context.Context, id string) (container.ExecInspect, error) {
+	return container.ExecInspect{ExitCode: c.execExit}, c.inspectErr
+}
+
+func newSecretClient() *secretRecordingClient {
+	return &secretRecordingClient{MockDockerClient: &sandbox.MockDockerClient{}}
+}
+
+func runSecretDraftWith(t *testing.T, cli *secretRecordingClient) (*ProjectRouteHandle, error) {
+	t.Helper()
+	mgr := NewProjectSandboxManager(cli, nil, "https://gateway.invalid").(*projectSandboxManager)
+	return mgr.ensureProjectContainerDisabledDraft(context.Background(), &models.Project{ID: "p1"}, "atm-runtime:test")
 }
 
 func runSecretDraft(t *testing.T) (*secretRecordingClient, *ProjectRouteHandle) {
 	t.Helper()
-	cli := &secretRecordingClient{MockDockerClient: &sandbox.MockDockerClient{}}
-	mgr := NewProjectSandboxManager(cli, nil, "https://gateway.invalid").(*projectSandboxManager)
-	route, err := mgr.ensureProjectContainerDisabledDraft(context.Background(), &models.Project{ID: "p1"}, "atm-runtime:test")
+	cli := newSecretClient()
+	route, err := runSecretDraftWith(t, cli)
 	if err != nil {
 		t.Fatalf("draft: %v", err)
 	}
 	return cli, route
 }
 
-func TestProjectSecret_ReadableByContainerUser(t *testing.T) {
+// The secret travels over exec stdin: docker cp cannot write into a read-only rootfs or into a
+// tmpfs mount, and stdin keeps the password out of argv, env and docker inspect.
+func TestProjectSecret_DeliveredOverStdinAsContainerUser(t *testing.T) {
 	cli, route := runSecretDraft(t)
-	if cli.copyDst != "/run/secrets" {
-		t.Fatalf("secret copied to %q", cli.copyDst)
+	if cli.execOpts.User != "1000:1000" {
+		t.Errorf("exec user = %q; the file must be created by the opencode user (1000:1000)", cli.execOpts.User)
 	}
-	tr := tar.NewReader(strings.NewReader(string(cli.copyContent)))
-	hdr, err := tr.Next()
-	if err != nil {
-		t.Fatalf("tar: %v", err)
+	if !cli.execOpts.AttachStdin {
+		t.Error("exec must attach stdin")
 	}
-	if hdr.Name != "opencode" {
-		t.Errorf("name = %q", hdr.Name)
+	cmd := strings.Join(cli.execOpts.Cmd, " ")
+	for _, want := range []string{"umask 077", "/run/secrets/opencode.tmp", "mv /run/secrets/opencode.tmp /run/secrets/opencode"} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("exec command %q missing %q (owner-only, atomically published file)", cmd, want)
+		}
 	}
-	if hdr.Uid != 1000 || hdr.Gid != 1000 {
-		t.Errorf("secret owned by %d:%d; the opencode user (1000:1000) cannot read a root-owned file", hdr.Uid, hdr.Gid)
+	if got := cli.conn.written.String(); got != route.AuthPassword || len(got) != 64 {
+		t.Errorf("stdin body does not match generated password (len %d)", len(got))
 	}
-	if hdr.Mode&0o077 != 0 || hdr.Mode&0o400 == 0 {
-		t.Errorf("mode = %o; want owner-read only", hdr.Mode)
+	if !cli.conn.closedWrite {
+		t.Error("stdin must be half-closed so cat terminates")
 	}
-	body, _ := io.ReadAll(tr)
-	if string(body) != route.AuthPassword || len(body) != 64 {
-		t.Errorf("secret body does not match generated password (len %d)", len(body))
+	if strings.Contains(cmd+strings.Join(cli.execOpts.Env, " "), route.AuthPassword) {
+		t.Error("password leaked into exec argv/env")
+	}
+}
+
+func TestProjectSecret_DeliveryFailureRollsBackWithoutLeak(t *testing.T) {
+	cases := map[string]func(*secretRecordingClient){
+		"exec create fails": func(c *secretRecordingClient) { c.execErr = errors.New("boom") },
+		"non-zero exit":     func(c *secretRecordingClient) { c.execExit = 1 },
+		"inspect fails":     func(c *secretRecordingClient) { c.inspectErr = errors.New("boom") },
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			cli := newSecretClient()
+			setup(cli)
+			route, err := runSecretDraftWith(t, cli)
+			if err == nil || route != nil {
+				t.Fatalf("want error and nil route, got route=%v err=%v", route, err)
+			}
+			if cli.removeCalls == 0 {
+				t.Error("container must be removed when secret delivery fails")
+			}
+			if cli.conn != nil && strings.Contains(err.Error(), cli.conn.written.String()) && cli.conn.written.Len() > 0 {
+				t.Error("error message leaks the password")
+			}
+		})
 	}
 }
 
@@ -108,11 +179,11 @@ func TestProjectSecret_TmpfsOwnedByContainerUser(t *testing.T) {
 	}
 }
 
-func TestProjectSecret_CopiedAfterStart(t *testing.T) {
-	// Files copied into a stopped container's tmpfs are discarded when the tmpfs is mounted at start,
-	// so the secret must be delivered to the running container (the entrypoint waits for it).
+func TestProjectSecret_DeliveredAfterStart(t *testing.T) {
+	// A stopped container's tmpfs is mounted fresh at start, so the secret must be delivered to the
+	// running container (the entrypoint waits for it).
 	cli, _ := runSecretDraft(t)
-	if strings.Join(cli.order, ",") != "start,copy" {
-		t.Errorf("order = %v, want start then copy", cli.order)
+	if strings.Join(cli.order, ",") != "start,exec" {
+		t.Errorf("order = %v, want start then exec", cli.order)
 	}
 }

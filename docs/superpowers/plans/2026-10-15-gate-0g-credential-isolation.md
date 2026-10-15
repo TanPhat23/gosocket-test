@@ -66,3 +66,23 @@ Mint a token per task attempt, revoke on completion/cancel; point OpenCode `base
 ## Verification per stage
 
 `go vet ./...`, `go test ./... -count=1 -shuffle=on`, `-race` on touched packages, and a recorded mutation table (production line mutated in the guest copy only; each mutant must be killed).
+
+## B5 live probe results (2026-10-15, OpenCode 2.0.26, disposable VM `atm-build`)
+
+Image `ghcr.io/anomalyco/opencode:2.0.26` (`sha256:15b62c74…ca71`, Alpine, entrypoint `opencode`).
+
+Verified:
+- `opencode serve --hostname 0.0.0.0 --port 4096` runs as UID 1000 with `--read-only --cap-drop ALL --no-new-privileges` plus tmpfs mounts.
+- Password env var is `OPENCODE_PASSWORD` (fallback `OPENCODE_SERVER_PASSWORD`). Auth is HTTP Basic, user `opencode`, enforced only on `/api/*` (401 without or with a wrong password). Non-`/api` paths serve the web UI unauthenticated; that is expected. **Stage 3: the ATM OpenCode client must use Basic auth with user `opencode` on `/api/*`.** The runner client's current auth is not yet verified against this.
+- The repo entrypoint consumes and unlinks the secret file; the password is absent from `docker logs`, `docker inspect` Env/Args. It remains readable from PID 1 `/proc` environ (accepted B6 risk).
+- A custom provider `baseURL` works via `OPENCODE_CONFIG_CONTENT` (`npm: @ai-sdk/openai-compatible`, `options{baseURL, apiKey}`). OpenCode sends `POST <baseURL>/chat/completions` with `Authorization: Bearer <apiKey>` and consumes SSE correctly. The provider package is bundled; no npm fetch and no sandbox internet needed.
+- Request bodies carry `max_completion_tokens` (not `max_tokens`), which the gateway clamps. Bodies are large, so `MaxBodyBytes` must be configured far above the 4096 used in tests.
+- Gateway requirements: serve `/v1/chat/completions` (OpenAI-compatible) and accept the capability token as `Authorization: Bearer`.
+
+## Defect found and fixed: secret delivery via `CopyToContainer`
+
+Commit `4e29ca5` delivered the password with `docker cp`. Live probe: it fails with "container rootfs is marked read-only" when `ReadonlyRootfs` is set (production sets it), and into a tmpfs mount of a running container it reports success but writes to the hidden underlying layer, so the entrypoint timed out (exit 78, fail-closed but non-functional).
+
+Fix: `deliverSecret` execs `sh -c "umask 077 && cat > /run/secrets/opencode.tmp && mv … /run/secrets/opencode"` as `1000:1000` with the password on stdin (never argv/env/inspect); the rename is atomic. Verified live with read-only rootfs and `cap-drop ALL`. Delivery follows start and failure rolls the container back; the exec-after-start race is covered by the entrypoint's 30s wait. Unit tests and 9 mutants (no-mv, no-umask, wrong user, no stdin, no CloseWrite, skipped exit check, password in Cmd, deliver-before-start, no rollback) pin the contract. `CopyToContainer` is no longer used by the runner but remains on the `DockerClient` interface.
+
+Status: Gate 0G remains blocked and unqualified. B1 (host operator or Gate 0D must allow only `sandbox bridge -> gateway:8082`) is the only open blocker for Stage 3 wiring. The Phase 1A quarantine is unchanged.
