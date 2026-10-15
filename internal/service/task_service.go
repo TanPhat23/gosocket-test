@@ -126,7 +126,17 @@ func NewTaskService(
 
 // GetTask retrieves a task by ID. Requires RoleViewer or higher on the task's team.
 func (s *taskService) GetTask(ctx context.Context, taskID, userID string) (*models.Task, error) {
-	return s.authorizeUserForTask(ctx, taskID, userID, models.RoleViewer)
+	task, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleViewer)
+	if err != nil {
+		return nil, err
+	}
+	if task.Status == models.TaskStatusFailed && s.attemptRepo != nil {
+		// Best effort: a missing reason must not hide the task itself.
+		if reason, rerr := s.attemptRepo.LatestFailureReason(ctx, task.ID); rerr == nil {
+			task.FailureReason = reason
+		}
+	}
+	return task, nil
 }
 
 // ListTasks lists tasks visible to userID (RoleViewer or higher on the project's team).

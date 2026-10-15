@@ -519,3 +519,30 @@ func TestProjectRepositoryUpdateWritesZeroValuesAndKeepsCreatedAt(t *testing.T) 
 		t.Errorf("CreatedAt changed: %v", got.CreatedAt)
 	}
 }
+
+func TestAttemptRepositoryLatestFailureReason(t *testing.T) {
+	db := setupHardeningDB(t)
+	repo := repository.NewAttemptRepository(db)
+	ctx := context.Background()
+
+	if got, err := repo.LatestFailureReason(ctx, "task-1"); err != nil || got != nil {
+		t.Fatalf("LatestFailureReason(no attempts) = %v, err %v; want nil", got, err)
+	}
+	old, newer := "first reason", "second reason"
+	for _, a := range []*models.TaskAttempt{
+		{ID: "att-a", TaskID: "task-1", AttemptNumber: 1, Status: models.AttemptFailed, FailureReason: &old},
+		{ID: "att-b", TaskID: "task-1", AttemptNumber: 2, Status: models.AttemptFailed, FailureReason: &newer},
+		{ID: "att-c", TaskID: "task-2", AttemptNumber: 1, Status: models.AttemptQueued},
+	} {
+		if err := repo.Create(ctx, a); err != nil {
+			t.Fatalf("Create %s: %v", a.ID, err)
+		}
+	}
+	got, err := repo.LatestFailureReason(ctx, "task-1")
+	if err != nil || got == nil || *got != newer {
+		t.Fatalf("LatestFailureReason(task-1) = %v, err %v; want %q", got, err, newer)
+	}
+	if got, err := repo.LatestFailureReason(ctx, "task-2"); err != nil || got != nil {
+		t.Fatalf("LatestFailureReason(no reason) = %v, err %v; want nil", got, err)
+	}
+}

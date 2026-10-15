@@ -382,3 +382,27 @@ func TestTaskAuthz_TaskOperationsFailClosedWithoutRepos(t *testing.T) {
 		t.Errorf("fail-closed authorization must not write, got %d writes", f.spy.writes())
 	}
 }
+
+func TestTaskAuthz_GetTaskExposesLatestFailureReasonOnlyWhenFailed(t *testing.T) {
+	f := newAuthzFixture(t)
+	ctx := context.Background()
+	reason := "runtime execution is temporarily disabled"
+	if err := f.db.Create(&models.TaskAttempt{ID: common.NewID(), TaskID: f.taskA.ID, AttemptNumber: 1, Status: models.AttemptFailed, FailureReason: &reason}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := f.svc.GetTask(ctx, f.taskA.ID, f.viewerA.ID)
+	if err != nil || got.FailureReason != nil {
+		t.Fatalf("non-failed task must not expose a reason, got %v / %v", got.FailureReason, err)
+	}
+	if err := f.db.Model(&models.Task{}).Where("id = ?", f.taskA.ID).Update("status", models.TaskStatusFailed).Error; err != nil {
+		t.Fatal(err)
+	}
+	got, err = f.svc.GetTask(ctx, f.taskA.ID, f.viewerA.ID)
+	if err != nil || got.FailureReason == nil || *got.FailureReason != reason {
+		t.Fatalf("failed task must expose the latest attempt's reason, got %v / %v", got.FailureReason, err)
+	}
+	if _, err := f.svc.GetTask(ctx, f.taskA.ID, f.outsid.ID); !errors.Is(err, common.ErrForbidden) {
+		t.Fatalf("outsider must stay forbidden, got %v", err)
+	}
+}
