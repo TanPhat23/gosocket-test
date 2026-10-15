@@ -13,6 +13,10 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+// StaleReceivedAfter is how long an event may sit in "received" before a redelivery reclaims it. Webhook
+// processing is short, so an event this old belongs to a process that died before recording an outcome.
+const StaleReceivedAfter = 10 * time.Minute
+
 // IdempotencyStore tracks and deduplicates incoming webhook events.
 type IdempotencyStore interface {
 	RecordEvent(ctx context.Context, provider string, projectID string, providerEventID string) (bool, error)
@@ -37,11 +41,17 @@ type memoryEventRecord struct {
 type MemoryIdempotencyStore struct {
 	mu     sync.Mutex
 	events map[memoryEventKey]*memoryEventRecord
+	now    func() time.Time
 }
 
 // NewMemoryIdempotencyStore creates an in-memory IdempotencyStore.
 func NewMemoryIdempotencyStore() IdempotencyStore {
-	return &MemoryIdempotencyStore{events: make(map[memoryEventKey]*memoryEventRecord)}
+	return NewMemoryIdempotencyStoreWithClock(time.Now)
+}
+
+// NewMemoryIdempotencyStoreWithClock is NewMemoryIdempotencyStore with an injectable clock.
+func NewMemoryIdempotencyStoreWithClock(now func() time.Time) IdempotencyStore {
+	return &MemoryIdempotencyStore{events: make(map[memoryEventKey]*memoryEventRecord), now: now}
 }
 
 func (m *MemoryIdempotencyStore) RecordEvent(ctx context.Context, provider string, projectID string, providerEventID string) (bool, error) {
@@ -53,10 +63,12 @@ func (m *MemoryIdempotencyStore) RecordEvent(ctx context.Context, provider strin
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	now := time.Now().UTC()
+	now := m.now().UTC()
 	if existing, ok := m.events[key]; ok {
-		// A failed event is reclaimed by the redelivery so the provider's retry is processed.
-		if existing.status != models.WebhookFailed {
+		// A failed event, or one stuck in received past StaleReceivedAfter, is reclaimed by the
+		// redelivery so the provider's retry is processed.
+		stale := existing.status == models.WebhookReceived && now.Sub(existing.receivedAt) >= StaleReceivedAfter
+		if existing.status != models.WebhookFailed && !stale {
 			return false, nil
 		}
 		existing.status = models.WebhookReceived
@@ -110,12 +122,18 @@ func (m *MemoryIdempotencyStore) MarkFailed(ctx context.Context, provider string
 
 // DBIdempotencyStore implements IdempotencyStore using GORM and models.WebhookEvent.
 type DBIdempotencyStore struct {
-	db *gorm.DB
+	db  *gorm.DB
+	now func() time.Time
 }
 
 // NewDBIdempotencyStore creates a new DB-backed IdempotencyStore.
 func NewDBIdempotencyStore(db *gorm.DB) IdempotencyStore {
-	return &DBIdempotencyStore{db: db}
+	return NewDBIdempotencyStoreWithClock(db, time.Now)
+}
+
+// NewDBIdempotencyStoreWithClock is NewDBIdempotencyStore with an injectable clock.
+func NewDBIdempotencyStoreWithClock(db *gorm.DB, now func() time.Time) IdempotencyStore {
+	return &DBIdempotencyStore{db: db, now: now}
 }
 
 func (d *DBIdempotencyStore) RecordEvent(ctx context.Context, provider string, projectID string, providerEventID string) (bool, error) {
@@ -128,7 +146,7 @@ func (d *DBIdempotencyStore) RecordEvent(ctx context.Context, provider string, p
 		ProjectID:       projectID,
 		ProviderEventID: providerEventID,
 		Status:          models.WebhookReceived,
-		ReceivedAt:      time.Now().UTC(),
+		ReceivedAt:      d.now().UTC(),
 	}
 
 	// Clauses OnConflict DoNothing allows detecting if a new row was inserted or ignored due to PK conflict
@@ -153,14 +171,16 @@ func (d *DBIdempotencyStore) RecordEvent(ctx context.Context, provider string, p
 	return true, nil
 }
 
-// reclaimFailed atomically flips a failed event back to received. Only one concurrent redelivery
-// sees RowsAffected == 1, so a failed event is retried exactly once.
+// reclaimFailed atomically flips a failed event, or one stuck in received past StaleReceivedAfter, back
+// to received. Only one concurrent redelivery sees RowsAffected == 1, so the event is retried exactly once.
 func (d *DBIdempotencyStore) reclaimFailed(ctx context.Context, provider, projectID, providerEventID string) (bool, error) {
+	now := d.now().UTC()
 	res := d.db.WithContext(ctx).Model(&models.WebhookEvent{}).
-		Where("provider = ? AND project_id = ? AND provider_event_id = ? AND status = ?", provider, projectID, providerEventID, models.WebhookFailed).
+		Where("provider = ? AND project_id = ? AND provider_event_id = ?", provider, projectID, providerEventID).
+		Where("status = ? OR (status = ? AND received_at <= ?)", models.WebhookFailed, models.WebhookReceived, now.Add(-StaleReceivedAfter)).
 		Updates(map[string]any{
 			"status":        models.WebhookReceived,
-			"received_at":   time.Now().UTC(),
+			"received_at":   now,
 			"processed_at":  nil,
 			"error_message": nil,
 		})

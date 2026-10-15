@@ -3,6 +3,7 @@ package integrations_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"agent-task-manager/internal/integrations"
 	"agent-task-manager/internal/models"
@@ -348,5 +349,50 @@ func TestDBIdempotencyStore_RetryClearsFailureState(t *testing.T) {
 	}
 	if ev.Status != models.WebhookReceived || ev.ErrorMessage != nil || ev.ProcessedAt != nil {
 		t.Errorf("reclaimed event must be back in received state without stale failure data: %+v", ev)
+	}
+}
+
+// A delivery stuck in "received" (the process died before MarkProcessed/MarkFailed) must not block the
+// provider's retries forever: once older than StaleReceivedAfter, exactly one redelivery reclaims it.
+func TestIdempotencyStores_ReclaimsStaleReceivedEvent(t *testing.T) {
+	var now time.Time
+	clock := func() time.Time { return now }
+	stores := map[string]func(t *testing.T) integrations.IdempotencyStore{
+		"memory": func(t *testing.T) integrations.IdempotencyStore {
+			return integrations.NewMemoryIdempotencyStoreWithClock(clock)
+		},
+		"db": func(t *testing.T) integrations.IdempotencyStore {
+			return integrations.NewDBIdempotencyStoreWithClock(setupTestDB(t), clock)
+		},
+	}
+	for name, mk := range stores {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			now = time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+			store := mk(t)
+
+			if first, err := store.RecordEvent(ctx, "github", "p", "evt"); err != nil || !first {
+				t.Fatalf("first: %v %v", first, err)
+			}
+			now = now.Add(integrations.StaleReceivedAfter - time.Second)
+			if again, _ := store.RecordEvent(ctx, "github", "p", "evt"); again {
+				t.Fatal("a fresh in-flight event must stay a duplicate")
+			}
+			now = now.Add(2 * time.Second)
+			if retry, err := store.RecordEvent(ctx, "github", "p", "evt"); err != nil || !retry {
+				t.Fatalf("stale received event must be reclaimable, got %v %v", retry, err)
+			}
+			if second, _ := store.RecordEvent(ctx, "github", "p", "evt"); second {
+				t.Fatal("reclaiming must restart the clock: only one redelivery wins")
+			}
+			// A stale processed event is never reopened.
+			if err := store.MarkProcessed(ctx, "github", "p", "evt"); err != nil {
+				t.Fatal(err)
+			}
+			now = now.Add(24 * time.Hour)
+			if again, _ := store.RecordEvent(ctx, "github", "p", "evt"); again {
+				t.Fatal("processed events stay duplicates forever")
+			}
+		})
 	}
 }
