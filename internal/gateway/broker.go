@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// Broker hands per-attempt capability tokens to sandboxes and takes them back.
+// Broker hands per-project-container capability tokens to sandboxes and takes them back.
 type Broker struct {
 	svc     *Service
 	baseURL string
@@ -37,22 +37,28 @@ func (s *Service) NewBroker(baseURL string, ttl time.Duration) (*Broker, error) 
 	return &Broker{svc: s, baseURL: baseURL, ttl: ttl}, nil
 }
 
-// Grant mints a token bound to exactly one attempt.
-func (b *Broker) Grant(projectID, taskID, attemptID string) (Grant, error) {
-	if projectID == "" || taskID == "" || attemptID == "" {
-		return Grant{}, errors.New("gateway: project, task and attempt ids are required")
+// projectScope is the TaskID claim of project-container tokens: the OpenCode daemon is shared by every
+// task in a project, so the token is scoped to the container's lease, not to a task or attempt.
+const projectScope = "project"
+
+// Grant mints a token for one project container's lease. leaseID identifies that container run (for
+// example its container ID); it is the revocation and quota key, so quota is shared by every task the
+// container serves. Callers must Release the lease when the container stops.
+func (b *Broker) Grant(projectID, leaseID string) (Grant, error) {
+	if projectID == "" || leaseID == "" {
+		return Grant{}, errors.New("gateway: project and lease ids are required")
 	}
-	tok := b.svc.Issuer.Mint(Claims{ProjectID: projectID, TaskID: taskID, AttemptID: attemptID}, b.ttl)
+	tok := b.svc.Issuer.Mint(Claims{ProjectID: projectID, TaskID: projectScope, AttemptID: leaseID}, b.ttl)
 	return Grant{Token: tok, BaseURL: b.baseURL}, nil
 }
 
-// Release revokes the attempt's token and forgets its quota usage. It is idempotent.
-func (b *Broker) Release(attemptID string) {
-	if attemptID == "" {
+// Release revokes the lease's token and forgets its quota usage. It is idempotent.
+func (b *Broker) Release(leaseID string) {
+	if leaseID == "" {
 		return
 	}
-	b.svc.Issuer.Revoke(attemptID)
-	b.svc.Ledger.Forget(attemptID)
+	b.svc.Issuer.Revoke(leaseID)
+	b.svc.Ledger.Forget(leaseID)
 }
 
 // OpenCodeConfigParams describes the single gateway-backed provider OpenCode may use.

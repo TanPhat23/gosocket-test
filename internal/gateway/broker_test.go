@@ -44,9 +44,9 @@ func TestNewBroker_RejectsBadConfig(t *testing.T) {
 	}
 }
 
-func TestBroker_GrantMintsAttemptBoundToken(t *testing.T) {
+func TestBroker_GrantMintsLeaseBoundToken(t *testing.T) {
 	b, svc := newTestBroker(t)
-	g, err := b.Grant("proj-1", "task-1", "att-1")
+	g, err := b.Grant("proj-1", "lease-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,19 +57,19 @@ func TestBroker_GrantMintsAttemptBoundToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("granted token must verify: %v", err)
 	}
-	if claims.ProjectID != "proj-1" || claims.TaskID != "task-1" || claims.AttemptID != "att-1" {
-		t.Errorf("claims must bind the attempt, got %+v", claims)
+	if claims.ProjectID != "proj-1" || claims.TaskID != projectScope || claims.AttemptID != "lease-1" {
+		t.Errorf("claims must bind the lease, got %+v", claims)
 	}
 	if exp := time.Unix(claims.Expires, 0); time.Until(exp) < 59*time.Minute || time.Until(exp) > 61*time.Minute {
 		t.Errorf("token must expire after the configured ttl, got %v", exp)
 	}
 
-	other, _ := b.Grant("proj-1", "task-1", "att-2")
+	other, _ := b.Grant("proj-1", "lease-2")
 	if other.Token == g.Token {
-		t.Error("each attempt needs its own token")
+		t.Error("each lease needs its own token")
 	}
-	for _, args := range [][3]string{{"", "t", "a"}, {"p", "", "a"}, {"p", "t", ""}} {
-		if _, err := b.Grant(args[0], args[1], args[2]); err == nil {
+	for _, args := range [][2]string{{"", "l"}, {"p", ""}} {
+		if _, err := b.Grant(args[0], args[1]); err == nil {
 			t.Errorf("Grant%v must reject empty ids", args)
 		}
 	}
@@ -77,8 +77,8 @@ func TestBroker_GrantMintsAttemptBoundToken(t *testing.T) {
 
 func TestBroker_ReleaseRevokesAndFreesQuota(t *testing.T) {
 	b, svc := newTestBroker(t)
-	g, _ := b.Grant("p", "t", "att-r")
-	other, _ := b.Grant("p", "t", "att-keep")
+	g, _ := b.Grant("p", "att-r")
+	other, _ := b.Grant("p", "att-keep")
 
 	if err := svc.Ledger.Reserve("att-r", 10); err != nil {
 		t.Fatal(err)
