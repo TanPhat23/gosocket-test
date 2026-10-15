@@ -38,7 +38,8 @@ func setupCredentialTestDB(t *testing.T) *gorm.DB {
 			issuer TEXT NOT NULL,
 			subject TEXT NOT NULL,
 			email TEXT,
-			display_name TEXT
+			display_name TEXT,
+			sessions_valid_after DATETIME
 		);`,
 		`CREATE TABLE teams (
 			id TEXT PRIMARY KEY,

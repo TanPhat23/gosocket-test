@@ -75,7 +75,7 @@ func credentialsFrom(c fiber.Ctx) requestCredentials {
 func (cr requestCredentials) authenticate(ctx context.Context, authService service.AuthService, sm *auth.SessionManager) (user *models.User, token *models.APIToken, ok bool) {
 	if sm != nil && cr.session != "" {
 		if claims, err := sm.VerifyPayload(cr.session); err == nil {
-			if user, err := authService.GetUserByID(ctx, claims.UserID); err == nil && user != nil {
+			if user, ok := sessionUser(ctx, authService, claims); ok {
 				return user, nil, true
 			}
 		}
@@ -86,6 +86,16 @@ func (cr requestCredentials) authenticate(ctx context.Context, authService servi
 		}
 	}
 	return nil, nil, false
+}
+
+// sessionUser loads the user a verified session belongs to. ok is false if the user is gone or the
+// session was revoked by a later logout.
+func sessionUser(ctx context.Context, authService service.AuthService, claims *auth.SessionClaims) (user *models.User, ok bool) {
+	user, err := authService.GetUserByID(ctx, claims.UserID)
+	if err != nil || user == nil || claims.RevokedBy(user.SessionsValidAfter) {
+		return nil, false
+	}
+	return user, true
 }
 
 // RequireAuth provides dual authentication via session cookie (atm_session) or Bearer Personal Access Token.

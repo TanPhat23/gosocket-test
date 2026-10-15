@@ -50,7 +50,8 @@ func setupTestDB(t *testing.T) *gorm.DB {
 			issuer TEXT NOT NULL,
 			subject TEXT NOT NULL,
 			email TEXT,
-			display_name TEXT
+			display_name TEXT,
+			sessions_valid_after DATETIME
 		);
 		CREATE TABLE team_memberships (
 			team_id TEXT NOT NULL,

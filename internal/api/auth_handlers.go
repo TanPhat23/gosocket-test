@@ -154,10 +154,20 @@ func (h *AuthHandlers) Callback(c fiber.Ctx) error {
 	})
 }
 
-// Logout clears the atm_session cookie.
+// Logout revokes the caller's sessions and clears the atm_session cookie. Sessions are stateless
+// signed cookies, so revocation is per user ("log out everywhere"): every cookie issued before now
+// stops validating. Personal Access Tokens are unaffected. Without a valid, unrevoked cookie it only
+// clears the cookie, so it is idempotent and a replayed revoked cookie cannot end newer sessions.
 // POST /api/v1/auth/logout
 func (h *AuthHandlers) Logout(c fiber.Ctx) error {
 	h.sessionManager.ClearSessionFiber(c)
+	if claims, err := h.sessionManager.ValidateFiberRequest(c); err == nil {
+		if _, ok := sessionUser(c.Context(), h.authService, claims); ok {
+			if err := h.authService.RevokeSessions(c.Context(), claims.UserID); err != nil {
+				return CentralErrorHandler(c, err)
+			}
+		}
+	}
 	return c.JSON(fiber.Map{
 		"status": "logged_out",
 	})
@@ -173,8 +183,8 @@ func (h *AuthHandlers) Me(c fiber.Ctx) error {
 		})
 	}
 
-	user, err := h.authService.GetUserByID(c.Context(), claims.UserID)
-	if err != nil {
+	user, ok := sessionUser(c.Context(), h.authService, claims)
+	if !ok {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 			"error": "User not found",
 		})

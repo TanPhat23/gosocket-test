@@ -35,6 +35,8 @@ type AuthService interface {
 	HandleCallback(ctx context.Context, stateCookie, stateParam, code string) (*models.User, error)
 	LoginWithCredentials(ctx context.Context, email, password string) (*models.User, error)
 	GetUserByID(ctx context.Context, userID string) (*models.User, error)
+	// RevokeSessions invalidates every session cookie issued to userID before now.
+	RevokeSessions(ctx context.Context, userID string) error
 	AuthenticatePAT(ctx context.Context, rawToken string) (*models.User, *models.APIToken, error)
 	AuthorizeTeamRole(ctx context.Context, teamID, userID string, requiredRole models.TeamRole) (models.TeamRole, error)
 }
@@ -228,6 +230,13 @@ func (s *authService) LoginWithCredentials(ctx context.Context, email, password 
 
 func (s *authService) GetUserByID(ctx context.Context, userID string) (*models.User, error) {
 	return s.userRepo.GetByID(ctx, userID)
+}
+
+// RevokeSessions sets the user's SessionsValidAfter to now. The time is truncated to microseconds,
+// the precision of timestamptz, so a session issued after this call always compares as newer.
+func (s *authService) RevokeSessions(ctx context.Context, userID string) error {
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	return s.userRepo.Update(ctx, &models.User{ID: userID}, map[string]any{"sessions_valid_after": now})
 }
 
 func (s *authService) AuthenticatePAT(ctx context.Context, rawToken string) (*models.User, *models.APIToken, error) {
