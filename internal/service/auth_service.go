@@ -16,6 +16,9 @@ import (
 	"gorm.io/gorm"
 )
 
+// patLastUsedInterval is the minimum gap between LastUsedAt writes for one personal access token.
+const patLastUsedInterval = 5 * time.Minute
+
 var (
 	ErrOIDCNotConfigured = errors.New("OIDC authentication is not configured")
 	ErrInvalidState      = errors.New("invalid or expired authorization state")
@@ -260,9 +263,13 @@ func (s *authService) AuthenticatePAT(ctx context.Context, rawToken string) (*mo
 		return nil, nil, ErrInvalidToken
 	}
 
+	// LastUsedAt is informational, so it is refreshed at most once per patLastUsedInterval; long-lived
+	// sockets re-authenticate every few seconds and must not cost a write each time.
 	now := time.Now().UTC()
-	_ = s.tokenRepo.UpdateLastUsed(ctx, apiToken.ID, now)
-	apiToken.LastUsedAt = &now
+	if apiToken.LastUsedAt == nil || now.Sub(*apiToken.LastUsedAt) >= patLastUsedInterval {
+		_ = s.tokenRepo.UpdateLastUsed(ctx, apiToken.ID, now)
+		apiToken.LastUsedAt = &now
+	}
 
 	return user, apiToken, nil
 }
