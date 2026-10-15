@@ -32,7 +32,8 @@ func NewTeamHandlers(teamRepo repository.TeamRepository, projectRepo repository.
 	}
 }
 
-// memberTeams returns the teams on which userID holds at least RoleViewer.
+// memberTeams returns the teams on which userID holds at least RoleViewer, limited to ctx's PAT team
+// scope.
 func (h *TeamHandlers) memberTeams(ctx context.Context, userID string) ([]models.Team, error) {
 	if h.teamRepo == nil {
 		return nil, common.ErrServiceUnavailable
@@ -43,6 +44,9 @@ func (h *TeamHandlers) memberTeams(ctx context.Context, userID string) ([]models
 	}
 	visible := []models.Team{}
 	for i := range teams {
+		if !auth.TeamAllowed(ctx, teams[i].ID) {
+			continue
+		}
 		membership, mErr := h.teamRepo.GetMembership(ctx, teams[i].ID, userID)
 		if mErr != nil {
 			if errors.Is(mErr, gorm.ErrRecordNotFound) {

@@ -181,13 +181,22 @@ var localAccounts = map[string]localAccount{
 	},
 }
 
-func (s *authService) LoginWithCredentials(ctx context.Context, email, password string) (*models.User, error) {
-	acc, ok := localAccounts[strings.ToLower(strings.TrimSpace(email))]
-	if !ok {
-		return nil, ErrInvalidCredentials
-	}
+// dummyPassHash is a bcrypt hash (same cost as the local accounts) of a random, discarded password.
+// Unknown emails are compared against it so a miss costs the same bcrypt work as a wrong password and
+// response timing does not reveal which emails are local accounts.
+const dummyPassHash = "$2a$10$Ce8VVwDU6V7jAdFHyOiZ5eNHdZlCcnG7O5B.fykTMN44CGYkE9Tji"
 
-	if err := bcrypt.CompareHashAndPassword([]byte(acc.passHash), []byte(password)); err != nil {
+// LoginWithCredentials authenticates one of the built-in development accounts. It only resolves or
+// creates the user record; it never grants team membership. Whether the endpoint is reachable at all
+// is decided by the API layer (config.SecurityConfig.EnableLocalLogin, never true in production).
+func (s *authService) LoginWithCredentials(ctx context.Context, email, password string) (*models.User, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	acc, ok := localAccounts[email]
+	hash := acc.passHash
+	if !ok {
+		hash = dummyPassHash
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)); err != nil || !ok {
 		return nil, ErrInvalidCredentials
 	}
 
@@ -197,41 +206,24 @@ func (s *authService) LoginWithCredentials(ctx context.Context, email, password 
 	}
 
 	existingUser, err := s.userRepo.GetByIssuerSubject(ctx, issuer, acc.subject)
-	if err != nil {
-		now := time.Now()
-		newUser := &models.User{
-			ID:          common.NewID(),
-			Issuer:      issuer,
-			Subject:     acc.subject,
-			Email:       email,
-			DisplayName: acc.name,
-			CreatedAt:   now,
-			UpdatedAt:   now,
-		}
-		if err := s.userRepo.Create(ctx, newUser); err != nil {
-			return nil, fmt.Errorf("failed to create user record: %w", err)
-		}
-		return newUser, nil
+	if err == nil {
+		return existingUser, nil
 	}
 
-	// Ensure local account is enrolled as owner in existing teams if not already a member
-	teams, err := s.teamRepo.List(ctx)
-	if err == nil && len(teams) > 0 {
-		for _, tm := range teams {
-			if _, mErr := s.teamRepo.GetMembership(ctx, tm.ID, existingUser.ID); mErr != nil {
-				now := time.Now().UTC()
-				_ = s.teamRepo.AddMembership(ctx, &models.TeamMembership{
-					TeamID:    tm.ID,
-					UserID:    existingUser.ID,
-					Role:      models.RoleOwner,
-					CreatedAt: now,
-					UpdatedAt: now,
-				})
-			}
-		}
+	now := time.Now()
+	newUser := &models.User{
+		ID:          common.NewID(),
+		Issuer:      issuer,
+		Subject:     acc.subject,
+		Email:       email,
+		DisplayName: acc.name,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
-
-	return existingUser, nil
+	if err := s.userRepo.Create(ctx, newUser); err != nil {
+		return nil, fmt.Errorf("failed to create user record: %w", err)
+	}
+	return newUser, nil
 }
 
 func (s *authService) GetUserByID(ctx context.Context, userID string) (*models.User, error) {
@@ -265,7 +257,12 @@ func (s *authService) AuthenticatePAT(ctx context.Context, rawToken string) (*mo
 	return user, apiToken, nil
 }
 
+// AuthorizeTeamRole checks userID's role on teamID. A team outside ctx's PAT team scope is treated
+// as non-membership.
 func (s *authService) AuthorizeTeamRole(ctx context.Context, teamID, userID string, requiredRole models.TeamRole) (models.TeamRole, error) {
+	if !auth.TeamAllowed(ctx, teamID) {
+		return 0, ErrNotTeamMember
+	}
 	membership, err := s.teamRepo.GetMembership(ctx, teamID, userID)
 	if err != nil {
 		return 0, ErrNotTeamMember

@@ -2,11 +2,13 @@ package api
 
 import (
 	"context"
-	"net/url"
+	"errors"
 	"strings"
 	"time"
 
+	"agent-task-manager/internal/auth"
 	"agent-task-manager/internal/common"
+	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/service"
 	"agent-task-manager/internal/ws"
 	"github.com/fasthttp/websocket"
@@ -14,28 +16,15 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// eventAuthzTimeout bounds the per-event visibility lookup for /ws/events subscribers.
+// eventAuthzTimeout bounds the per-event visibility lookup for /ws/events subscribers and each
+// periodic re-validation of an open socket.
 const eventAuthzTimeout = 5 * time.Second
 
-var wsUpgrader = websocket.FastHTTPUpgrader{
-	CheckOrigin: wsOriginAllowed,
-}
+// defaultRevalidateInterval is how often open sockets re-check their credentials and access.
+const defaultRevalidateInterval = 30 * time.Second
 
-// wsOriginAllowed rejects cross-site WebSocket handshakes. The configuration has no dedicated
-// frontend origin, so a browser Origin must name the same host[:port] the request was sent to
-// (the frontend is served/proxied on the API host). Requests without an Origin header come from
-// non-browser clients, which cannot be driven cross-site; they still need RequireAuth credentials.
-func wsOriginAllowed(ctx *fasthttp.RequestCtx) bool {
-	origin := ctx.Request.Header.Peek(fasthttp.HeaderOrigin)
-	if len(origin) == 0 {
-		return true
-	}
-	u, err := url.Parse(string(origin))
-	if err != nil || u.Host == "" {
-		return false
-	}
-	return strings.EqualFold(u.Host, string(ctx.Host()))
-}
+// errWSAccessRevoked reports that an open socket's credentials no longer authenticate its user.
+var errWSAccessRevoked = errors.New("websocket access revoked")
 
 // visibleTaskEventsClient wraps a global events subscriber and forwards only messages about tasks
 // the subscribing user may view (RoleViewer+ on the task's team). Messages without a task ID or that
@@ -43,6 +32,7 @@ func wsOriginAllowed(ctx *fasthttp.RequestCtx) bool {
 type visibleTaskEventsClient struct {
 	ws.Client
 	userID  string
+	token   *models.APIToken // the PAT that authenticated the socket, if any; limits visibility to its team
 	taskSvc service.TaskService
 }
 
@@ -53,7 +43,7 @@ func (c *visibleTaskEventsClient) Send(msg []byte) error {
 	if err != nil || env.TaskID == "" {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), eventAuthzTimeout)
+	ctx, cancel := context.WithTimeout(withTokenScope(context.Background(), c.token), eventAuthzTimeout)
 	defer cancel()
 	if _, err := c.taskSvc.GetTask(ctx, env.TaskID, c.userID); err != nil {
 		return nil
@@ -63,14 +53,23 @@ func (c *visibleTaskEventsClient) Send(msg []byte) error {
 
 // WSHandler handles WebSocket connections for terminal and log streaming.
 type WSHandler struct {
-	hub     *ws.Hub
-	taskSvc service.TaskService
-	logSvc  service.LogService
+	hub                *ws.Hub
+	taskSvc            service.TaskService
+	logSvc             service.LogService
+	revalidateInterval time.Duration
+	upgrader           websocket.FastHTTPUpgrader
+
+	// Set by NewServer: the services RequireAuth uses, for re-validating open sockets, and the
+	// configured browser origins trusted in addition to the API's own host.
+	authService    service.AuthService
+	sessions       *auth.SessionManager
+	allowedOrigins []string
 }
 
 // NewWSHandler creates a new WSHandler.
 func NewWSHandler(hub *ws.Hub, opts ...func(*WSHandler)) *WSHandler {
-	h := &WSHandler{hub: hub}
+	h := &WSHandler{hub: hub, revalidateInterval: defaultRevalidateInterval}
+	h.upgrader = websocket.FastHTTPUpgrader{CheckOrigin: h.originAllowed}
 	for _, opt := range opts {
 		opt(h)
 	}
@@ -85,28 +84,100 @@ func WithWSServices(taskSvc service.TaskService, logSvc service.LogService) func
 	}
 }
 
-// HandleTerminalWS upgrades connection to WebSocket for terminal logs streaming.
-func (h *WSHandler) HandleTerminalWS(c fiber.Ctx) error {
-	return WebSocketLogsHandler(h.hub, h.taskSvc, h.logSvc)(c)
+// WithWSRevalidateInterval sets how often open sockets re-check their credentials and access
+// (default 30s). Non-positive values keep the default.
+func WithWSRevalidateInterval(d time.Duration) func(*WSHandler) {
+	return func(h *WSHandler) {
+		if d > 0 {
+			h.revalidateInterval = d
+		}
+	}
+}
+
+// originAllowed rejects cross-site WebSocket handshakes: a browser Origin must name the host[:port]
+// the request was sent to, or one of the configured allowed origins. Requests without an Origin
+// header come from non-browser clients, which cannot be driven cross-site; they still need
+// RequireAuth credentials.
+func (h *WSHandler) originAllowed(ctx *fasthttp.RequestCtx) bool {
+	origin := ctx.Request.Header.Peek(fasthttp.HeaderOrigin)
+	if len(origin) == 0 {
+		return true
+	}
+	return originAllowed(string(origin), string(ctx.Host()), h.allowedOrigins)
+}
+
+// reauthorize re-runs authentication with the credentials captured at the handshake and requires
+// that they still resolve to userID (the user exists, the session has not expired, the PAT has not
+// been deleted or expired) through the same credential that authorized the handshake (the session
+// cookie, or the PAT with handshakeToken's ID), so an expired cookie cannot hand the socket over to
+// a PAT sent alongside it. It returns ctx restricted to the PAT's team scope, if a PAT was used.
+func (h *WSHandler) reauthorize(ctx context.Context, creds requestCredentials, userID string, handshakeToken *models.APIToken) (context.Context, error) {
+	user, token, ok := creds.authenticate(ctx, h.authService, h.sessions)
+	if !ok || user.ID != userID || !sameToken(token, handshakeToken) {
+		return nil, errWSAccessRevoked
+	}
+	return withTokenScope(ctx, token), nil
+}
+
+// sameToken reports whether a and b are both absent or are the same API token.
+func sameToken(a, b *models.APIToken) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.ID == b.ID
+}
+
+// closeOnRevocation runs check every revalidateInterval until done is closed. On the first failure
+// it sends a policy-violation (1008) close frame and closes conn, which ends the handler's read
+// loop. Any check error, including a transient lookup failure, closes the socket (fail closed).
+func (h *WSHandler) closeOnRevocation(conn *websocket.Conn, done <-chan struct{}, check func(context.Context) error) {
+	ticker := time.NewTicker(h.revalidateInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			ctx, cancel := context.WithTimeout(context.Background(), eventAuthzTimeout)
+			err := check(ctx)
+			cancel()
+			if err != nil {
+				msg := websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "access revoked")
+				_ = conn.WriteControl(websocket.CloseMessage, msg, time.Now().Add(time.Second))
+				_ = conn.Close()
+				return
+			}
+		}
+	}
 }
 
 // HandleEventsWS upgrades connection to WebSocket for streaming all task status changes in real-time.
-// Requires an authenticated user (RequireAuth); only events for tasks the user may view are delivered.
+// Requires an authenticated user (RequireAuth); only events for tasks the user may view are delivered,
+// and the socket is closed (1008) once the user's credentials stop authenticating.
 func (h *WSHandler) HandleEventsWS(c fiber.Ctx) error {
 	user := CurrentUser(c)
 	if user == nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
-	if h.taskSvc == nil {
+	if h.taskSvc == nil || h.authService == nil {
 		return CentralErrorHandler(c, common.ErrServiceUnavailable)
 	}
-	if !wsOriginAllowed(c.RequestCtx()) {
+	if !h.originAllowed(c.RequestCtx()) {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "websocket origin not allowed"})
 	}
 	userID := user.ID
-	err := wsUpgrader.Upgrade(c.RequestCtx(), func(conn *websocket.Conn) {
+	token := CurrentAPIToken(c)
+	creds := credentialsFrom(c)
+	err := h.upgrader.Upgrade(c.RequestCtx(), func(conn *websocket.Conn) {
+		done := make(chan struct{})
+		defer close(done)
+		go h.closeOnRevocation(conn, done, func(ctx context.Context) error {
+			_, err := h.reauthorize(ctx, creds, userID, token)
+			return err
+		})
+
 		clientID := common.NewID()
-		client := &visibleTaskEventsClient{Client: ws.NewConnClient(clientID, "global", conn), userID: userID, taskSvc: h.taskSvc}
+		client := &visibleTaskEventsClient{Client: ws.NewConnClient(clientID, "global", conn), userID: userID, token: token, taskSvc: h.taskSvc}
 		h.hub.Register(client)
 		defer func() {
 			h.hub.Unregister(client)
@@ -126,62 +197,76 @@ func (h *WSHandler) HandleEventsWS(c fiber.Ctx) error {
 	return nil
 }
 
-// WebSocketLogsHandler streams real-time terminal ANSI logs and task status events over WebSocket.
+// HandleTerminalWS streams real-time terminal ANSI logs and task status events over WebSocket.
 // It requires an authenticated user (RequireAuth) with RoleViewer+ on the task's team, checked
-// before the upgrade; it fails closed when no task service is available.
-func WebSocketLogsHandler(hub *ws.Hub, taskSvc service.TaskService, logSvc service.LogService) fiber.Handler {
-	return func(c fiber.Ctx) error {
-		user := CurrentUser(c)
-		if user == nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
-		}
-		taskID := c.Params("task_id")
-		if taskID == "" || strings.Contains(taskID, "/") {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "task_id is required"})
-		}
-		if taskSvc == nil {
-			return CentralErrorHandler(c, common.ErrServiceUnavailable)
-		}
-		if !wsOriginAllowed(c.RequestCtx()) {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "websocket origin not allowed"})
-		}
-		if _, err := taskSvc.GetTask(c.Context(), taskID, user.ID); err != nil {
-			return CentralErrorHandler(c, err)
-		}
+// before the upgrade and again every revalidateInterval (closing with 1008 once it fails); it
+// fails closed when no task or auth service is available.
+func (h *WSHandler) HandleTerminalWS(c fiber.Ctx) error {
+	user := CurrentUser(c)
+	if user == nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
+	}
+	taskID := c.Params("task_id")
+	if taskID == "" || strings.Contains(taskID, "/") {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "task_id is required"})
+	}
+	if h.taskSvc == nil || h.authService == nil {
+		return CentralErrorHandler(c, common.ErrServiceUnavailable)
+	}
+	if !h.originAllowed(c.RequestCtx()) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "websocket origin not allowed"})
+	}
+	if _, err := h.taskSvc.GetTask(c.Context(), taskID, user.ID); err != nil {
+		return CentralErrorHandler(c, err)
+	}
 
-		err := wsUpgrader.Upgrade(c.RequestCtx(), func(conn *websocket.Conn) {
-			clientID := common.NewID()
-			client := ws.NewConnClient(clientID, taskID, conn)
-			hub.Register(client)
-			defer func() {
-				hub.Unregister(client)
-				_ = client.Close()
-			}()
+	taskID = strings.Clone(taskID)
+	userID := user.ID
+	token := CurrentAPIToken(c)
+	creds := credentialsFrom(c)
+	err := h.upgrader.Upgrade(c.RequestCtx(), func(conn *websocket.Conn) {
+		done := make(chan struct{})
+		defer close(done)
+		go h.closeOnRevocation(conn, done, func(ctx context.Context) error {
+			scoped, err := h.reauthorize(ctx, creds, userID, token)
+			if err != nil {
+				return err
+			}
+			_, err = h.taskSvc.GetTask(scoped, taskID, userID)
+			return err
+		})
 
-			// Replay existing logs to newly connected client
-			if logSvc != nil {
-				logs, err := logSvc.GetLogs(context.Background(), taskID)
-				if err == nil {
-					for _, l := range logs {
-						msg := ws.NewLogMessage(taskID, l.LogChunk)
-						data, _ := common.Marshal(msg)
-						if err := client.Send(data); err != nil {
-							return
-						}
+		clientID := common.NewID()
+		client := ws.NewConnClient(clientID, taskID, conn)
+		h.hub.Register(client)
+		defer func() {
+			h.hub.Unregister(client)
+			_ = client.Close()
+		}()
+
+		// Replay existing logs to newly connected client
+		if h.logSvc != nil {
+			logs, err := h.logSvc.GetLogs(context.Background(), taskID)
+			if err == nil {
+				for _, l := range logs {
+					msg := ws.NewLogMessage(taskID, l.LogChunk)
+					data, _ := common.Marshal(msg)
+					if err := client.Send(data); err != nil {
+						return
 					}
 				}
 			}
-
-			// Read loop to detect disconnects and handle pings
-			for {
-				if _, _, err := conn.ReadMessage(); err != nil {
-					break
-				}
-			}
-		})
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "websocket upgrade failed"})
 		}
-		return nil
+
+		// Read loop to detect disconnects and handle pings
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				break
+			}
+		}
+	})
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "websocket upgrade failed"})
 	}
+	return nil
 }

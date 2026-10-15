@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	"agent-task-manager/internal/common"
+	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/repository"
 	"agent-task-manager/internal/service"
 )
@@ -81,4 +83,37 @@ func TestAuthService_LoginWithCredentials(t *testing.T) {
 			t.Fatalf("expected ErrInvalidCredentials, got user=%v, err=%v", user, err)
 		}
 	})
+}
+
+// A local credential login must never grant team membership, neither when it creates the user nor
+// on later logins of the existing user.
+func TestAuthService_LoginWithCredentials_GrantsNoMembership(t *testing.T) {
+	db := setupTestDB(t)
+	teamRepo := repository.NewTeamRepository(db)
+	authSvc := service.NewAuthService(repository.NewUserRepository(db), teamRepo,
+		repository.NewTokenRepository(db), &mockAuthenticator{issuerURL: "http://localhost/dex"})
+	ctx := context.Background()
+
+	for _, team := range []models.Team{
+		{ID: common.NewID(), Name: "Alpha", Slug: "alpha"},
+		{ID: common.NewID(), Name: "Beta", Slug: "beta"},
+	} {
+		if err := db.Create(&team).Error; err != nil {
+			t.Fatalf("create team: %v", err)
+		}
+	}
+
+	for i := range 2 {
+		user, err := authSvc.LoginWithCredentials(ctx, "admin@example.com", "password123")
+		if err != nil {
+			t.Fatalf("login %d: %v", i+1, err)
+		}
+		var n int64
+		if err := db.Model(&models.TeamMembership{}).Where("user_id = ?", user.ID).Count(&n).Error; err != nil {
+			t.Fatalf("count memberships: %v", err)
+		}
+		if n != 0 {
+			t.Fatalf("login %d granted %d team memberships, want 0", i+1, n)
+		}
+	}
 }

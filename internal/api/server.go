@@ -15,6 +15,7 @@ import (
 type Server struct {
 	App                *fiber.App
 	Config             *config.Config
+	Security           config.SecurityConfig
 	SessionManager     *auth.SessionManager
 	AuthService        service.AuthService
 	CredentialService  service.CredentialService
@@ -67,7 +68,8 @@ func WithProjectRepository(pr repository.ProjectRepository) Option {
 	}
 }
 
-// WithWSHandler sets the WSHandler.
+// WithWSHandler sets the WSHandler. NewServer supplies its authentication services (for re-validating
+// open sockets) and the configured origin allowlist.
 func WithWSHandler(wsh *WSHandler) Option {
 	return func(s *Server) {
 		s.WSHandler = wsh
@@ -82,6 +84,11 @@ func WithOpenCodeClient(client runner.OpenCodeClient) Option {
 }
 
 // NewServer creates and configures a Fiber v3 app.
+//
+// It loads config.SecurityConfig from the environment and panics if it is invalid (a malformed
+// ATM_ALLOWED_ORIGINS entry, or ATM_ENABLE_LOCAL_LOGIN=true in production). NewServer runs once at
+// startup and cannot return an error without changing its callers; refusing to start is the
+// fail-closed choice, whereas silently falling back would hide the misconfiguration.
 func NewServer(
 	cfg *config.Config,
 	sessionManager *auth.SessionManager,
@@ -90,6 +97,15 @@ func NewServer(
 	webhookService service.WebhookService,
 	opts ...Option,
 ) *Server {
+	appEnv := ""
+	if cfg != nil {
+		appEnv = cfg.AppEnv
+	}
+	security, err := config.LoadSecurityConfig(appEnv)
+	if err != nil {
+		panic("api: invalid security configuration: " + err.Error())
+	}
+
 	app := fiber.New(fiber.Config{
 		StructValidator: NewStructValidator(),
 		ErrorHandler:    CentralErrorHandler,
@@ -98,6 +114,7 @@ func NewServer(
 	server := &Server{
 		App:               app,
 		Config:            cfg,
+		Security:          security,
 		SessionManager:    sessionManager,
 		AuthService:       authService,
 		CredentialService: credService,
@@ -106,6 +123,12 @@ func NewServer(
 
 	for _, opt := range opts {
 		opt(server)
+	}
+
+	if server.WSHandler != nil {
+		server.WSHandler.authService = authService
+		server.WSHandler.sessions = sessionManager
+		server.WSHandler.allowedOrigins = security.AllowedOrigins
 	}
 
 	if server.OpenCodeClient == nil && cfg != nil {
@@ -118,17 +141,21 @@ func NewServer(
 }
 
 func (s *Server) setupRoutes() {
-	authHandlers := NewAuthHandlers(s.AuthService, s.SessionManager, s.Config != nil && s.Config.AppEnv == "production")
+	authHandlers := NewAuthHandlers(s.AuthService, s.SessionManager, s.Config != nil && s.Config.AppEnv == "production", s.Security.EnableLocalLogin)
 	credHandlers := NewCredentialHandlers(s.CredentialService)
 	webhookHandlers := NewWebhookHandlers(s.WebhookService)
+
+	// Cookie-authenticated mutations must come from a trusted origin; login and logout always must.
+	s.App.Use(CSRFProtection(s.Security.AllowedOrigins))
+	trustedOrigin := RequireTrustedOrigin(s.Security.AllowedOrigins)
 
 	v1 := s.App.Group("/api/v1")
 	authGroup := v1.Group("/auth")
 
 	authGroup.Get("/login", authHandlers.Login)
-	authGroup.Post("/login", authHandlers.LoginWithCredentials)
+	authGroup.Post("/login", trustedOrigin, authHandlers.LoginWithCredentials)
 	authGroup.Get("/callback", authHandlers.Callback)
-	authGroup.Post("/logout", authHandlers.Logout)
+	authGroup.Post("/logout", trustedOrigin, authHandlers.Logout)
 	authGroup.Get("/me", authHandlers.Me)
 
 	// Webhook endpoint

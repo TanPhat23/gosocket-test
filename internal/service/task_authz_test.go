@@ -354,3 +354,22 @@ func TestTaskAuthz_CreateTask_ParentAndIntegrationMustMatchProject(t *testing.T)
 		t.Errorf("only the same-project-parent create may persist: rows %d -> %d", before, got)
 	}
 }
+
+// Without project/team repositories task authorization cannot be decided, so task-addressed
+// operations fail closed instead of skipping the membership check.
+func TestTaskAuthz_TaskOperationsFailClosedWithoutRepos(t *testing.T) {
+	f := newAuthzFixture(t)
+	ctx := context.Background()
+	if got, err := f.svcNoRepos.GetTask(ctx, f.taskA.ID, f.outsid.ID); got != nil || !errors.Is(err, common.ErrServiceUnavailable) {
+		t.Errorf("GetTask: expected nil + ErrServiceUnavailable, got %+v / %v", got, err)
+	}
+	if got, err := f.svcNoRepos.ListSubtasks(ctx, f.taskA.ID, f.outsid.ID); got != nil || !errors.Is(err, common.ErrServiceUnavailable) {
+		t.Errorf("ListSubtasks: expected nil + ErrServiceUnavailable, got %+v / %v", got, err)
+	}
+	if err := f.svcNoRepos.CancelTask(ctx, f.taskA.ID, f.outsid.ID); !errors.Is(err, common.ErrServiceUnavailable) {
+		t.Errorf("CancelTask: expected ErrServiceUnavailable, got %v", err)
+	}
+	if f.spy.writes() != 0 {
+		t.Errorf("fail-closed authorization must not write, got %d writes", f.spy.writes())
+	}
+}

@@ -89,6 +89,7 @@ func TestTaskRoutes_AuthenticationAndTeamAuthorization(t *testing.T) {
 		}
 		if cookie != nil {
 			req.AddCookie(cookie)
+			req.Header.Set("Sec-Fetch-Site", "same-origin")
 		}
 		resp, err := server.App.Test(req)
 		if err != nil {

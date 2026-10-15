@@ -237,6 +237,7 @@ func TestTaskAndTeamHandlers(t *testing.T) {
 	t.Run("GET /api/v1/teams", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/teams", nil)
 		req.AddCookie(adminCookie)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		resp, err := server.App.Test(req)
 		if err != nil {
 			t.Fatalf("GET /api/v1/teams failed: %v", err)
@@ -260,6 +261,7 @@ func TestTaskAndTeamHandlers(t *testing.T) {
 	t.Run("GET /api/v1/projects", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/projects?team_id="+teamID, nil)
 		req.AddCookie(adminCookie)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		resp, err := server.App.Test(req)
 		if err != nil {
 			t.Fatalf("GET /api/v1/projects failed: %v", err)
@@ -299,6 +301,7 @@ func TestTaskAndTeamHandlers(t *testing.T) {
 		jsonBytes, _ := json.Marshal(payload)
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", bytes.NewReader(jsonBytes))
 		req.AddCookie(adminCookie)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		req.Header.Set("Content-Type", "application/json")
 
 		resp, err := server.App.Test(req)
@@ -338,6 +341,7 @@ func TestTaskAndTeamHandlers(t *testing.T) {
 		jsonBytes, _ := json.Marshal(payload)
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", bytes.NewReader(jsonBytes))
 		req.AddCookie(adminCookie)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		req.Header.Set("Content-Type", "application/json")
 
 		resp, err := server.App.Test(req)
@@ -354,6 +358,7 @@ func TestTaskAndTeamHandlers(t *testing.T) {
 	t.Run("GET /api/v1/tasks/:task_id - found", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/"+createdTaskID, nil)
 		req.AddCookie(adminCookie)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		resp, err := server.App.Test(req)
 		if err != nil {
 			t.Fatalf("GET /api/v1/tasks/:id failed: %v", err)
@@ -377,6 +382,7 @@ func TestTaskAndTeamHandlers(t *testing.T) {
 	t.Run("GET /api/v1/tasks/:task_id - not found", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/non-existent-id", nil)
 		req.AddCookie(adminCookie)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		resp, err := server.App.Test(req)
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
@@ -391,6 +397,7 @@ func TestTaskAndTeamHandlers(t *testing.T) {
 	t.Run("GET /api/v1/tasks - list tasks", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks?project_id="+projectID, nil)
 		req.AddCookie(adminCookie)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		resp, err := server.App.Test(req)
 		if err != nil {
 			t.Fatalf("GET /api/v1/tasks failed: %v", err)
@@ -427,6 +434,7 @@ func TestTaskAndTeamHandlers(t *testing.T) {
 		jsonBytes, _ := json.Marshal(subtaskPayload)
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", bytes.NewReader(jsonBytes))
 		req.AddCookie(adminCookie)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		req.Header.Set("Content-Type", "application/json")
 
 		resp, err := server.App.Test(req)
@@ -453,6 +461,7 @@ func TestTaskAndTeamHandlers(t *testing.T) {
 	t.Run("GET /api/v1/tasks?parent_task_id=... - list subtasks", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks?parent_task_id="+createdTaskID, nil)
 		req.AddCookie(adminCookie)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		resp, err := server.App.Test(req)
 		if err != nil {
 			t.Fatalf("GET /api/v1/tasks with parent_task_id failed: %v", err)
@@ -491,6 +500,7 @@ func TestTaskAndTeamHandlers(t *testing.T) {
 		jsonBytes, _ := json.Marshal(payload)
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", bytes.NewReader(jsonBytes))
 		req.AddCookie(adminCookie)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		req.Header.Set("Content-Type", "application/json")
 
 		resp, err := server.App.Test(req)
@@ -507,6 +517,7 @@ func TestTaskAndTeamHandlers(t *testing.T) {
 	t.Run("POST /api/v1/tasks/:task_id/cancel", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+createdTaskID+"/cancel", nil)
 		req.AddCookie(adminCookie)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		resp, err := server.App.Test(req)
 		if err != nil {
 			t.Fatalf("POST cancel failed: %v", err)
@@ -539,6 +550,7 @@ func TestTaskAndTeamHandlers(t *testing.T) {
 	t.Run("GET /api/v1/ws/terminal/:task_id - non-websocket returns 400", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/ws/terminal/"+createdTaskID, nil)
 		req.AddCookie(adminCookie)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		resp, err := server.App.Test(req)
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
@@ -553,6 +565,7 @@ func TestTaskAndTeamHandlers(t *testing.T) {
 	t.Run("POST /api/v1/tasks/:id/pr - 503 quarantine", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+createdTaskID+"/pr", nil)
 		req.AddCookie(adminCookie)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		resp, err := server.App.Test(req)
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
@@ -729,6 +742,7 @@ func TestTaskSessionEndpoints(t *testing.T) {
 	t.Run("GET /api/v1/tasks/:id/session - 403 non-member", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/"+task.ID+"/session", nil)
 		req.AddCookie(outsiderCookie)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		resp, err := server.App.Test(req)
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
@@ -744,6 +758,7 @@ func TestTaskSessionEndpoints(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/session/prompt", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.AddCookie(viewerCookie)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		resp, err := server.App.Test(req)
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
@@ -760,6 +775,7 @@ func TestTaskSessionEndpoints(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/session/prompt", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.AddCookie(memberCookie)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		resp, err := server.App.Test(req)
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
@@ -776,6 +792,7 @@ func TestTaskSessionEndpoints(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/session/prompt", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.AddCookie(memberCookie)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		resp, err := server.App.Test(req)
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
@@ -790,6 +807,7 @@ func TestTaskSessionEndpoints(t *testing.T) {
 	t.Run("GET /api/v1/tasks/:id/session - 503 quarantine for viewer", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/"+task.ID+"/session", nil)
 		req.AddCookie(viewerCookie)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		resp, err := server.App.Test(req)
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
@@ -802,6 +820,7 @@ func TestTaskSessionEndpoints(t *testing.T) {
 		t.Run("POST /api/v1/tasks/:id"+path+" - 503 quarantine for viewer", func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+path, nil)
 			req.AddCookie(viewerCookie)
+			req.Header.Set("Sec-Fetch-Site", "same-origin")
 			resp, err := server.App.Test(req)
 			if err != nil {
 				t.Fatalf("request failed: %v", err)
@@ -816,6 +835,7 @@ func TestTaskSessionEndpoints(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/session/prompt", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.AddCookie(memberCookie)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		resp, err := server.App.Test(req)
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
@@ -827,6 +847,7 @@ func TestTaskSessionEndpoints(t *testing.T) {
 	t.Run("POST /api/v1/tasks/:id/session/compact - 503 quarantine for member", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/session/compact", nil)
 		req.AddCookie(memberCookie)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		resp, err := server.App.Test(req)
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
@@ -838,6 +859,7 @@ func TestTaskSessionEndpoints(t *testing.T) {
 	t.Run("GET /api/v1/tasks/:id/diff - 503 quarantine for viewer", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/"+task.ID+"/diff", nil)
 		req.AddCookie(viewerCookie)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		resp, err := server.App.Test(req)
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
@@ -874,6 +896,7 @@ func TestTaskSessionEndpoints(t *testing.T) {
 	t.Run("POST /api/v1/tasks/:id/cancel - 403 outsider", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/cancel", nil)
 		req.AddCookie(outsiderCookie)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		resp, err := server.App.Test(req)
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
@@ -887,6 +910,7 @@ func TestTaskSessionEndpoints(t *testing.T) {
 	t.Run("POST /api/v1/tasks/:id/cancel - 403 viewer (requires role member)", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/cancel", nil)
 		req.AddCookie(viewerCookie)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		resp, err := server.App.Test(req)
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
@@ -900,6 +924,7 @@ func TestTaskSessionEndpoints(t *testing.T) {
 	t.Run("POST /api/v1/tasks/:id/cancel - 200 member success", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/cancel", nil)
 		req.AddCookie(memberCookie)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		resp, err := server.App.Test(req)
 		if err != nil {
 			t.Fatalf("request failed: %v", err)

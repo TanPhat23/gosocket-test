@@ -154,6 +154,9 @@ func (s *taskService) ListTasks(ctx context.Context, projectID, userID string) (
 
 	tasks := []models.Task{}
 	for i := range teams {
+		if !auth.TeamAllowed(ctx, teams[i].ID) {
+			continue
+		}
 		membership, mErr := s.teamRepo.GetMembership(ctx, teams[i].ID, userID)
 		if mErr != nil {
 			if errors.Is(mErr, gorm.ErrRecordNotFound) {
@@ -616,8 +619,9 @@ func (s *taskService) createPullRequestForTaskDisabledDraft(ctx context.Context,
 }
 
 // authorizeUserForProject confirms userID has at least requiredRole on the team owning projectID.
-// It fails closed: empty userID, unknown project and non-membership all yield ErrForbidden (no project
-// existence oracle), and missing repository wiring yields ErrServiceUnavailable.
+// It fails closed: empty userID, unknown project, a team outside ctx's PAT team scope and
+// non-membership all yield ErrForbidden (no project existence oracle), and missing repository
+// wiring yields ErrServiceUnavailable.
 func (s *taskService) authorizeUserForProject(ctx context.Context, projectID, userID string, requiredRole models.TeamRole) (*models.Project, error) {
 	if userID == "" || projectID == "" {
 		return nil, common.ErrForbidden
@@ -633,6 +637,9 @@ func (s *taskService) authorizeUserForProject(ctx context.Context, projectID, us
 		}
 		return nil, fmt.Errorf("failed to load project: %w", err)
 	}
+	if !auth.TeamAllowed(ctx, project.TeamID) {
+		return nil, common.ErrForbidden
+	}
 
 	membership, err := s.teamRepo.GetMembership(ctx, project.TeamID, userID)
 	if err != nil {
@@ -645,8 +652,9 @@ func (s *taskService) authorizeUserForProject(ctx context.Context, projectID, us
 	return project, nil
 }
 
-// authorizeUserForTask verifies that task exists, resolves its project and team,
-// and confirms the requesting user has at least the requiredRole on that team.
+// authorizeUserForTask verifies that task exists, resolves its project and team, and confirms the
+// team is within ctx's PAT team scope and the requesting user has at least requiredRole on it.
+// Missing repository wiring yields ErrServiceUnavailable before the task is read (fail closed).
 func (s *taskService) authorizeUserForTask(ctx context.Context, taskID, userID string, requiredRole models.TeamRole) (*models.Task, error) {
 	if taskID == "" {
 		return nil, errors.New("task ID is required")
@@ -654,26 +662,30 @@ func (s *taskService) authorizeUserForTask(ctx context.Context, taskID, userID s
 	if userID == "" {
 		return nil, common.ErrForbidden
 	}
+	if s.projectRepo == nil || s.teamRepo == nil {
+		return nil, common.ErrServiceUnavailable
+	}
 
 	task, err := s.taskRepo.GetByID(ctx, taskID)
 	if err != nil {
 		return nil, err
 	}
 
-	if s.projectRepo != nil && s.teamRepo != nil {
-		project, err := s.projectRepo.GetByID(ctx, task.ProjectID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load project for task: %w", err)
-		}
+	project, err := s.projectRepo.GetByID(ctx, task.ProjectID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load project for task: %w", err)
+	}
+	if !auth.TeamAllowed(ctx, project.TeamID) {
+		return nil, common.ErrForbidden
+	}
 
-		membership, err := s.teamRepo.GetMembership(ctx, project.TeamID, userID)
-		if err != nil {
-			return nil, common.ErrForbidden
-		}
+	membership, err := s.teamRepo.GetMembership(ctx, project.TeamID, userID)
+	if err != nil {
+		return nil, common.ErrForbidden
+	}
 
-		if !auth.HasRolePermission(membership.Role, requiredRole) {
-			return nil, common.ErrForbidden
-		}
+	if !auth.HasRolePermission(membership.Role, requiredRole) {
+		return nil, common.ErrForbidden
 	}
 
 	return task, nil

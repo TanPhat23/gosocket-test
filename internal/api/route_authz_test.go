@@ -24,13 +24,17 @@ import (
 
 	"github.com/fasthttp/websocket"
 	"github.com/gofiber/fiber/v3"
+	"gorm.io/gorm"
 )
 
 type routeAuthzFixture struct {
 	server *api.Server
 	hub    *ws.Hub
+	db     *gorm.DB
+	sm     *auth.SessionManager
 
 	cookies map[string]*http.Cookie
+	users   map[string]*models.User
 
 	teamA, teamB             *models.Team
 	projA, projB             *models.Project
@@ -44,8 +48,8 @@ type routeAuthzFixture struct {
 }
 
 // setupRouteAuthzFixture wires a full Server with two teams; team A has owner/admin/member/viewer users,
-// team B has a single member, and "outsider" belongs to no team.
-func setupRouteAuthzFixture(t *testing.T) *routeAuthzFixture {
+// team B has a single member, and "outsider" belongs to no team. wsOpts configure the WSHandler.
+func setupRouteAuthzFixture(t *testing.T, wsOpts ...func(*api.WSHandler)) *routeAuthzFixture {
 	t.Helper()
 	db := setupAPITestDB(t)
 	// Each new connection to ":memory:" would open an empty database; pin the pool to one connection
@@ -79,6 +83,16 @@ func setupRouteAuthzFixture(t *testing.T) *routeAuthzFixture {
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);`,
+		`CREATE TABLE api_tokens (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			team_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			token_hash TEXT NOT NULL,
+			expires_at DATETIME,
+			last_used_at DATETIME,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
 	} {
 		if err := db.Exec(stmt).Error; err != nil {
 			t.Fatalf("create table: %v", err)
@@ -102,7 +116,7 @@ func setupRouteAuthzFixture(t *testing.T) *routeAuthzFixture {
 	taskSvc := service.NewTaskService(taskRepo, repository.NewAttemptRepository(db), &mockQueueClient{}, hub,
 		service.WithTaskSessionDependencies(nil, projectRepo, teamRepo))
 	integSvc := service.NewIntegrationService(integRepo, projectRepo, credRepo)
-	wsHandler := api.NewWSHandler(hub, api.WithWSServices(taskSvc, nil))
+	wsHandler := api.NewWSHandler(hub, append([]func(*api.WSHandler){api.WithWSServices(taskSvc, nil)}, wsOpts...)...)
 	server := api.NewServer(cfg, sm, authSvc, nil, nil,
 		api.WithTaskService(taskSvc),
 		api.WithIntegrationService(integSvc),
@@ -110,7 +124,7 @@ func setupRouteAuthzFixture(t *testing.T) *routeAuthzFixture {
 		api.WithProjectRepository(projectRepo),
 		api.WithWSHandler(wsHandler))
 
-	f := &routeAuthzFixture{server: server, hub: hub, cookies: map[string]*http.Cookie{}}
+	f := &routeAuthzFixture{server: server, hub: hub, db: db, sm: sm, cookies: map[string]*http.Cookie{}, users: map[string]*models.User{}}
 
 	mkUser := func(name string) *models.User {
 		u := &models.User{ID: common.NewID(), Email: name + "@example.com", DisplayName: name, Subject: "sub-" + name, Issuer: "test"}
@@ -122,6 +136,7 @@ func setupRouteAuthzFixture(t *testing.T) *routeAuthzFixture {
 			t.Fatalf("cookie: %v", err)
 		}
 		f.cookies[name] = &http.Cookie{Name: auth.SessionCookieName, Value: v}
+		f.users[name] = u
 		return u
 	}
 	mkTeam := func(name string) *models.Team {
@@ -206,8 +221,21 @@ func setupRouteAuthzFixture(t *testing.T) *routeAuthzFixture {
 	return f
 }
 
-func (f *routeAuthzFixture) do(t *testing.T, method, path string, body any, who string) (int, string) {
+// pat issues a personal access token for user who, scoped to team.
+func (f *routeAuthzFixture) pat(t *testing.T, who string, team *models.Team) string {
 	t.Helper()
+	raw, hash, err := auth.GenerateAPIToken()
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+	tok := &models.APIToken{ID: common.NewID(), UserID: f.users[who].ID, TeamID: team.ID, Name: "pat-" + who, TokenHash: hash}
+	if err := f.db.Create(tok).Error; err != nil {
+		t.Fatalf("token: %v", err)
+	}
+	return raw
+}
+
+func newJSONRequest(method, path string, body any) *http.Request {
 	var rd io.Reader
 	if body != nil {
 		b, _ := json.Marshal(body)
@@ -217,13 +245,34 @@ func (f *routeAuthzFixture) do(t *testing.T, method, path string, body any, who 
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	return req
+}
+
+// do sends a request as user who via the session cookie, like a same-origin browser page would.
+func (f *routeAuthzFixture) do(t *testing.T, method, path string, body any, who string) (int, string) {
+	t.Helper()
+	req := newJSONRequest(method, path, body)
 	if who != "" {
 		c, ok := f.cookies[who]
 		if !ok {
 			t.Fatalf("unknown user %q", who)
 		}
 		req.AddCookie(c)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 	}
+	return f.send(t, req)
+}
+
+// doPAT sends a request authenticated only by a Bearer personal access token.
+func (f *routeAuthzFixture) doPAT(t *testing.T, method, path string, body any, token string) (int, string) {
+	t.Helper()
+	req := newJSONRequest(method, path, body)
+	req.Header.Set("Authorization", "Bearer "+token)
+	return f.send(t, req)
+}
+
+func (f *routeAuthzFixture) send(t *testing.T, req *http.Request) (int, string) {
+	t.Helper()
 	resp, err := f.server.App.Test(req)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
@@ -473,6 +522,12 @@ func dialWS(t *testing.T, f *routeAuthzFixture, addr, path, who, origin string) 
 	if origin != "" {
 		h.Set("Origin", origin)
 	}
+	return dialWSHeader(t, addr, path, h)
+}
+
+// dialWSHeader performs a handshake with the given request headers.
+func dialWSHeader(t *testing.T, addr, path string, h http.Header) (*websocket.Conn, int) {
+	t.Helper()
 	d := websocket.Dialer{HandshakeTimeout: 3 * time.Second}
 	conn, resp, err := d.Dial("ws://"+addr+path, h)
 	if err != nil {

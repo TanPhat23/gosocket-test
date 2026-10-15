@@ -13,17 +13,20 @@ import (
 
 // AuthHandlers holds dependencies for authentication endpoints.
 type AuthHandlers struct {
-	authService    service.AuthService
-	sessionManager *auth.SessionManager
-	secureCookies  bool
+	authService       service.AuthService
+	sessionManager    *auth.SessionManager
+	secureCookies     bool
+	localLoginEnabled bool
 }
 
-// NewAuthHandlers creates a new AuthHandlers instance.
-func NewAuthHandlers(authService service.AuthService, sm *auth.SessionManager, secureCookies bool) *AuthHandlers {
+// NewAuthHandlers creates a new AuthHandlers instance. localLoginEnabled gates the built-in
+// development credential login (config.SecurityConfig.EnableLocalLogin).
+func NewAuthHandlers(authService service.AuthService, sm *auth.SessionManager, secureCookies, localLoginEnabled bool) *AuthHandlers {
 	return &AuthHandlers{
-		authService:    authService,
-		sessionManager: sm,
-		secureCookies:  secureCookies,
+		authService:       authService,
+		sessionManager:    sm,
+		secureCookies:     secureCookies,
+		localLoginEnabled: localLoginEnabled,
 	}
 }
 
@@ -55,7 +58,15 @@ func (h *AuthHandlers) Login(c fiber.Ctx) error {
 
 // LoginWithCredentials authenticates direct user credentials and creates a session.
 // POST /api/v1/auth/login
+//
+// When local login is disabled (the default, and always in production) the route stays registered
+// and answers exactly like a wrong password (401 ErrInvalidCredentials), so it neither checks the
+// built-in accounts nor advertises whether they exist.
 func (h *AuthHandlers) LoginWithCredentials(c fiber.Ctx) error {
+	if !h.localLoginEnabled {
+		return CentralErrorHandler(c, service.ErrInvalidCredentials)
+	}
+
 	var req dto.LoginRequestDTO
 	if err := c.Bind().Body(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{

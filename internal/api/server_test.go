@@ -306,6 +306,7 @@ func TestAuthEndpoints(t *testing.T) {
 		// Test logout
 		logoutReq := httptest.NewRequest("POST", "/api/v1/auth/logout", nil)
 		logoutReq.AddCookie(sessionCookie)
+		logoutReq.Header.Set("Sec-Fetch-Site", "same-origin")
 
 		logoutResp, err := server.App.Test(logoutReq)
 		if err != nil {

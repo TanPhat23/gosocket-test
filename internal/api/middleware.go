@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"strings"
 
@@ -52,69 +53,85 @@ func CurrentTeamRole(c fiber.Ctx) models.TeamRole {
 	return role
 }
 
+// requestCredentials holds the raw credentials a request presented: the atm_session cookie value
+// and the Bearer token, either of which may be empty.
+type requestCredentials struct {
+	session string
+	bearer  string
+}
+
+// credentialsFrom copies the request's credentials so they stay valid after the request completes
+// (fasthttp reuses its buffers), e.g. for re-validating a long-lived WebSocket.
+func credentialsFrom(c fiber.Ctx) requestCredentials {
+	creds := requestCredentials{session: strings.Clone(c.Cookies(auth.SessionCookieName))}
+	if authHeader := c.Get(fiber.HeaderAuthorization); strings.HasPrefix(authHeader, BearerPrefix) {
+		creds.bearer = strings.Clone(strings.TrimSpace(strings.TrimPrefix(authHeader, BearerPrefix)))
+	}
+	return creds
+}
+
+// authenticate resolves the credentials to a user: a valid session cookie first, then a Bearer
+// Personal Access Token (which also yields the token). ok is false if neither is valid.
+func (cr requestCredentials) authenticate(ctx context.Context, authService service.AuthService, sm *auth.SessionManager) (user *models.User, token *models.APIToken, ok bool) {
+	if sm != nil && cr.session != "" {
+		if claims, err := sm.VerifyPayload(cr.session); err == nil {
+			if user, err := authService.GetUserByID(ctx, claims.UserID); err == nil && user != nil {
+				return user, nil, true
+			}
+		}
+	}
+	if cr.bearer != "" {
+		if user, token, err := authService.AuthenticatePAT(ctx, cr.bearer); err == nil && user != nil {
+			return user, token, true
+		}
+	}
+	return nil, nil, false
+}
+
 // RequireAuth provides dual authentication via session cookie (atm_session) or Bearer Personal Access Token.
 // For session cookies: extracts claims and loads user via AuthService.
 // For Bearer tokens: authenticates token via AuthService.
 // Returns 401 Unauthorized if neither is present or valid.
 func RequireAuth(authService service.AuthService, sm *auth.SessionManager) fiber.Handler {
 	return func(c fiber.Ctx) error {
-		// 1. Check atm_session cookie first
-		if sm != nil {
-			claims, err := sm.ValidateFiberRequest(c)
-			if err == nil && claims != nil {
-				user, err := authService.GetUserByID(c.Context(), claims.UserID)
-				if err == nil && user != nil {
-					c.Locals(LocalsUserKey, user)
-					return c.Next()
-				}
-			}
+		user, token, ok := credentialsFrom(c).authenticate(c.Context(), authService, sm)
+		if !ok {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "Unauthorized: valid session cookie or Personal Access Token required",
+			})
 		}
-
-		// 2. Check Authorization: Bearer <token>
-		authHeader := c.Get(fiber.HeaderAuthorization)
-		if strings.HasPrefix(authHeader, BearerPrefix) {
-			rawToken := strings.TrimSpace(strings.TrimPrefix(authHeader, BearerPrefix))
-			user, apiToken, err := authService.AuthenticatePAT(c.Context(), rawToken)
-			if err == nil && user != nil {
-				c.Locals(LocalsUserKey, user)
-				c.Locals(LocalsAPITokenKey, apiToken)
-				return c.Next()
-			}
-		}
-
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-			"error": "Unauthorized: valid session cookie or Personal Access Token required",
-		})
+		setAuthenticated(c, user, token)
+		return c.Next()
 	}
 }
 
 // OptionalAuth populates CurrentUser if a valid session cookie or token is present, but does not block requests if unauthenticated.
 func OptionalAuth(authService service.AuthService, sm *auth.SessionManager) fiber.Handler {
 	return func(c fiber.Ctx) error {
-		if sm != nil {
-			claims, err := sm.ValidateFiberRequest(c)
-			if err == nil && claims != nil {
-				user, err := authService.GetUserByID(c.Context(), claims.UserID)
-				if err == nil && user != nil {
-					c.Locals(LocalsUserKey, user)
-					return c.Next()
-				}
-			}
+		if user, token, ok := credentialsFrom(c).authenticate(c.Context(), authService, sm); ok {
+			setAuthenticated(c, user, token)
 		}
-
-		authHeader := c.Get(fiber.HeaderAuthorization)
-		if strings.HasPrefix(authHeader, BearerPrefix) {
-			rawToken := strings.TrimSpace(strings.TrimPrefix(authHeader, BearerPrefix))
-			user, apiToken, err := authService.AuthenticatePAT(c.Context(), rawToken)
-			if err == nil && user != nil {
-				c.Locals(LocalsUserKey, user)
-				c.Locals(LocalsAPITokenKey, apiToken)
-				return c.Next()
-			}
-		}
-
 		return c.Next()
 	}
+}
+
+// setAuthenticated records the authenticated user, and the PAT when one was used, in Locals. A PAT
+// also restricts the request context to the token's team, which every team-scoped authorization
+// check (AuthService.AuthorizeTeamRole, TaskService) enforces.
+func setAuthenticated(c fiber.Ctx, user *models.User, token *models.APIToken) {
+	c.Locals(LocalsUserKey, user)
+	if token != nil {
+		c.Locals(LocalsAPITokenKey, token)
+		c.SetContext(withTokenScope(c.Context(), token))
+	}
+}
+
+// withTokenScope restricts ctx to the PAT's team when token is non-nil.
+func withTokenScope(ctx context.Context, token *models.APIToken) context.Context {
+	if token == nil {
+		return ctx
+	}
+	return auth.WithTeamScope(ctx, token.TeamID)
 }
 
 // RequireTeamRole enforces team-level RBAC based on team_id in params or queries.

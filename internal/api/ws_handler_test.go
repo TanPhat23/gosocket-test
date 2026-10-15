@@ -31,7 +31,7 @@ func (m *mockLogService) GetLogs(ctx context.Context, taskID string) ([]models.T
 	return m.logs[taskID], nil
 }
 
-func TestWebSocketLogsHandler_Upgrade(t *testing.T) {
+func TestHandleTerminalWS_RequiresUser(t *testing.T) {
 	hub := ws.NewHub()
 	go hub.Run()
 	defer hub.Stop()
@@ -45,7 +45,7 @@ func TestWebSocketLogsHandler_Upgrade(t *testing.T) {
 	}
 
 	app := fiber.New()
-	app.Get("/api/v1/ws/tasks/:task_id/logs", api.WebSocketLogsHandler(hub, nil, logSvc))
+	app.Get("/api/v1/ws/tasks/:task_id/logs", api.NewWSHandler(hub, api.WithWSServices(nil, logSvc)).HandleTerminalWS)
 
 	// Without an authenticated user the handler fails closed before any upgrade or log replay.
 	req := httptest.NewRequest("GET", "/api/v1/ws/tasks/task-123/logs", nil)
