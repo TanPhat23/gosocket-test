@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"strings"
+	"sync/atomic"
 	"unicode"
 	"unicode/utf8"
 )
@@ -21,8 +22,21 @@ const (
 	maxBuildDetailBytes = 512
 )
 
-// buildLogf is the log sink for sanitized build detail. Tests replace it.
-var buildLogf = log.Printf
+type logfFunc = func(format string, args ...any)
+
+// buildLogSink holds the log sink for sanitized build detail. Tests swap it while build goroutines
+// abandoned by the resolve watchdog may still be logging, so access is atomic.
+var buildLogSink atomic.Pointer[logfFunc]
+
+func init() {
+	f := logfFunc(log.Printf)
+	buildLogSink.Store(&f)
+}
+
+func buildLogf(format string, args ...any) { (*buildLogSink.Load())(format, args...) }
+
+// setBuildLogf installs f as the build log sink and returns the previous sink.
+func setBuildLogf(f logfFunc) logfFunc { return *buildLogSink.Swap(&f) }
 
 // buildMessage is the subset of the Docker build stream we interpret. Everything else
 // (stream, status, progress, BuildKit trace payloads) is ignored.

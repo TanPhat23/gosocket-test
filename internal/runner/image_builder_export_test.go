@@ -92,9 +92,8 @@ func InFlightWaitersForTest(rb RuntimeImageBuilder) int {
 
 // SetBuildLogfForTest replaces the build log sink and returns a restore function.
 func SetBuildLogfForTest(f func(format string, args ...any)) (restore func()) {
-	old := buildLogf
-	buildLogf = f
-	return func() { buildLogf = old }
+	old := setBuildLogf(f)
+	return func() { setBuildLogf(old) }
 }
 
 // PullPinnedImageForTest exposes the single-ref pre-build pull.

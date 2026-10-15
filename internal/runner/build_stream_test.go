@@ -125,11 +125,9 @@ func TestBuildStream_ReaderErrorPropagates(t *testing.T) {
 
 func TestBuildStream_ErrorTextSanitized(t *testing.T) {
 	var logged []string
-	old := buildLogf
-	buildLogf = func(format string, args ...any) {
+	defer SetBuildLogfForTest(func(format string, args ...any) {
 		logged = append(logged, fmt.Sprintf(format, args...))
-	}
-	defer func() { buildLogf = old }()
+	})()
 
 	evil := "\x1b[31mred\x1b[0m\x07bell\r\nnewline " + strings.Repeat("Z", 2000)
 	q, _ := json.Marshal(evil)
@@ -176,4 +174,21 @@ func TestSanitizeBuildDetail(t *testing.T) {
 	if strings.ContainsRune(long, '�') {
 		t.Fatalf("truncation split a rune: %q", long)
 	}
+}
+
+// A build goroutine abandoned by the resolve watchdog can still log after its caller returned,
+// while a later test swaps the sink. Swapping must be safe concurrently with logging.
+func TestBuildLogSink_SwapConcurrentWithLogging(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 200 {
+			_ = buildFail("detail")
+		}
+	}()
+	for range 200 {
+		restore := SetBuildLogfForTest(func(string, ...any) {})
+		restore()
+	}
+	<-done
 }
