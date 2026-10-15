@@ -119,6 +119,10 @@ func (m *mockDockerClient) CopyToContainer(ctx context.Context, containerID, dst
 	return nil
 }
 
+func (m *mockDockerClient) ContainerAttach(ctx context.Context, containerID string, options container.AttachOptions) (types.HijackedResponse, error) {
+	return types.HijackedResponse{}, nil
+}
+
 func TestSecurityHardeningDefaults(t *testing.T) {
 	cfg := sandbox.NewDefaultHostConfig("/srv/agent-tasks/worktrees/task-1")
 

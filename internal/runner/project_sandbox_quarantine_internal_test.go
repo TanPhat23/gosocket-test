@@ -110,6 +110,10 @@ func (f *failingDockerClient) CopyToContainer(ctx context.Context, containerID, 
 	f.fail("CopyToContainer")
 	return errors.New("unexpected docker call")
 }
+func (f *failingDockerClient) ContainerAttach(ctx context.Context, containerID string, options container.AttachOptions) (types.HijackedResponse, error) {
+	f.fail("ContainerAttach")
+	return types.HijackedResponse{}, errors.New("failingDockerClient: ContainerAttach")
+}
 
 func newQuarantineTestManager(t *testing.T, cli *failingDockerClient) *projectSandboxManager {
 	t.Helper()
