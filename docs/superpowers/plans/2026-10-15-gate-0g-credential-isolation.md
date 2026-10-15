@@ -29,10 +29,12 @@
 
 ## Stage 1: remaining no-blocker hardening
 
-1. Remove `OpenCodeConfigDir` / `OpenCodeDataDir` from `internal/config` (dead after `951d4d7`); `config.go` currently has other uncommitted edits, so do this after they are committed.
-2. Static guard test: no `container.Config.Env`/`Cmd` construction in `internal/runner` or `internal/sandbox` may reference a provider-key or password name (grep-style test over source).
-3. Redaction test: build and container logs never contain the generated password (feed the password through the log sinks).
-4. Password lifecycle: unique per `EnsureProjectContainer` call; discarded on `StopProjectContainer`; test both.
+1. ~~Remove `OpenCodeConfigDir` / `OpenCodeDataDir`~~ NOT dead: `config.go` still reads `service.json` from `OpenCodeConfigDir`, and `config.go` has other sessions' uncommitted edits. `OpenCodeDataDir` is now unused by the runner; remove it once config.go is clean.
+2. DONE: static guard `TestCredentialNamesOnlyInReviewedPlaces` (AST scan of `internal/runner` and `internal/sandbox`; new credential-name literals need a reviewed allowlist entry).
+3. DONE: `TestProjectPassword_NeverLoggedOrSerialized` (log and build-log sinks, JSON of the route handle).
+4. DONE: `TestProjectPassword_UniqueAndDiscardedOnStop`.
+
+Mutants killed: new `FOO_API_KEY` literal in `internal/sandbox`; password logged in the provisioning draft; fixed (non-random) password.
 
 ## Stage 2: gateway core (`internal/gateway`), after B2-B4
 
