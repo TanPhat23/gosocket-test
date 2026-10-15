@@ -94,5 +94,6 @@ Only the OpenAI-compatible `POST /v1/chat/completions` is forwarded. There is no
       go func() { _ = gw.Run(ctx, ln) }()
   }
   ```
-- **Not done:** minting a capability token per task attempt (`gw.Issuer.Mint`), giving it and the base URL to the sandbox/OpenCode, and calling `Issuer.Revoke` / `Ledger.Forget` when the attempt ends.
+- **Built, not called by anything:** `Service.NewBroker(baseURL, ttl)` with `Grant(project, task, attempt)` (mints a per-attempt token) and `Release(attempt)` (revokes the token and forgets quota usage; idempotent), plus `OpenCodeConfig(...)`, which renders the verified `OPENCODE_CONFIG_CONTENT` JSON (one `gw` provider, no real provider key).
+- **Not done:** delivering that config to the sandbox and calling `Grant`/`Release` from the runner. Open design question for the user: OpenCode is a long-lived per-project daemon but tokens are per attempt. Either (a) one token per project container, minted at start and revoked at `StopProject`, or (b) a per-attempt mechanism (per-session config or restart, or a second secret file plus an entrypoint change and re-pin). Delivery must not use Docker env (visible via inspect); use the existing exec-stdin secret path.
 - **Blocked on the quarantine:** none of this can run model traffic while Phase 1A is active, by design.
