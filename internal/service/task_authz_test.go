@@ -161,8 +161,17 @@ func TestTaskAuthz_QuarantinedRoutesAuthorizeBeforeRefusing(t *testing.T) {
 		"SyncTaskPRStatus":         func(id, u string) error { _, err := f.svc.SyncTaskPRStatus(ctx, id, u); return err },
 	}
 	for name, call := range calls {
-		if err := call(f.taskA.ID, f.viewerA.ID); !errors.Is(err, runner.ErrRuntimeExecutionUnavailable) {
-			t.Errorf("%s viewer: expected quarantine refusal after authz, got %v", name, err)
+		if err := call(f.taskA.ID, f.memberA.ID); !errors.Is(err, runner.ErrRuntimeExecutionUnavailable) {
+			t.Errorf("%s member: expected quarantine refusal after authz, got %v", name, err)
+		}
+		// Opening a PR and syncing its status need RoleMember; the diff stays readable by viewers.
+		viewerErr := call(f.taskA.ID, f.viewerA.ID)
+		if name == "GetTaskDiff" {
+			if !errors.Is(viewerErr, runner.ErrRuntimeExecutionUnavailable) {
+				t.Errorf("%s viewer: expected quarantine refusal after authz, got %v", name, viewerErr)
+			}
+		} else if !errors.Is(viewerErr, common.ErrForbidden) || errors.Is(viewerErr, common.ErrRuntimeQuarantined) {
+			t.Errorf("%s viewer: expected ErrForbidden, got %v", name, viewerErr)
 		}
 		for who, uid := range map[string]string{"empty": "", "outsider": f.outsid.ID, "other team": f.memberB.ID} {
 			err := call(f.taskA.ID, uid)

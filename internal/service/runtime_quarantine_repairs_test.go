@@ -198,12 +198,15 @@ func TestTaskService_SyncTaskPRStatus_QuarantineHasNoSideEffects(t *testing.T) {
 	)
 	ctx := context.Background()
 
-	for _, userID := range []string{f.owner.ID, f.viewer.ID} {
+	for _, userID := range []string{f.owner.ID} {
 		got, err := svc.SyncTaskPRStatus(ctx, task.ID, userID)
 		assertQuarantineErr(t, "userID="+userID, err)
 		if got != nil {
 			t.Errorf("userID=%q: expected nil task, got %+v", userID, got)
 		}
+	}
+	if _, err := svc.SyncTaskPRStatus(ctx, task.ID, f.viewer.ID); !errors.Is(err, common.ErrForbidden) {
+		t.Errorf("expected ErrForbidden for viewer (RoleMember required), got %v", err)
 	}
 	if _, err := svc.SyncTaskPRStatus(ctx, task.ID, f.outsider.ID); !errors.Is(err, common.ErrForbidden) {
 		t.Errorf("expected ErrForbidden for outsider, got %v", err)

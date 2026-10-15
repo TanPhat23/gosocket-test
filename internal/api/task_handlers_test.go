@@ -818,9 +818,9 @@ func TestTaskSessionEndpoints(t *testing.T) {
 	})
 
 	for _, path := range []string{"/sync-pr", "/pr/sync"} {
-		t.Run("POST /api/v1/tasks/:id"+path+" - 503 quarantine for viewer", func(t *testing.T) {
+		t.Run("POST /api/v1/tasks/:id"+path+" - 503 quarantine for member", func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+path, nil)
-			req.AddCookie(viewerCookie)
+			req.AddCookie(memberCookie)
 			req.Header.Set("Sec-Fetch-Site", "same-origin")
 			resp, err := server.App.Test(req)
 			if err != nil {

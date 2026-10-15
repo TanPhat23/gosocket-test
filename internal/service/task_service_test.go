@@ -1235,10 +1235,13 @@ func TestTaskService_CreatePullRequestForTask_QuarantineHasNoSideEffects(t *test
 
 	team := &models.Team{ID: common.NewID(), Name: "PR Quarantine Team", Slug: "pr-quarantine-team"}
 	db.Create(team)
-	viewer := &models.User{ID: common.NewID(), Email: "prq-viewer@example.com", DisplayName: "V", Subject: "sub-prq-v", Issuer: "test"}
+	member := &models.User{ID: common.NewID(), Email: "prq-member@example.com", DisplayName: "V", Subject: "sub-prq-m", Issuer: "test"}
 	outsider := &models.User{ID: common.NewID(), Email: "prq-out@example.com", DisplayName: "O", Subject: "sub-prq-o", Issuer: "test"}
+	db.Create(member)
+	viewer := &models.User{ID: common.NewID(), Email: "prq-viewer@example.com", DisplayName: "W", Subject: "sub-prq-w", Issuer: "test"}
 	db.Create(viewer)
 	db.Create(outsider)
+	db.Create(&models.TeamMembership{TeamID: team.ID, UserID: member.ID, Role: models.RoleMember})
 	db.Create(&models.TeamMembership{TeamID: team.ID, UserID: viewer.ID, Role: models.RoleViewer})
 	project := &models.Project{ID: common.NewID(), TeamID: team.ID, Name: "PR Quarantine Project"}
 	db.Create(project)
@@ -1288,9 +1291,9 @@ func TestTaskService_CreatePullRequestForTask_QuarantineHasNoSideEffects(t *test
 		service.WithTaskGitHubIntegration(integRepo, credRepo, cipher, provider),
 	)
 
-	// Authorized viewer: the refusal happens only after authorization.
+	// Authorized member: the refusal happens only after authorization.
 	for _, id := range []string{taskNoPR.ID, taskWithPR.ID} {
-		got, err := svc.CreatePullRequestForTask(ctx, id, viewer.ID)
+		got, err := svc.CreatePullRequestForTask(ctx, id, member.ID)
 		if got != nil {
 			t.Errorf("task %q: expected nil task, got %+v", id, got)
 		}
@@ -1305,8 +1308,9 @@ func TestTaskService_CreatePullRequestForTask_QuarantineHasNoSideEffects(t *test
 	for name, c := range map[string]struct{ task, user string }{
 		"empty user":     {taskNoPR.ID, ""},
 		"outsider":       {taskNoPR.ID, outsider.ID},
-		"unknown task":   {"does-not-exist", viewer.ID},
-		"empty task id":  {"", viewer.ID},
+		"viewer":         {taskNoPR.ID, viewer.ID},
+		"unknown task":   {"does-not-exist", member.ID},
+		"empty task id":  {"", member.ID},
 	} {
 		got, err := svc.CreatePullRequestForTask(ctx, c.task, c.user)
 		if got != nil || err == nil || errors.Is(err, common.ErrRuntimeQuarantined) {

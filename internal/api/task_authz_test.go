@@ -100,17 +100,18 @@ func TestTaskRoutes_AuthenticationAndTeamAuthorization(t *testing.T) {
 		return resp.StatusCode, string(b)
 	}
 
-	// Task-ID routes: viewer allowed (quarantined routes then 503), others rejected before any data/503.
+	// Task-ID routes: viewer allowed except PR routes, which need RoleMember (quarantined routes then 503), others rejected before any data/503.
 	type route struct {
 		name, method, path string
-		okStatus           int // status for an authorized viewer
+		okStatus           int // status for an authorized member
+		viewerStatus       int // status for a viewer: PR routes need RoleMember
 	}
 	routes := []route{
-		{"get", http.MethodGet, "/api/v1/tasks/" + taskA.ID, http.StatusOK},
-		{"diff", http.MethodGet, "/api/v1/tasks/" + taskA.ID + "/diff", http.StatusServiceUnavailable},
-		{"create-pr", http.MethodPost, "/api/v1/tasks/" + taskA.ID + "/pr", http.StatusServiceUnavailable},
-		{"sync-pr", http.MethodPost, "/api/v1/tasks/" + taskA.ID + "/sync-pr", http.StatusServiceUnavailable},
-		{"pr-sync", http.MethodPost, "/api/v1/tasks/" + taskA.ID + "/pr/sync", http.StatusServiceUnavailable},
+		{"get", http.MethodGet, "/api/v1/tasks/" + taskA.ID, http.StatusOK, http.StatusOK},
+		{"diff", http.MethodGet, "/api/v1/tasks/" + taskA.ID + "/diff", http.StatusServiceUnavailable, http.StatusServiceUnavailable},
+		{"create-pr", http.MethodPost, "/api/v1/tasks/" + taskA.ID + "/pr", http.StatusServiceUnavailable, http.StatusForbidden},
+		{"sync-pr", http.MethodPost, "/api/v1/tasks/" + taskA.ID + "/sync-pr", http.StatusServiceUnavailable, http.StatusForbidden},
+		{"pr-sync", http.MethodPost, "/api/v1/tasks/" + taskA.ID + "/pr/sync", http.StatusServiceUnavailable, http.StatusForbidden},
 	}
 	for _, r := range routes {
 		t.Run(r.name, func(t *testing.T) {
@@ -123,10 +124,13 @@ func TestTaskRoutes_AuthenticationAndTeamAuthorization(t *testing.T) {
 					t.Errorf("%s: expected 403 without data, got %d %s", who, code, body)
 				}
 			}
-			for who, c := range map[string]*http.Cookie{"viewer": viewerACookie, "member": memberACookie} {
-				code, body := do(t, r.method, r.path, nil, c)
-				if code != r.okStatus {
-					t.Errorf("%s: expected %d, got %d %s", who, r.okStatus, code, body)
+			for who, c := range map[string]struct {
+				cookie *http.Cookie
+				want   int
+			}{"viewer": {viewerACookie, r.viewerStatus}, "member": {memberACookie, r.okStatus}} {
+				code, body := do(t, r.method, r.path, nil, c.cookie)
+				if code != c.want {
+					t.Errorf("%s: expected %d, got %d %s", who, c.want, code, body)
 				}
 			}
 			// Unknown task keeps the existing not-found behaviour for an authenticated caller.

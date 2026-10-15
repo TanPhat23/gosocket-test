@@ -487,10 +487,10 @@ func isNilTaskRunner(r TaskRunner) bool {
 
 // CreatePullRequestForTask manually pushes the task's worktree branch to remote origin and opens a Pull Request.
 //
-// Disabled pending Phase 1B/Gates 0C/0D/0G: after the read-only authorization check (RoleViewer; empty userID is
+// Disabled pending Phase 1B/Gates 0C/0D/0G: after the read-only authorization check (RoleMember; empty userID is
 // forbidden), it refuses before any git/push, token decrypt, provider, or status access.
 func (s *taskService) CreatePullRequestForTask(ctx context.Context, taskID, userID string) (*models.Task, error) {
-	if _, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleViewer); err != nil {
+	if _, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleMember); err != nil {
 		return nil, err
 	}
 
@@ -1281,10 +1281,10 @@ func (s *taskService) getTaskDiffDisabledDraft(ctx context.Context, taskID, user
 
 // SyncTaskPRStatus checks the external PR status on GitHub and marks the task as done if merged.
 //
-// Disabled pending Phase 1B/Gates 0C/0D/0G: after authorization (RoleViewer; an empty userID is forbidden),
+// Disabled pending Phase 1B/Gates 0C/0D/0G: after authorization (RoleMember; an empty userID is forbidden),
 // it refuses before any credential lookup, token decrypt, GitHub call, or status update.
 func (s *taskService) SyncTaskPRStatus(ctx context.Context, taskID, userID string) (*models.Task, error) {
-	if _, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleViewer); err != nil {
+	if _, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleMember); err != nil {
 		return nil, err
 	}
 
