@@ -41,7 +41,6 @@ type DockerClient interface {
 	VolumeCreate(ctx context.Context, options volume.CreateOptions) (volume.Volume, error)
 	VolumeInspect(ctx context.Context, volumeID string) (volume.Volume, error)
 	VolumeRemove(ctx context.Context, volumeID string, force bool) error
-	CopyToContainer(ctx context.Context, containerID, dstPath string, content io.Reader, options container.CopyToContainerOptions) error
 }
 
 // NewDefaultHostConfig creates a security-hardened HostConfig for sandboxes.
