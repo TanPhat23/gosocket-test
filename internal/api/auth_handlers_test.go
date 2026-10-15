@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gofiber/fiber/v3"
+
 	"agent-task-manager/internal/api"
 	"agent-task-manager/internal/auth"
 	"agent-task-manager/internal/config"
@@ -18,6 +20,10 @@ import (
 	"agent-task-manager/internal/repository"
 	"agent-task-manager/internal/service"
 )
+
+// loginTestConfig replaces app.Test's 1s default. Each login runs a real bcrypt comparison
+// (cost 10), which the race detector slows past 1s; the bound still fails a hung handler.
+var loginTestConfig = fiber.TestConfig{Timeout: 30 * time.Second, FailOnTimeout: true}
 
 func TestAuthHandlers_LoginWithCredentials(t *testing.T) {
 	db := setupTestDB(t)
@@ -57,7 +63,7 @@ func TestAuthHandlers_LoginWithCredentials(t *testing.T) {
 		req := httptest.NewRequest("POST", "/api/v1/auth/login", bytes.NewReader(reqBody))
 		req.Header.Set("Content-Type", "application/json")
 
-		resp, err := server.App.Test(req)
+		resp, err := server.App.Test(req, loginTestConfig)
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
 		}
@@ -109,7 +115,7 @@ func TestAuthHandlers_LoginWithCredentials(t *testing.T) {
 		req := httptest.NewRequest("POST", "/api/v1/auth/login", bytes.NewReader(reqBody))
 		req.Header.Set("Content-Type", "application/json")
 
-		resp, err := server.App.Test(req)
+		resp, err := server.App.Test(req, loginTestConfig)
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
 		}
@@ -130,7 +136,7 @@ func TestAuthHandlers_LoginWithCredentials(t *testing.T) {
 		req := httptest.NewRequest("POST", "/api/v1/auth/login", bytes.NewReader([]byte(`invalid-json`)))
 		req.Header.Set("Content-Type", "application/json")
 
-		resp, err := server.App.Test(req)
+		resp, err := server.App.Test(req, loginTestConfig)
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
 		}

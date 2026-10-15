@@ -101,3 +101,6 @@ func SetBuildLogfForTest(f func(format string, args ...any)) (restore func()) {
 func PullPinnedImageForTest(ctx context.Context, cli sandbox.DockerClient, ref string) error {
 	return pullPinnedImage(ctx, cli, ref)
 }
+
+// DefaultBuildTimeoutForTest is the production build timeout.
+const DefaultBuildTimeoutForTest = defaultBuildTimeout

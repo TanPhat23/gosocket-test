@@ -27,8 +27,9 @@ type buildResult struct {
 	err error
 }
 
-// defaultBuildTimeout bounds a single image build. Proposal only (plan Q11, not confirmed).
-const defaultBuildTimeout = 15 * time.Minute
+// defaultBuildTimeout bounds a single image build attempt, cache check and pulls included. A
+// cold build of all six toolchains exceeded 15m in a live run; 45m leaves headroom for that.
+const defaultBuildTimeout = 45 * time.Minute
 
 // inFlightBuild is one build attempt for one tag. Lock order is always b.mu then flight.mu.
 // res is written by the build goroutine before doneCh is closed and read only after it.
@@ -139,7 +140,7 @@ func (b *runtimeImageBuilder) BuildOrGetImage(ctx context.Context, profile *Reso
 	go func() {
 		defer close(flight.doneCh)
 		defer buildCancel() // release the timeout timer on every exit path
-		resTag, resErr := b.resolveImage(buildCtx, dockerfileBytes, tag, pullRefs)
+		resTag, resErr := b.resolveBounded(buildCtx, dockerfileBytes, tag, pullRefs)
 		if resErr != nil && buildCtx.Err() != nil {
 			// Surface why the attempt was aborted (timeout or cancellation).
 			resErr = fmt.Errorf("%w: %w", resErr, buildCtx.Err())
@@ -155,6 +156,25 @@ func (b *runtimeImageBuilder) BuildOrGetImage(ctx context.Context, profile *Reso
 	}()
 
 	return b.awaitFlight(ctx, flight, tag)
+}
+
+// resolveBounded returns when resolveImage does or when ctx ends, whichever is first, so the
+// build timeout bounds every caller even if a Docker call ignores ctx or a response body's
+// Read ignores Close. An abandoned resolveImage goroutine runs on until that step returns; its
+// result is discarded and every later Docker call it makes receives the already-done ctx.
+// When both channels are ready the choice is random; either way the attempt has hit its bound.
+func (b *runtimeImageBuilder) resolveBounded(ctx context.Context, dockerfileBytes []byte, tag string, pullRefs []string) (string, error) {
+	resCh := make(chan buildResult, 1) // buffered: an abandoned sender never blocks
+	go func() {
+		t, err := b.resolveImage(ctx, dockerfileBytes, tag, pullRefs)
+		resCh <- buildResult{tag: t, err: err}
+	}()
+	select {
+	case res := <-resCh:
+		return res.tag, res.err
+	case <-ctx.Done():
+		return "", buildFail("docker step did not return after cancellation")
+	}
 }
 
 // resolveImage runs inside a flight, with no builder lock held. A cache hit is verified and
