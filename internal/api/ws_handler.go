@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-task-manager/internal/auth"
@@ -20,6 +21,14 @@ import (
 // periodic re-validation of an open socket.
 const eventAuthzTimeout = 5 * time.Second
 
+// eventAuthzCacheTTL is how long a /ws/events subscriber remembers that a task is, or is not, visible to
+// it. It matches the revalidation interval, so a revoked membership stops delivering events within
+// roughly one interval either way.
+const eventAuthzCacheTTL = 30 * time.Second
+
+// eventAuthzCacheMax bounds the per-subscriber cache; expired entries are dropped when it is reached.
+const eventAuthzCacheMax = 1024
+
 // defaultRevalidateInterval is how often open sockets re-check their credentials and access.
 const defaultRevalidateInterval = 30 * time.Second
 
@@ -34,6 +43,60 @@ type visibleTaskEventsClient struct {
 	userID  string
 	token   *models.APIToken // the PAT that authenticated the socket, if any; limits visibility to its team
 	taskSvc service.TaskService
+	now     func() time.Time // clock for the cache; nil means time.Now
+
+	mu    sync.Mutex
+	cache map[string]eventAuthzEntry
+}
+
+type eventAuthzEntry struct {
+	visible bool
+	expires time.Time
+}
+
+func (c *visibleTaskEventsClient) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+// visible reports whether the subscriber may see taskID's events. Allowed and forbidden answers are
+// cached for eventAuthzCacheTTL; any other lookup error is treated as not visible but never cached.
+func (c *visibleTaskEventsClient) visible(taskID string) bool {
+	now := c.clock()
+	c.mu.Lock()
+	e, ok := c.cache[taskID]
+	c.mu.Unlock()
+	if ok && now.Before(e.expires) {
+		return e.visible
+	}
+
+	ctx, cancel := context.WithTimeout(withTokenScope(context.Background(), c.token), eventAuthzTimeout)
+	defer cancel()
+	_, err := c.taskSvc.GetTask(ctx, taskID, c.userID)
+	if err != nil && !errors.Is(err, common.ErrForbidden) {
+		return false
+	}
+	visible := err == nil
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cache == nil {
+		c.cache = make(map[string]eventAuthzEntry)
+	}
+	if len(c.cache) >= eventAuthzCacheMax {
+		for k, v := range c.cache {
+			if !now.Before(v.expires) {
+				delete(c.cache, k)
+			}
+		}
+		if len(c.cache) >= eventAuthzCacheMax {
+			return visible // still full of live entries: answer without remembering
+		}
+	}
+	c.cache[taskID] = eventAuthzEntry{visible: visible, expires: now.Add(eventAuthzCacheTTL)}
+	return visible
 }
 
 func (c *visibleTaskEventsClient) Send(msg []byte) error {
@@ -43,9 +106,7 @@ func (c *visibleTaskEventsClient) Send(msg []byte) error {
 	if err != nil || env.TaskID == "" {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(withTokenScope(context.Background(), c.token), eventAuthzTimeout)
-	defer cancel()
-	if _, err := c.taskSvc.GetTask(ctx, env.TaskID, c.userID); err != nil {
+	if !c.visible(env.TaskID) {
 		return nil
 	}
 	return c.Client.Send(msg)
