@@ -321,7 +321,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
       const apiErr = err as { status?: number; message?: string };
       if (apiErr?.status === 503) {
         setIsUnavailable(true);
-        setError('Agent execution service is currently unavailable (OpenCode daemon offline).');
+        setError('Task execution is temporarily disabled by the server.');
       } else if (apiErr?.status === 404) {
         setError('No active session initialized for this task yet.');
       } else {
@@ -574,7 +574,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
               >
                 {currentSessionId}
               </Badge>
-              {renderStatusBadge(session?.status)}
+              {!isUnavailable && renderStatusBadge(session?.status)}
             </div>
 
             <div className="flex items-center gap-2">
