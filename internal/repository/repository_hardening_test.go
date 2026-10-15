@@ -459,3 +459,63 @@ func TestProjectRepositoryDeleteRemovesProject(t *testing.T) {
 		t.Fatalf("second Delete returned error: %v", err)
 	}
 }
+
+func TestProjectRepositoryUpdateDoesNotResurrectMissingProject(t *testing.T) {
+	db := setupHardeningDB(t)
+	repo := repository.NewProjectRepository(db)
+	ctx := context.Background()
+
+	ghost := &models.Project{ID: "never-created", TeamID: "team-1", Name: "Ghost", RepoPath: "/g"}
+	if err := repo.Update(ctx, ghost); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("Update of unknown id: want gorm.ErrRecordNotFound, got %v", err)
+	}
+	if _, err := repo.GetByID(ctx, ghost.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("Update must not insert a row, GetByID err = %v", err)
+	}
+
+	// A project deleted between read and write (e.g. by the task runner's late save) stays deleted.
+	p := &models.Project{ID: "proj-del", TeamID: "team-1", Name: "Doomed", RepoPath: "/d"}
+	if err := repo.Create(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Delete(ctx, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Update(ctx, p); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("Update after delete: want ErrRecordNotFound, got %v", err)
+	}
+	if _, err := repo.GetByID(ctx, p.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("deleted project was resurrected: %v", err)
+	}
+}
+
+func TestProjectRepositoryUpdateWritesZeroValuesAndKeepsCreatedAt(t *testing.T) {
+	db := setupHardeningDB(t)
+	repo := repository.NewProjectRepository(db)
+	ctx := context.Background()
+
+	created := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
+	p := &models.Project{ID: "proj-z", TeamID: "team-1", Name: "Z", RepoPath: "/z", RuntimeConfig: models.JSONMap{"k": "v"}, CreatedAt: created}
+	if err := repo.Create(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	p.RuntimeConfig = nil // cleared config must be written, not skipped as a zero value
+	p.RepoPath = "/z2"
+	p.CreatedAt = time.Time{} // a caller holding a partially-populated struct must not clobber created_at
+	if err := repo.Update(ctx, p); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	got, err := repo.GetByID(ctx, "proj-z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.RuntimeConfig) != 0 {
+		t.Errorf("empty RuntimeConfig was not written: %v", got.RuntimeConfig)
+	}
+	if got.RepoPath != "/z2" {
+		t.Errorf("RepoPath = %q", got.RepoPath)
+	}
+	if !got.CreatedAt.Equal(created) {
+		t.Errorf("CreatedAt changed: %v", got.CreatedAt)
+	}
+}
