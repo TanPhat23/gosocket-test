@@ -3,6 +3,7 @@
 **Date:** 2026-10-15
 **Branch:** `feature/project-scoped-runtime` (HEAD `45ebc19`)
 **Kind:** Static, read-only status map built from the repo. No Go tests, Docker or host commands were run for it.
+**Superseded in part: see the addendum at the end. Sections 1-6 describe HEAD `45ebc19` only.**
 **This is not a readiness claim, a security sign-off, or a recommendation to lift the quarantine.** Lifting is a separate explicit user decision. "Unverified" means it cannot be established from the repo.
 
 ## 1. What the quarantine is and what lifts it
@@ -80,3 +81,15 @@ The shared-file hazard from the review §3 applies: `cmd/server/main.go` and `in
 - Any Checkpoint A/B or independent security sign-off.
 - Gate 0D host firewall: no operator policy is present in the repo.
 - Provenance and signatures for the OpenCode image and toolchain archives beyond the pinned checksums.
+
+## Addendum (later on 2026-10-15)
+
+Not a re-audit. It records what changed since `45ebc19`; the sections above are unchanged and are stale where noted.
+
+- **Gate 0G:** the gateway core, the env-configured service, the per-container token broker, the OpenCode config builder and the operator firewall handoff are committed (`3e66d92`, `e878cff`, `df93ea1`, `69a479b`, `a1118f8`, `e0c62c3`). Nothing calls the broker or starts the gateway, because `cmd/server/main.go` is not wired. Decision B1 (user, 2026-10-15): the firewall attestation is optional; the gateway starts without it and logs a warning. Gate 0G stays **BLOCKED / UNQUALIFIED**: there is no restricted sandbox-to-gateway route.
+- **Gate 0C:** the §2 statement "No bundle/helper code in `internal/runner`" is stale; `e88ffe6` wires a transfer helper. No probe results are recorded, so 0C stays **UNQUALIFIED**.
+- **Quarantine:** unchanged. `RunTask` still returns `ErrRuntimeExecutionUnavailable`, and PR create/sync/diff return 503 after the permission check. Observed on the rebuilt docker compose stack: a task ends `failed` with the reason "runtime execution is temporarily disabled" and no sandbox is started.
+- **Authorization:** PR create and PR sync now require `RoleMember` (`e14935e`); diff stays viewer-readable. Session tokens without an issued-at time are rejected (`a4512f8`). `/ws/events` caches task visibility per subscriber for 30 seconds (`b0bf58e`).
+- **UI:** failed tasks show the latest attempt's failure reason (`78e0e74`), and the 503 session banner says execution is disabled (`a1d3f5e`, `a4cab49`).
+
+This addendum is not a readiness claim, a security sign-off, or a recommendation to lift the quarantine.
