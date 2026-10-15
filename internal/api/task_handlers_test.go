@@ -212,6 +212,7 @@ func TestTaskAndTeamHandlers(t *testing.T) {
 	}
 
 	adminCookieVal, err := sessionManager.SignPayload(auth.SessionClaims{
+		IssuedAt: time.Now(),
 		UserID:    adminUser.ID,
 		Issuer:    adminUser.Issuer,
 		Subject:   adminUser.Subject,
@@ -682,6 +683,7 @@ func TestTaskSessionEndpoints(t *testing.T) {
 	// Helper to create session cookie
 	createCookie := func(user *models.User) *http.Cookie {
 		cookieVal, err := sessionManager.SignPayload(auth.SessionClaims{
+			IssuedAt: time.Now(),
 			UserID:    user.ID,
 			Issuer:    user.Issuer,
 			Subject:   user.Subject,

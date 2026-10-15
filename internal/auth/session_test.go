@@ -136,3 +136,21 @@ func TestCreateSession_SetsIssuedAt(t *testing.T) {
 		t.Errorf("IssuedAt = %v, want about now", claims.IssuedAt)
 	}
 }
+
+func TestVerifyPayloadRejectsTokensWithoutIssuedAt(t *testing.T) {
+	sm := auth.NewSessionManager([]byte("0123456789abcdef0123456789abcdef"), time.Hour, false)
+	legacy, err := sm.SignPayload(auth.SessionClaims{UserID: "u", ExpiresAt: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sm.VerifyPayload(legacy); err != auth.ErrInvalidSession {
+		t.Fatalf("token without iat: err = %v, want ErrInvalidSession", err)
+	}
+	current, err := sm.SignPayload(auth.SessionClaims{UserID: "u", IssuedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sm.VerifyPayload(current); err != nil {
+		t.Fatalf("token with iat rejected: %v", err)
+	}
+}

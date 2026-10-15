@@ -35,8 +35,8 @@ type SessionClaims struct {
 }
 
 // RevokedBy reports whether the session was issued before validAfter, the user's
-// SessionsValidAfter (nil means no revocation). Legacy tokens without an IssuedAt count as issued at
-// the zero time, so any revocation invalidates them.
+// SessionsValidAfter (nil means no revocation). Tokens without an IssuedAt are rejected earlier, by
+// VerifyPayload.
 func (c *SessionClaims) RevokedBy(validAfter *time.Time) bool {
 	return validAfter != nil && c.IssuedAt.Before(*validAfter)
 }
@@ -108,6 +108,10 @@ func (sm *SessionManager) VerifyPayload(token string) (*SessionClaims, error) {
 
 	if time.Now().After(claims.ExpiresAt) {
 		return nil, ErrExpiredSession
+	}
+	// Tokens minted before iat was recorded cannot be checked against SessionsValidAfter.
+	if claims.IssuedAt.IsZero() {
+		return nil, ErrInvalidSession
 	}
 
 	return &claims, nil

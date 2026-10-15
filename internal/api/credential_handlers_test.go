@@ -139,7 +139,7 @@ func TestCredentialHandlers(t *testing.T) {
 	teamsGroup.Get("/credentials/:credential_id/github/branches", api.RequireTeamRole(authService, models.RoleViewer), credHandlers.ListGitHubBranches)
 
 	makeAuthCookie := func(userID string) *http.Cookie {
-		claims := auth.SessionClaims{UserID: userID, ExpiresAt: time.Now().Add(1 * time.Hour)}
+		claims := auth.SessionClaims{IssuedAt: time.Now(), UserID: userID, ExpiresAt: time.Now().Add(1 * time.Hour)}
 		tok, _ := sm.SignPayload(claims)
 		return &http.Cookie{Name: auth.SessionCookieName, Value: tok}
 	}

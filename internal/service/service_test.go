@@ -76,6 +76,7 @@ func (m *mockAuthenticator) GenerateOIDCState() (*auth.OIDCState, string, error)
 func (m *mockAuthenticator) SignOIDCState(state *auth.OIDCState) (string, error) {
 	mac := auth.NewSessionManager([]byte("mock-32-byte-secret-for-testing!"), 10*time.Minute, false)
 	claims := auth.SessionClaims{
+		IssuedAt: time.Now(),
 		UserID:    state.State,
 		Issuer:    state.Nonce,
 		Subject:   state.CodeVerifier,

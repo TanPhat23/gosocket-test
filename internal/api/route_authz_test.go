@@ -131,7 +131,7 @@ func setupRouteAuthzFixture(t *testing.T, wsOpts ...func(*api.WSHandler)) *route
 		if err := db.Create(u).Error; err != nil {
 			t.Fatalf("user: %v", err)
 		}
-		v, err := sm.SignPayload(auth.SessionClaims{UserID: u.ID, Issuer: u.Issuer, Subject: u.Subject, ExpiresAt: time.Now().Add(time.Hour)})
+		v, err := sm.SignPayload(auth.SessionClaims{IssuedAt: time.Now(), UserID: u.ID, Issuer: u.Issuer, Subject: u.Subject, ExpiresAt: time.Now().Add(time.Hour)})
 		if err != nil {
 			t.Fatalf("cookie: %v", err)
 		}

@@ -127,7 +127,7 @@ func TestWS_RevalidationDisconnectsExpiredSession(t *testing.T) {
 	f := setupRouteAuthzFixture(t, api.WithWSRevalidateInterval(testRevalidateInterval))
 	addr := startWSServer(t, f)
 	u := f.users["viewer-a"]
-	short, err := f.sm.SignPayload(auth.SessionClaims{UserID: u.ID, Issuer: u.Issuer, Subject: u.Subject, ExpiresAt: time.Now().Add(300 * time.Millisecond)})
+	short, err := f.sm.SignPayload(auth.SessionClaims{IssuedAt: time.Now(), UserID: u.ID, Issuer: u.Issuer, Subject: u.Subject, ExpiresAt: time.Now().Add(300 * time.Millisecond)})
 	if err != nil {
 		t.Fatalf("sign: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestWS_RevalidationDisconnectsOnCredentialSwitch(t *testing.T) {
 	f := setupRouteAuthzFixture(t, api.WithWSRevalidateInterval(testRevalidateInterval))
 	addr := startWSServer(t, f)
 	u := f.users["viewer-a"]
-	short, err := f.sm.SignPayload(auth.SessionClaims{UserID: u.ID, Issuer: u.Issuer, Subject: u.Subject, ExpiresAt: time.Now().Add(300 * time.Millisecond)})
+	short, err := f.sm.SignPayload(auth.SessionClaims{IssuedAt: time.Now(), UserID: u.ID, Issuer: u.Issuer, Subject: u.Subject, ExpiresAt: time.Now().Add(300 * time.Millisecond)})
 	if err != nil {
 		t.Fatalf("sign: %v", err)
 	}
