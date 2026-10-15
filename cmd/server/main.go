@@ -16,6 +16,7 @@ import (
 	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/config"
 	"agent-task-manager/internal/crypto"
+	"agent-task-manager/internal/devruntime"
 	"agent-task-manager/internal/db"
 	"agent-task-manager/internal/git"
 	"agent-task-manager/internal/integrations"
@@ -206,7 +207,14 @@ func main() {
 	)
 
 	// Concurrency-bounded Asynq Worker Server
-	workerServer := queue.NewWorkerServer(cfg, taskService, agentRunner)
+	var taskRunner queue.TaskRunner = agentRunner
+	if fake, err := devruntime.EnabledFromEnv(os.Getenv); err != nil {
+		log.Fatalf("%v", err)
+	} else if fake {
+		log.Printf("WARNING: ATM_DEV_FAKE_RUNTIME is on: tasks are simulated. The real runtime stays quarantined.")
+		taskRunner = devruntime.NewRunner(logRepo, hub, 700*time.Millisecond)
+	}
+	workerServer := queue.NewWorkerServer(cfg, taskService, taskRunner)
 	if err := workerServer.Start(); err != nil {
 		log.Fatalf("failed to start Asynq worker server: %v", err)
 	}
