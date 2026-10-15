@@ -291,6 +291,10 @@ func (m *mockDockerClientForRunner) ContainerLogs(ctx context.Context, container
 	return io.NopCloser(strings.NewReader("")), nil
 }
 
+func (m *mockDockerClientForRunner) ContainerAttach(ctx context.Context, containerID string, options container.AttachOptions) (types.HijackedResponse, error) {
+	return types.HijackedResponse{}, nil
+}
+
 func (m *mockDockerClientForRunner) ContainerStop(ctx context.Context, containerID string, options container.StopOptions) error {
 	m.calls++
 	m.stopCalled = true

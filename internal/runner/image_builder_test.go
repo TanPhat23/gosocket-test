@@ -60,6 +60,9 @@ func (m *mockDockerClientForBuilder) ContainerWait(ctx context.Context, containe
 func (m *mockDockerClientForBuilder) ContainerLogs(ctx context.Context, containerID string, options container.LogsOptions) (io.ReadCloser, error) {
 	return nil, nil
 }
+func (m *mockDockerClientForBuilder) ContainerAttach(ctx context.Context, containerID string, options container.AttachOptions) (types.HijackedResponse, error) {
+	return types.HijackedResponse{}, nil
+}
 func (m *mockDockerClientForBuilder) ContainerStop(ctx context.Context, containerID string, options container.StopOptions) error {
 	return nil
 }

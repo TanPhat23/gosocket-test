@@ -75,6 +75,10 @@ func (m *mockDockerClientForSandboxManager) ContainerLogs(ctx context.Context, c
 	return io.NopCloser(strings.NewReader("")), nil
 }
 
+func (m *mockDockerClientForSandboxManager) ContainerAttach(ctx context.Context, containerID string, options container.AttachOptions) (types.HijackedResponse, error) {
+	return types.HijackedResponse{}, nil
+}
+
 func (m *mockDockerClientForSandboxManager) ContainerStop(ctx context.Context, containerID string, options container.StopOptions) error {
 	m.stoppedID = containerID
 	m.stopTimeout = options.Timeout
