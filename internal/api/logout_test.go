@@ -202,3 +202,29 @@ func TestWS_RevalidationDisconnectsLoggedOutSession(t *testing.T) {
 	}
 	expectPolicyClose(t, conn)
 }
+
+// If the revoke write fails the session is still valid server-side, so logout must say so (non-2xx)
+// instead of reporting "logged_out"; the browser's cookie is cleared regardless.
+func TestLogout_RevokeFailureIsReportedNotSwallowed(t *testing.T) {
+	f := setupRouteAuthzFixture(t)
+	cookie := f.issued(t, "viewer-a")
+	if err := f.db.Exec(`CREATE TRIGGER block_revoke BEFORE UPDATE OF sessions_valid_after ON users
+		BEGIN SELECT RAISE(ABORT, 'revoke blocked'); END`).Error; err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+
+	code, set := f.logout(t, cookie)
+	if code < 500 {
+		t.Fatalf("failed revocation must not look like success, got %d", code)
+	}
+	cleared := false
+	for _, c := range set {
+		cleared = cleared || (c.Name == auth.SessionCookieName && c.Value == "" && c.MaxAge < 0)
+	}
+	if !cleared {
+		t.Error("cookie must still be cleared client-side")
+	}
+	if f.validAfter(t, "viewer-a") != nil {
+		t.Error("revocation must not have been recorded")
+	}
+}
