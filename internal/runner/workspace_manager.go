@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"agent-task-manager/internal/common"
+	"agent-task-manager/internal/git/transfer"
 	"agent-task-manager/internal/models"
 )
 
@@ -30,11 +31,18 @@ type WorkspaceManager interface {
 type workspaceManager struct {
 	workspaceRoot string
 	scratchRoot   string
+	volumeHelper  transfer.VolumeHelper
 }
 
 // NewWorkspaceManager creates a WorkspaceManager instance with configurable or default roots.
 // Defaults: workspaceRoot = "/workspaces", scratchRoot = "/tmp/scratch".
 func NewWorkspaceManager(workspaceRoot string, scratchRoot string) WorkspaceManager {
+	return NewWorkspaceManagerWithHelper(workspaceRoot, scratchRoot, nil)
+}
+
+// NewWorkspaceManagerWithHelper creates a WorkspaceManager instance with configurable or default roots
+// and a containerized volume helper.
+func NewWorkspaceManagerWithHelper(workspaceRoot string, scratchRoot string, helper transfer.VolumeHelper) WorkspaceManager {
 	if workspaceRoot == "" {
 		workspaceRoot = "/workspaces"
 	}
@@ -44,6 +52,7 @@ func NewWorkspaceManager(workspaceRoot string, scratchRoot string) WorkspaceMana
 	return &workspaceManager{
 		workspaceRoot: workspaceRoot,
 		scratchRoot:   scratchRoot,
+		volumeHelper:  helper,
 	}
 }
 

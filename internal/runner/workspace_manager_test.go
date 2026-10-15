@@ -65,6 +65,33 @@ func assertWorkspaceRefused(t *testing.T, path string, err error) {
 	}
 }
 
+func TestWorkspaceManager_QuarantineRemainsActive(t *testing.T) {
+	wm := runner.NewWorkspaceManager("/workspaces", "/tmp/scratch")
+	path, err := wm.EnsureTaskWorktree(context.Background(), "proj_1", &models.Task{ID: "task_1"}, "repo_1", "refs/heads/main")
+	if path != "" {
+		t.Fatalf("expected empty path under quarantine, got %q", path)
+	}
+	if !errors.Is(err, runner.ErrHostWorkspaceProvisioningRefused) {
+		t.Fatalf("expected ErrHostWorkspaceProvisioningRefused, got %v", err)
+	}
+	if !errors.Is(err, common.ErrRuntimeQuarantined) {
+		t.Fatalf("expected error to wrap common.ErrRuntimeQuarantined, got %v", err)
+	}
+
+	// Also verify with NewWorkspaceManagerWithHelper
+	wmWithHelper := runner.NewWorkspaceManagerWithHelper("/workspaces", "/tmp/scratch", nil)
+	path2, err2 := wmWithHelper.EnsureTaskWorktree(context.Background(), "proj_1", &models.Task{ID: "task_1"}, "repo_1", "refs/heads/main")
+	if path2 != "" {
+		t.Fatalf("expected empty path under quarantine, got %q", path2)
+	}
+	if !errors.Is(err2, runner.ErrHostWorkspaceProvisioningRefused) {
+		t.Fatalf("expected ErrHostWorkspaceProvisioningRefused, got %v", err2)
+	}
+	if !errors.Is(err2, common.ErrRuntimeQuarantined) {
+		t.Fatalf("expected error to wrap common.ErrRuntimeQuarantined, got %v", err2)
+	}
+}
+
 func TestWorkspaceManager_EnsureTaskWorktree_ValidProvisioning(t *testing.T) {
 	ctx := context.Background()
 	workspaceRoot := t.TempDir()
