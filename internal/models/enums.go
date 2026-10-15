@@ -65,6 +65,44 @@ func (r *TeamRole) Scan(value any) error {
 	return nil
 }
 
+// validEnum is a string-based enum that can report whether a value is a member.
+type validEnum interface {
+	~string
+	IsValid() bool
+}
+
+// stringEnumValue implements driver.Valuer for string-based enums, rejecting
+// unknown members.
+func stringEnumValue[E validEnum](e E, name string) (driver.Value, error) {
+	if !e.IsValid() {
+		return nil, fmt.Errorf("invalid %s: %q", name, e)
+	}
+	return string(e), nil
+}
+
+// scanStringEnum implements sql.Scanner for string-based enums, accepting
+// string or []byte database values and rejecting unknown members.
+func scanStringEnum[E validEnum](dst *E, value any, name string) error {
+	if value == nil {
+		return fmt.Errorf("cannot scan nil into %s", name)
+	}
+	var s string
+	switch v := value.(type) {
+	case string:
+		s = v
+	case []byte:
+		s = string(v)
+	default:
+		return fmt.Errorf("cannot scan non-string value into %s", name)
+	}
+	e := E(s)
+	if !e.IsValid() {
+		return fmt.Errorf("invalid %s in database: %q", name, s)
+	}
+	*dst = e
+	return nil
+}
+
 // IntegrationProvider identifies an external issue tracker / project management provider.
 type IntegrationProvider string
 
@@ -83,30 +121,11 @@ func (p IntegrationProvider) IsValid() bool {
 }
 
 func (p IntegrationProvider) Value() (driver.Value, error) {
-	if !p.IsValid() {
-		return nil, fmt.Errorf("invalid IntegrationProvider: %q", p)
-	}
-	return string(p), nil
+	return stringEnumValue(p, "IntegrationProvider")
 }
 
 func (p *IntegrationProvider) Scan(value any) error {
-	if value == nil {
-		return errors.New("cannot scan nil into IntegrationProvider")
-	}
-	s, ok := value.(string)
-	if !ok {
-		if b, ok := value.([]byte); ok {
-			s = string(b)
-		} else {
-			return errors.New("cannot scan non-string value into IntegrationProvider")
-		}
-	}
-	provider := IntegrationProvider(s)
-	if !provider.IsValid() {
-		return fmt.Errorf("invalid IntegrationProvider in database: %q", s)
-	}
-	*p = provider
-	return nil
+	return scanStringEnum(p, value, "IntegrationProvider")
 }
 
 // CredentialProvider identifies an external credential target.
@@ -129,30 +148,11 @@ func (p CredentialProvider) IsValid() bool {
 }
 
 func (p CredentialProvider) Value() (driver.Value, error) {
-	if !p.IsValid() {
-		return nil, fmt.Errorf("invalid CredentialProvider: %q", p)
-	}
-	return string(p), nil
+	return stringEnumValue(p, "CredentialProvider")
 }
 
 func (p *CredentialProvider) Scan(value any) error {
-	if value == nil {
-		return errors.New("cannot scan nil into CredentialProvider")
-	}
-	s, ok := value.(string)
-	if !ok {
-		if b, ok := value.([]byte); ok {
-			s = string(b)
-		} else {
-			return errors.New("cannot scan non-string value into CredentialProvider")
-		}
-	}
-	provider := CredentialProvider(s)
-	if !provider.IsValid() {
-		return fmt.Errorf("invalid CredentialProvider in database: %q", s)
-	}
-	*p = provider
-	return nil
+	return scanStringEnum(p, value, "CredentialProvider")
 }
 
 // TaskStatus represents the lifecycle state of a task.
@@ -178,30 +178,11 @@ func (s TaskStatus) IsValid() bool {
 }
 
 func (s TaskStatus) Value() (driver.Value, error) {
-	if !s.IsValid() {
-		return nil, fmt.Errorf("invalid TaskStatus: %q", s)
-	}
-	return string(s), nil
+	return stringEnumValue(s, "TaskStatus")
 }
 
 func (s *TaskStatus) Scan(value any) error {
-	if value == nil {
-		return errors.New("cannot scan nil into TaskStatus")
-	}
-	sVal, ok := value.(string)
-	if !ok {
-		if b, ok := value.([]byte); ok {
-			sVal = string(b)
-		} else {
-			return errors.New("cannot scan non-string value into TaskStatus")
-		}
-	}
-	status := TaskStatus(sVal)
-	if !status.IsValid() {
-		return fmt.Errorf("invalid TaskStatus in database: %q", sVal)
-	}
-	*s = status
-	return nil
+	return scanStringEnum(s, value, "TaskStatus")
 }
 
 // TaskPriority represents queue scheduling priority tiers.
@@ -269,30 +250,11 @@ func (t AssigneeType) IsValid() bool {
 }
 
 func (t AssigneeType) Value() (driver.Value, error) {
-	if !t.IsValid() {
-		return nil, fmt.Errorf("invalid AssigneeType: %q", t)
-	}
-	return string(t), nil
+	return stringEnumValue(t, "AssigneeType")
 }
 
 func (t *AssigneeType) Scan(value any) error {
-	if value == nil {
-		return errors.New("cannot scan nil into AssigneeType")
-	}
-	s, ok := value.(string)
-	if !ok {
-		if b, ok := value.([]byte); ok {
-			s = string(b)
-		} else {
-			return errors.New("cannot scan non-string value into AssigneeType")
-		}
-	}
-	assignee := AssigneeType(s)
-	if !assignee.IsValid() {
-		return fmt.Errorf("invalid AssigneeType in database: %q", s)
-	}
-	*t = assignee
-	return nil
+	return scanStringEnum(t, value, "AssigneeType")
 }
 
 // AttemptStatus represents the execution state of an individual task run.
@@ -315,30 +277,11 @@ func (s AttemptStatus) IsValid() bool {
 }
 
 func (s AttemptStatus) Value() (driver.Value, error) {
-	if !s.IsValid() {
-		return nil, fmt.Errorf("invalid AttemptStatus: %q", s)
-	}
-	return string(s), nil
+	return stringEnumValue(s, "AttemptStatus")
 }
 
 func (s *AttemptStatus) Scan(value any) error {
-	if value == nil {
-		return errors.New("cannot scan nil into AttemptStatus")
-	}
-	str, ok := value.(string)
-	if !ok {
-		if b, ok := value.([]byte); ok {
-			str = string(b)
-		} else {
-			return errors.New("cannot scan non-string value into AttemptStatus")
-		}
-	}
-	status := AttemptStatus(str)
-	if !status.IsValid() {
-		return fmt.Errorf("invalid AttemptStatus in database: %q", str)
-	}
-	*s = status
-	return nil
+	return scanStringEnum(s, value, "AttemptStatus")
 }
 
 // WebhookStatus represents the ingestion state of an external webhook payload.
@@ -359,28 +302,9 @@ func (s WebhookStatus) IsValid() bool {
 }
 
 func (s WebhookStatus) Value() (driver.Value, error) {
-	if !s.IsValid() {
-		return nil, fmt.Errorf("invalid WebhookStatus: %q", s)
-	}
-	return string(s), nil
+	return stringEnumValue(s, "WebhookStatus")
 }
 
 func (s *WebhookStatus) Scan(value any) error {
-	if value == nil {
-		return errors.New("cannot scan nil into WebhookStatus")
-	}
-	str, ok := value.(string)
-	if !ok {
-		if b, ok := value.([]byte); ok {
-			str = string(b)
-		} else {
-			return errors.New("cannot scan non-string value into WebhookStatus")
-		}
-	}
-	status := WebhookStatus(str)
-	if !status.IsValid() {
-		return fmt.Errorf("invalid WebhookStatus in database: %q", str)
-	}
-	*s = status
-	return nil
+	return scanStringEnum(s, value, "WebhookStatus")
 }

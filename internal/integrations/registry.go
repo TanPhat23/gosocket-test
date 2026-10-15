@@ -3,8 +3,8 @@ package integrations
 import (
 	"errors"
 	"fmt"
-	"sync"
 
+	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/models"
 )
 
@@ -17,9 +17,10 @@ var (
 	ErrProviderAlreadyRegistered = errors.New("provider already registered")
 )
 
-// Registry manages registered SyncProvider instances in a thread-safe manner using sync.Map.
+// Registry manages registered SyncProvider instances in a thread-safe manner using common.SafeMap.
 type Registry struct {
-	providers sync.Map // map[models.IntegrationProvider]SyncProvider
+	// Value (not pointer) so the zero Registry stays usable.
+	providers common.SafeMap[models.IntegrationProvider, SyncProvider]
 }
 
 // NewRegistry creates a new thread-safe Registry.
@@ -48,14 +49,14 @@ func (r *Registry) Get(provider models.IntegrationProvider) (SyncProvider, error
 		return nil, fmt.Errorf("%w: %s", ErrProviderNotFound, provider)
 	}
 
-	return val.(SyncProvider), nil
+	return val, nil
 }
 
 // List returns all registered SyncProvider instances.
 func (r *Registry) List() []SyncProvider {
 	var list []SyncProvider
-	r.providers.Range(func(_, val any) bool {
-		list = append(list, val.(SyncProvider))
+	r.providers.Range(func(_ models.IntegrationProvider, val SyncProvider) bool {
+		list = append(list, val)
 		return true
 	})
 	return list

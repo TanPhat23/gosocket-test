@@ -1187,10 +1187,7 @@ func (s *taskService) maybePushBranchForSteering(ctx context.Context, task *mode
 	if task.BranchName != nil && *task.BranchName != "" {
 		branchName = *task.BranchName
 	}
-	remoteURL := fmt.Sprintf("https://github.com/%s.git", ghInteg.ExternalID)
-	if strings.HasPrefix(ghInteg.ExternalID, "http://") || strings.HasPrefix(ghInteg.ExternalID, "https://") || strings.HasPrefix(ghInteg.ExternalID, "file://") {
-		remoteURL = ghInteg.ExternalID
-	}
+	remoteURL := git.RemoteURL(ghInteg.ExternalID)
 
 	if pushErr := git.PushBranch(ctx, worktreePath, remoteURL, token, branchName); pushErr == nil {
 		s.broadcastTaskLog(ctx, task.ID, fmt.Sprintf("\x1b[32m✔ Steered changes pushed to branch %s\x1b[0m\r\n", branchName))

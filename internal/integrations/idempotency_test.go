@@ -396,3 +396,24 @@ func TestIdempotencyStores_ReclaimsStaleReceivedEvent(t *testing.T) {
 		})
 	}
 }
+
+func TestMemoryIdempotencyStore_ZeroValue(t *testing.T) {
+	var store integrations.MemoryIdempotencyStore
+	ctx := context.Background()
+	if ok, err := store.RecordEvent(ctx, "github", "p", "e1"); err != nil || !ok {
+		t.Fatalf("first RecordEvent = %v, %v", ok, err)
+	}
+	if ok, err := store.RecordEvent(ctx, "github", "p", "e1"); err != nil || ok {
+		t.Fatalf("duplicate RecordEvent = %v, %v", ok, err)
+	}
+	if ok, _ := store.RecordEvent(ctx, "github", "other", "e1"); !ok {
+		t.Fatal("different project must be a distinct key")
+	}
+	if err := store.MarkProcessed(ctx, "github", "p", "e1"); err != nil {
+		t.Fatal(err)
+	}
+	err := store.MarkFailed(ctx, "github", "p", "missing", "x")
+	if err == nil || err.Error() != "webhook event not found: github/p/missing" {
+		t.Fatalf("MarkFailed missing = %v", err)
+	}
+}

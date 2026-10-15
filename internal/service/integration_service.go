@@ -96,19 +96,13 @@ func (s *integrationService) CreateIntegration(ctx context.Context, projectID st
 		return nil, err
 	}
 
-	proj, err := s.projRepo.GetByID(ctx, projectID)
+	proj, err := s.loadProject(ctx, projectID)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrProjectNotFound, err)
+		return nil, err
 	}
 
-	cred, err := s.credRepo.GetByID(ctx, req.CredentialID)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrCredentialNotFound, err)
-	}
-
-	// Security Fix 1 (Tenant Isolation / BOLA): verify cred.TeamID == proj.TeamID
-	if cred.TeamID != proj.TeamID {
-		return nil, ErrUnauthorizedTenant
+	if err := s.checkCredentialTenant(ctx, req.CredentialID, proj.TeamID); err != nil {
+		return nil, err
 	}
 
 	baseBranch := "main"
@@ -157,8 +151,8 @@ func (s *integrationService) CreateIntegration(ctx context.Context, projectID st
 }
 
 func (s *integrationService) ListIntegrations(ctx context.Context, projectID string) ([]dto.IntegrationResponse, error) {
-	if _, err := s.projRepo.GetByID(ctx, projectID); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrProjectNotFound, err)
+	if _, err := s.loadProject(ctx, projectID); err != nil {
+		return nil, err
 	}
 
 	list, err := s.integRepo.ListByProjectID(ctx, projectID)
@@ -173,22 +167,22 @@ func (s *integrationService) ListIntegrations(ctx context.Context, projectID str
 }
 
 func (s *integrationService) GetIntegration(ctx context.Context, projectID, id string) (*dto.IntegrationResponse, error) {
-	integ, err := s.integRepo.GetByID(ctx, id)
-	if err != nil || integ.ProjectID != projectID {
-		return nil, ErrIntegrationNotFound
+	integ, err := s.loadScopedIntegration(ctx, projectID, id)
+	if err != nil {
+		return nil, err
 	}
 	return s.toResponse(integ), nil
 }
 
 func (s *integrationService) UpdateIntegration(ctx context.Context, projectID, id string, req dto.UpdateIntegrationRequest) (*dto.IntegrationResponse, error) {
-	proj, err := s.projRepo.GetByID(ctx, projectID)
+	proj, err := s.loadProject(ctx, projectID)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrProjectNotFound, err)
+		return nil, err
 	}
 
-	integ, err := s.integRepo.GetByID(ctx, id)
-	if err != nil || integ.ProjectID != projectID {
-		return nil, ErrIntegrationNotFound
+	integ, err := s.loadScopedIntegration(ctx, projectID, id)
+	if err != nil {
+		return nil, err
 	}
 
 	if req.WebhookCallbackURL != nil {
@@ -198,13 +192,8 @@ func (s *integrationService) UpdateIntegration(ctx context.Context, projectID, i
 	}
 
 	if req.CredentialID != nil {
-		cred, err := s.credRepo.GetByID(ctx, *req.CredentialID)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrCredentialNotFound, err)
-		}
-		// Security Fix 1 (Tenant Isolation / BOLA): verify cred.TeamID == proj.TeamID
-		if cred.TeamID != proj.TeamID {
-			return nil, ErrUnauthorizedTenant
+		if err := s.checkCredentialTenant(ctx, *req.CredentialID, proj.TeamID); err != nil {
+			return nil, err
 		}
 		integ.CredentialID = *req.CredentialID
 	}
@@ -245,11 +234,42 @@ func (s *integrationService) UpdateIntegration(ctx context.Context, projectID, i
 }
 
 func (s *integrationService) DeleteIntegration(ctx context.Context, projectID, id string) error {
-	integ, err := s.integRepo.GetByID(ctx, id)
-	if err != nil || integ.ProjectID != projectID {
-		return ErrIntegrationNotFound
+	if _, err := s.loadScopedIntegration(ctx, projectID, id); err != nil {
+		return err
 	}
 	return s.integRepo.Delete(ctx, id)
+}
+
+// loadProject fetches a project, wrapping lookup failures in ErrProjectNotFound.
+func (s *integrationService) loadProject(ctx context.Context, projectID string) (*models.Project, error) {
+	proj, err := s.projRepo.GetByID(ctx, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrProjectNotFound, err)
+	}
+	return proj, nil
+}
+
+// loadScopedIntegration fetches an integration, returning ErrIntegrationNotFound
+// when it is missing or belongs to a different project.
+func (s *integrationService) loadScopedIntegration(ctx context.Context, projectID, id string) (*models.ProjectIntegration, error) {
+	integ, err := s.integRepo.GetByID(ctx, id)
+	if err != nil || integ.ProjectID != projectID {
+		return nil, ErrIntegrationNotFound
+	}
+	return integ, nil
+}
+
+// checkCredentialTenant verifies the credential exists and belongs to teamID.
+// Security Fix 1 (Tenant Isolation / BOLA): cred.TeamID must equal proj.TeamID.
+func (s *integrationService) checkCredentialTenant(ctx context.Context, credentialID, teamID string) error {
+	cred, err := s.credRepo.GetByID(ctx, credentialID)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrCredentialNotFound, err)
+	}
+	if cred.TeamID != teamID {
+		return ErrUnauthorizedTenant
+	}
+	return nil
 }
 
 // Security Fix 2 (Secret Masking): mask webhook_secret in Config

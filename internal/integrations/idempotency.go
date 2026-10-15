@@ -37,7 +37,7 @@ type memoryEventRecord struct {
 	processedAt  *time.Time
 }
 
-// MemoryIdempotencyStore provides an in-memory implementation for tests using sync.Map.
+// MemoryIdempotencyStore provides an in-memory implementation for tests using common.SafeMap.
 type MemoryIdempotencyStore struct {
 	mu     sync.Mutex
 	events map[memoryEventKey]*memoryEventRecord
@@ -63,7 +63,14 @@ func (m *MemoryIdempotencyStore) RecordEvent(ctx context.Context, provider strin
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	now := m.now().UTC()
+	if m.events == nil {
+		m.events = make(map[memoryEventKey]*memoryEventRecord) // zero value stays usable
+	}
+	clock := m.now
+	if clock == nil {
+		clock = time.Now
+	}
+	now := clock().UTC()
 	if existing, ok := m.events[key]; ok {
 		// A failed event, or one stuck in received past StaleReceivedAfter, is reclaimed by the
 		// redelivery so the provider's retry is processed.

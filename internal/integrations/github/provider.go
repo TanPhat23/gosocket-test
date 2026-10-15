@@ -1,12 +1,10 @@
 package github
 
 import (
-	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/dto"
 	"agent-task-manager/internal/integrations"
+	"agent-task-manager/internal/integrations/httpx"
 	"agent-task-manager/internal/models"
 )
 
@@ -99,7 +97,7 @@ func parseRepo(integration *models.ProjectIntegration) (string, error) {
 		}
 	}
 	if integration.Config != nil {
-		if repo, ok := integration.Config["repo"].(string); ok && repo != "" {
+		if repo, ok := models.ConfigValue[string](integration.Config, "repo"); ok && repo != "" {
 			return repo, nil
 		}
 	}
@@ -107,34 +105,11 @@ func parseRepo(integration *models.ProjectIntegration) (string, error) {
 }
 
 func (p *Provider) doRequest(ctx context.Context, method, endpoint, token string, body any) (*http.Response, error) {
-	reqURL := fmt.Sprintf("%s%s", p.baseURL, endpoint)
-	var bodyReader io.Reader
-	if body != nil {
-		b, err := common.Marshal(body)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal request body: %w", err)
-		}
-		bodyReader = bytes.NewReader(b)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, method, reqURL, bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Accept", "application/vnd.github+json")
+	headers := map[string]string{"Accept": "application/vnd.github+json"}
 	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+		headers["Authorization"] = "Bearer " + token
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("github api request failed: %w", err)
-	}
-	return resp, nil
+	return httpx.Do(ctx, p.httpClient, method, p.baseURL+endpoint, body, headers, "github api")
 }
 
 type ghIssue struct {
@@ -164,14 +139,13 @@ func (p *Provider) FetchIssues(ctx context.Context, integration *models.ProjectI
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("github api returned status %d: %s", resp.StatusCode, string(b))
+	if err := httpx.CheckSuccess(resp, "github api returned status"); err != nil {
+		return nil, err
 	}
 
-	var ghIssues []ghIssue
-	if err := json.NewDecoder(resp.Body).Decode(&ghIssues); err != nil {
-		return nil, fmt.Errorf("failed to decode issues: %w", err)
+	ghIssues, err := httpx.DecodeJSON[[]ghIssue](resp.Body, "issues")
+	if err != nil {
+		return nil, err
 	}
 
 	var issues []integrations.ExternalIssue
@@ -220,9 +194,8 @@ func (p *Provider) UpdateIssueStatus(ctx context.Context, integration *models.Pr
 			return err
 		}
 		defer resp.Body.Close()
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			b, _ := io.ReadAll(resp.Body)
-			return fmt.Errorf("github update issue state returned %d: %s", resp.StatusCode, string(b))
+		if err := httpx.CheckSuccess(resp, "github update issue state returned"); err != nil {
+			return err
 		}
 	}
 
@@ -239,9 +212,8 @@ func (p *Provider) UpdateIssueStatus(ctx context.Context, integration *models.Pr
 			return err
 		}
 		defer resp.Body.Close()
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			b, _ := io.ReadAll(resp.Body)
-			return fmt.Errorf("github add label returned %d: %s", resp.StatusCode, string(b))
+		if err := httpx.CheckSuccess(resp, "github add label returned"); err != nil {
+			return err
 		}
 	}
 
@@ -263,9 +235,8 @@ func (p *Provider) AddComment(ctx context.Context, integration *models.ProjectIn
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("github add comment returned %d: %s", resp.StatusCode, string(b))
+	if err := httpx.CheckSuccess(resp, "github add comment returned"); err != nil {
+		return err
 	}
 	return nil
 }
@@ -283,7 +254,7 @@ func (p *Provider) CreatePullRequest(ctx context.Context, integration *models.Pr
 
 	baseBranch := "main"
 	if integration.Config != nil {
-		if b, ok := integration.Config["base_branch"].(string); ok && b != "" {
+		if b, ok := models.ConfigValue[string](integration.Config, "base_branch"); ok && b != "" {
 			baseBranch = b
 		}
 	}
@@ -302,14 +273,13 @@ func (p *Provider) CreatePullRequest(ctx context.Context, integration *models.Pr
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("github create pull request returned %d: %s", resp.StatusCode, string(b))
+	if err := httpx.CheckSuccess(resp, "github create pull request returned"); err != nil {
+		return "", err
 	}
 
-	var prResp ghPRResponse
-	if err := json.NewDecoder(resp.Body).Decode(&prResp); err != nil {
-		return "", fmt.Errorf("failed to decode pr response: %w", err)
+	prResp, err := httpx.DecodeJSON[ghPRResponse](resp.Body, "pr response")
+	if err != nil {
+		return "", err
 	}
 
 	return prResp.HTMLURL, nil
@@ -356,14 +326,13 @@ func (p *Provider) GetPullRequestStatus(ctx context.Context, integration *models
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("github get pull request returned %d: %s", resp.StatusCode, string(b))
+	if err := httpx.CheckSuccess(resp, "github get pull request returned"); err != nil {
+		return nil, err
 	}
 
-	var detail ghPRDetailResponse
-	if err := json.NewDecoder(resp.Body).Decode(&detail); err != nil {
-		return nil, fmt.Errorf("failed to decode pull request details: %w", err)
+	detail, err := httpx.DecodeJSON[ghPRDetailResponse](resp.Body, "pull request details")
+	if err != nil {
+		return nil, err
 	}
 
 	return &integrations.PullRequestStatus{
@@ -411,14 +380,13 @@ func (p *Provider) ListRepositories(ctx context.Context, token string) ([]dto.Gi
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return nil, errors.New("github api rate limit exceeded")
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("github list repositories returned %d: %s", resp.StatusCode, string(body))
+	if err := httpx.CheckSuccess(resp, "github list repositories returned"); err != nil {
+		return nil, err
 	}
 
-	var ghRepos []ghRepoResponse
-	if err := json.NewDecoder(resp.Body).Decode(&ghRepos); err != nil {
-		return nil, fmt.Errorf("failed to decode github repositories: %w", err)
+	ghRepos, err := httpx.DecodeJSON[[]ghRepoResponse](resp.Body, "github repositories")
+	if err != nil {
+		return nil, err
 	}
 
 	repos := make([]dto.GitHubRepositoryDTO, 0, len(ghRepos))
@@ -459,17 +427,16 @@ func (p *Provider) ListBranches(ctx context.Context, token, owner, repo string) 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, errors.New("repository not found or token lacks access")
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("github list branches returned %d: %s", resp.StatusCode, string(body))
+	if err := httpx.CheckSuccess(resp, "github list branches returned"); err != nil {
+		return nil, err
 	}
 
 	type ghBranchItem struct {
 		Name string `json:"name"`
 	}
-	var ghBranches []ghBranchItem
-	if err := json.NewDecoder(resp.Body).Decode(&ghBranches); err != nil {
-		return nil, fmt.Errorf("failed to decode github branches: %w", err)
+	ghBranches, err := httpx.DecodeJSON[[]ghBranchItem](resp.Body, "github branches")
+	if err != nil {
+		return nil, err
 	}
 
 	branches := make([]string, 0, len(ghBranches))

@@ -25,32 +25,52 @@ const (
 
 // CurrentUser retrieves the authenticated models.User from the Fiber context.
 func CurrentUser(c fiber.Ctx) *models.User {
-	val := c.Locals(LocalsUserKey)
-	if val == nil {
-		return nil
-	}
-	user, _ := val.(*models.User)
-	return user
+	return fiber.Locals[*models.User](c, LocalsUserKey)
 }
 
 // CurrentAPIToken retrieves the used models.APIToken from the Fiber context (if Bearer PAT was used).
 func CurrentAPIToken(c fiber.Ctx) *models.APIToken {
-	val := c.Locals(LocalsAPITokenKey)
-	if val == nil {
-		return nil
-	}
-	tok, _ := val.(*models.APIToken)
-	return tok
+	return fiber.Locals[*models.APIToken](c, LocalsAPITokenKey)
 }
 
 // CurrentTeamRole retrieves the resolved models.TeamRole from the Fiber context.
 func CurrentTeamRole(c fiber.Ctx) models.TeamRole {
-	val := c.Locals(LocalsTeamRoleKey)
-	if val == nil {
-		return 0
+	return fiber.Locals[models.TeamRole](c, LocalsTeamRoleKey)
+}
+
+// currentUserID returns the authenticated user's ID, or "" when unauthenticated.
+func currentUserID(c fiber.Ctx) string {
+	if user := CurrentUser(c); user != nil {
+		return user.ID
 	}
-	role, _ := val.(models.TeamRole)
-	return role
+	return ""
+}
+
+// authenticate tries the atm_session cookie first, then an Authorization: Bearer
+// Personal Access Token. On success it sets the Locals and returns true.
+func authenticate(c fiber.Ctx, authService service.AuthService, sm *auth.SessionManager) bool {
+	if sm != nil {
+		claims, err := sm.ValidateFiberRequest(c)
+		if err == nil && claims != nil {
+			user, err := authService.GetUserByID(c.Context(), claims.UserID)
+			if err == nil && user != nil {
+				c.Locals(LocalsUserKey, user)
+				return true
+			}
+		}
+	}
+
+	authHeader := c.Get(fiber.HeaderAuthorization)
+	if strings.HasPrefix(authHeader, BearerPrefix) {
+		rawToken := strings.TrimSpace(strings.TrimPrefix(authHeader, BearerPrefix))
+		user, apiToken, err := authService.AuthenticatePAT(c.Context(), rawToken)
+		if err == nil && user != nil {
+			c.Locals(LocalsUserKey, user)
+			c.Locals(LocalsAPITokenKey, apiToken)
+			return true
+		}
+	}
+	return false
 }
 
 // requestCredentials holds the raw credentials a request presented: the atm_session cookie value
@@ -99,8 +119,6 @@ func sessionUser(ctx context.Context, authService service.AuthService, claims *a
 }
 
 // RequireAuth provides dual authentication via session cookie (atm_session) or Bearer Personal Access Token.
-// For session cookies: extracts claims and loads user via AuthService.
-// For Bearer tokens: authenticates token via AuthService.
 // Returns 401 Unauthorized if neither is present or valid.
 func RequireAuth(authService service.AuthService, sm *auth.SessionManager) fiber.Handler {
 	return func(c fiber.Ctx) error {

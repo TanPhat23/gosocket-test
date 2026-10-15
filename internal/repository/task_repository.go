@@ -28,19 +28,11 @@ func NewTaskRepository(db *gorm.DB) TaskRepository {
 }
 
 func (r *taskRepo) GetByID(ctx context.Context, id string) (*models.Task, error) {
-	task, err := gorm.G[models.Task](r.db).Where("id = ?", id).First(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &task, nil
+	return findFirst[models.Task](ctx, r.db, "id = ?", id)
 }
 
 func (r *taskRepo) GetByProjectAndExternalID(ctx context.Context, projectID, externalID string) (*models.Task, error) {
-	task, err := gorm.G[models.Task](r.db).Where("project_id = ? AND external_id = ?", projectID, externalID).First(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &task, nil
+	return findFirst[models.Task](ctx, r.db, "project_id = ? AND external_id = ?", projectID, externalID)
 }
 
 func (r *taskRepo) List(ctx context.Context, projectID string) ([]models.Task, error) {

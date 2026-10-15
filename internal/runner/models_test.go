@@ -3,6 +3,7 @@ package runner_test
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"agent-task-manager/internal/config"
@@ -91,4 +92,43 @@ func TestListAvailableModels_DoesNotExecHostBinary(t *testing.T) {
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("host binary executed on cached call")
 	}
+}
+func TestListAvailableModelsCallerCannotMutateCache(t *testing.T) {
+	cfg := &config.Config{OpenCodeBinPath: "/non/existent/path/opencode"}
+
+	first := runner.ListAvailableModels(cfg)
+	if len(first) == 0 {
+		t.Fatalf("expected models")
+	}
+	want := first[0].ID
+	first[0].ID = "mutated"
+
+	second := runner.ListAvailableModels(cfg)
+	if second[0].ID != want {
+		t.Fatalf("cache was mutated through returned slice: got %q want %q", second[0].ID, want)
+	}
+	second[0].ID = "mutated-again"
+	if third := runner.ListAvailableModels(cfg); third[0].ID != want {
+		t.Fatalf("cached read result aliased cache: got %q want %q", third[0].ID, want)
+	}
+}
+
+func TestListAvailableModelsConcurrent(t *testing.T) {
+	cfg := &config.Config{OpenCodeBinPath: "/non/existent/path/opencode"}
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				m := runner.ListAvailableModels(cfg)
+				if len(m) == 0 {
+					t.Error("expected models")
+					return
+				}
+				m[0].Name = "scribble"
+			}
+		}()
+	}
+	wg.Wait()
 }

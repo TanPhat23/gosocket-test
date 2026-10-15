@@ -63,44 +63,32 @@ func (b *ANSIBuilder) CRLF() *ANSIBuilder {
 	return b
 }
 
-// Yellow appends yellow-colored text and resets styling.
-func (b *ANSIBuilder) Yellow(s string) *ANSIBuilder {
-	b.buf.WriteString(ansiYellow)
+// color appends s wrapped in the given ANSI color code, followed by a reset.
+func (b *ANSIBuilder) color(code, s string) *ANSIBuilder {
+	b.buf.WriteString(code)
 	b.buf.WriteString(s)
 	b.buf.WriteString(ansiReset)
 	return b
+}
+
+// Yellow appends yellow-colored text and resets styling.
+func (b *ANSIBuilder) Yellow(s string) *ANSIBuilder {
+	return b.color(ansiYellow, s)
 }
 
 // Green appends green-colored text and resets styling.
 func (b *ANSIBuilder) Green(s string) *ANSIBuilder {
-	b.buf.WriteString(ansiGreen)
-	b.buf.WriteString(s)
-	b.buf.WriteString(ansiReset)
-	return b
+	return b.color(ansiGreen, s)
 }
 
 // Red appends red-colored text and resets styling.
 func (b *ANSIBuilder) Red(s string) *ANSIBuilder {
-	b.buf.WriteString(ansiRed)
-	b.buf.WriteString(s)
-	b.buf.WriteString(ansiReset)
-	return b
+	return b.color(ansiRed, s)
 }
 
 // Cyan appends cyan-colored text and resets styling.
 func (b *ANSIBuilder) Cyan(s string) *ANSIBuilder {
-	b.buf.WriteString(ansiCyan)
-	b.buf.WriteString(s)
-	b.buf.WriteString(ansiReset)
-	return b
-}
-
-// Gray appends gray/dim text and resets styling.
-func (b *ANSIBuilder) Gray(s string) *ANSIBuilder {
-	b.buf.WriteString(ansiGray)
-	b.buf.WriteString(s)
-	b.buf.WriteString(ansiReset)
-	return b
+	return b.color(ansiCyan, s)
 }
 
 // ToolHeader appends the tool indicator "→ [toolName]" with optional gray command.
@@ -149,14 +137,6 @@ func (b *ANSIBuilder) AgentHeader(agentName string) *ANSIBuilder {
 	b.buf.WriteString(agentName)
 	b.buf.WriteString(ansiReset)
 	b.buf.WriteString(ansiCRLF)
-	return b
-}
-
-// Magenta appends magenta/purple text and resets styling.
-func (b *ANSIBuilder) Magenta(s string) *ANSIBuilder {
-	b.buf.WriteString(ansiMagenta)
-	b.buf.WriteString(s)
-	b.buf.WriteString(ansiReset)
 	return b
 }
 

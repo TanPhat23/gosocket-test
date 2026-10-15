@@ -41,7 +41,7 @@ func NewCredentialHandlers(credService service.CredentialService) *CredentialHan
 func (h *CredentialHandlers) List(c fiber.Ctx) error {
 	params, err := parseTeamCredentialParams(c)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return badRequest(c, err)
 	}
 
 	credentials, err := h.credService.List(c.Context(), params.TeamID)
@@ -56,12 +56,12 @@ func (h *CredentialHandlers) List(c fiber.Ctx) error {
 func (h *CredentialHandlers) Create(c fiber.Ctx) error {
 	params, err := parseTeamCredentialParams(c)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return badRequest(c, err)
 	}
 
-	var req dto.CreateCredentialRequest
-	if err := c.Bind().Body(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	req, err := bindBody[dto.CreateCredentialRequest](c)
+	if err != nil {
+		return badRequest(c, err)
 	}
 
 	credDTO, err := h.credService.Create(c.Context(), params.TeamID, req)
@@ -78,12 +78,12 @@ func (h *CredentialHandlers) Create(c fiber.Ctx) error {
 func (h *CredentialHandlers) Update(c fiber.Ctx) error {
 	params, err := parseTeamCredentialParams(c)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return badRequest(c, err)
 	}
 
-	var req dto.UpdateCredentialRequest
-	if err := c.Bind().Body(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	req, err := bindBody[dto.UpdateCredentialRequest](c)
+	if err != nil {
+		return badRequest(c, err)
 	}
 
 	credDTO, err := h.credService.Update(c.Context(), params.TeamID, params.CredentialID, req)
@@ -100,7 +100,7 @@ func (h *CredentialHandlers) Update(c fiber.Ctx) error {
 func (h *CredentialHandlers) Delete(c fiber.Ctx) error {
 	params, err := parseTeamCredentialParams(c)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return badRequest(c, err)
 	}
 
 	if err := h.credService.Delete(c.Context(), params.TeamID, params.CredentialID); err != nil {
@@ -114,7 +114,7 @@ func (h *CredentialHandlers) Delete(c fiber.Ctx) error {
 func (h *CredentialHandlers) ListGitHubRepositories(c fiber.Ctx) error {
 	params, err := parseTeamCredentialParams(c)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return badRequest(c, err)
 	}
 
 	repos, err := h.credService.ListGitHubRepositories(c.Context(), params.TeamID, params.CredentialID)
@@ -129,7 +129,7 @@ func (h *CredentialHandlers) ListGitHubRepositories(c fiber.Ctx) error {
 func (h *CredentialHandlers) ListGitHubBranches(c fiber.Ctx) error {
 	params, err := parseTeamCredentialParams(c)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return badRequest(c, err)
 	}
 
 	repo := c.Query("repo")

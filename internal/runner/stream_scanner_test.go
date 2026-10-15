@@ -35,7 +35,7 @@ func TestAgentStreamScanner_LargeLineCapacity(t *testing.T) {
 func TestAgentStreamScanner_BufferReuse(t *testing.T) {
 	// 1. Scanner acquires from pool and Close() returns buffer without panic.
 	s1 := NewAgentStreamScanner(strings.NewReader("line1\nline2\n"))
-	buf1 := s1.bufPtr
+	buf1 := s1.bufPtr.Load()
 	if buf1 == nil || cap(*buf1) < AgentStreamInitialBufferBytes {
 		t.Fatalf("expected initial buffer capacity >= %d, got %v", AgentStreamInitialBufferBytes, buf1)
 	}
@@ -47,13 +47,13 @@ func TestAgentStreamScanner_BufferReuse(t *testing.T) {
 	// 2. Calling Close() multiple times is idempotent.
 	s1.Close()
 	s1.Close()
-	if s1.bufPtr != nil {
+	if s1.bufPtr.Load() != nil {
 		t.Fatalf("expected s1.bufPtr to be nil after Close()")
 	}
 
 	// 3. Acquire another scanner to see if buffer can be reused from pool.
 	s2 := NewAgentStreamScanner(strings.NewReader("reused\n"))
-	if s2.bufPtr == nil {
+	if s2.bufPtr.Load() == nil {
 		t.Fatalf("expected valid bufPtr from pool")
 	}
 	if !s2.Scan() || s2.Text() != "reused" {
@@ -66,18 +66,18 @@ func TestAgentStreamScanner_BufferReuse(t *testing.T) {
 	oversizedBuf := make([]byte, 0, AgentStreamMaxPooledBufferBytes+1024)
 	sOver := &AgentStreamScanner{
 		Scanner: bufio.NewScanner(strings.NewReader("oversized\n")),
-		bufPtr:  &oversizedBuf,
 	}
-	sOver.Buffer(*sOver.bufPtr, AgentStreamMaxLineBytes)
+	sOver.bufPtr.Store(&oversizedBuf)
+	sOver.Buffer(oversizedBuf, AgentStreamMaxLineBytes)
 	if !sOver.Scan() || sOver.Text() != "oversized" {
 		t.Fatalf("unexpected scan result: %v", sOver.Text())
 	}
-	overPtr := sOver.bufPtr
+	overPtr := sOver.bufPtr.Load()
 	sOver.Close()
 
 	// Retrieve another buffer from pool. It should NOT be the oversized buffer.
 	sNext := NewAgentStreamScanner(strings.NewReader("test\n"))
-	if sNext.bufPtr == overPtr {
+	if sNext.bufPtr.Load() == overPtr {
 		t.Fatalf("oversized buffer was incorrectly returned to the pool")
 	}
 	sNext.Close()
@@ -175,4 +175,22 @@ func BenchmarkAgentStreamScanner_Parallel_Pooled(b *testing.B) {
 			s.Close()
 		}
 	})
+}
+
+func TestAgentStreamScanner_ConcurrentClose(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		s := NewAgentStreamScanner(strings.NewReader("x\n"))
+		var wg sync.WaitGroup
+		for g := 0; g < 16; g++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				s.Close()
+			}()
+		}
+		wg.Wait()
+		if s.bufPtr.Load() != nil {
+			t.Fatalf("expected bufPtr to be nil after concurrent Close()")
+		}
+	}
 }

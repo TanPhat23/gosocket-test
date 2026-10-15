@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"io"
 	"sync"
+	"sync/atomic"
 )
 
 const (
@@ -29,9 +30,8 @@ var streamBufferPool = sync.Pool{
 // AgentStreamScanner wraps bufio.Scanner and manages a pooled slice buffer.
 type AgentStreamScanner struct {
 	*bufio.Scanner
-	bufPtr *[]byte
-	closed bool
-	mu     sync.Mutex
+	// bufPtr holds the pooled buffer until Close swaps it out; a nil value means closed.
+	bufPtr atomic.Pointer[[]byte]
 }
 
 // NewAgentStreamScanner returns an AgentStreamScanner sized for high-throughput agent JSON streams.
@@ -40,30 +40,23 @@ func NewAgentStreamScanner(r io.Reader) *AgentStreamScanner {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(*bufPtr, AgentStreamMaxLineBytes)
 
-	return &AgentStreamScanner{
-		Scanner: scanner,
-		bufPtr:  bufPtr,
-	}
+	s := &AgentStreamScanner{Scanner: scanner}
+	s.bufPtr.Store(bufPtr)
+	return s
 }
 
 // Close releases the scanner's buffer back to streamBufferPool if within AgentStreamMaxPooledBufferBytes.
 // Close is thread-safe and idempotent.
 func (s *AgentStreamScanner) Close() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return
-	}
-	s.closed = true
-
-	if s.bufPtr == nil {
+	// Swap hands the pointer to exactly one caller, so concurrent Close calls
+	// cannot double-Put the buffer into the pool.
+	buf := s.bufPtr.Swap(nil)
+	if buf == nil {
 		return
 	}
 
-	if cap(*s.bufPtr) <= AgentStreamMaxPooledBufferBytes {
-		*s.bufPtr = (*s.bufPtr)[:0]
-		streamBufferPool.Put(s.bufPtr)
+	if cap(*buf) <= AgentStreamMaxPooledBufferBytes {
+		*buf = (*buf)[:0]
+		streamBufferPool.Put(buf)
 	}
-	s.bufPtr = nil
 }

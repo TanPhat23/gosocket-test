@@ -33,14 +33,6 @@ func parseTaskID(c fiber.Ctx) (string, error) {
 	return param.ID, nil
 }
 
-// currentUserID returns the authenticated user's ID, or "" when there is none (the service then fails closed).
-func currentUserID(c fiber.Ctx) string {
-	if user := CurrentUser(c); user != nil {
-		return user.ID
-	}
-	return ""
-}
-
 // isPassthroughTaskError reports errors that must keep their central HTTP mapping instead of a generic 400.
 func isPassthroughTaskError(err error) bool {
 	return errors.Is(err, common.ErrNotFound) ||
@@ -87,7 +79,7 @@ func (h *TaskHandlers) List(c fiber.Ctx) error {
 func (h *TaskHandlers) Get(c fiber.Ctx) error {
 	taskID, err := parseTaskID(c)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return badRequest(c, err)
 	}
 
 	userID := currentUserID(c)
@@ -108,9 +100,9 @@ func (h *TaskHandlers) Get(c fiber.Ctx) error {
 
 // Create handles POST /api/v1/tasks
 func (h *TaskHandlers) Create(c fiber.Ctx) error {
-	var req dto.CreateTaskRequest
-	if err := c.Bind().Body(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	req, err := bindBody[dto.CreateTaskRequest](c)
+	if err != nil {
+		return badRequest(c, err)
 	}
 
 	task, err := h.taskService.CreateTask(c.Context(), &req, currentUserID(c))
@@ -125,14 +117,10 @@ func (h *TaskHandlers) Create(c fiber.Ctx) error {
 func (h *TaskHandlers) Cancel(c fiber.Ctx) error {
 	taskID, err := parseTaskID(c)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return badRequest(c, err)
 	}
 
-	user := CurrentUser(c)
-	userID := ""
-	if user != nil {
-		userID = user.ID
-	}
+	userID := currentUserID(c)
 
 	if err := h.taskService.CancelTask(c.Context(), taskID, userID); err != nil {
 		return CentralErrorHandler(c, err)
@@ -145,7 +133,7 @@ func (h *TaskHandlers) Cancel(c fiber.Ctx) error {
 func (h *TaskHandlers) CreatePR(c fiber.Ctx) error {
 	taskID, err := parseTaskID(c)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return badRequest(c, err)
 	}
 
 	task, err := h.taskService.CreatePullRequestForTask(c.Context(), taskID, currentUserID(c))
@@ -153,7 +141,7 @@ func (h *TaskHandlers) CreatePR(c fiber.Ctx) error {
 		if isPassthroughTaskError(err) {
 			return CentralErrorHandler(c, err)
 		}
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return badRequest(c, err)
 	}
 
 	prURL := ""
@@ -171,21 +159,17 @@ func (h *TaskHandlers) CreatePR(c fiber.Ctx) error {
 func (h *TaskHandlers) SyncPR(c fiber.Ctx) error {
 	taskID, err := parseTaskID(c)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return badRequest(c, err)
 	}
 
-	user := CurrentUser(c)
-	userID := ""
-	if user != nil {
-		userID = user.ID
-	}
+	userID := currentUserID(c)
 
 	task, err := h.taskService.SyncTaskPRStatus(c.Context(), taskID, userID)
 	if err != nil {
 		if isPassthroughTaskError(err) {
 			return CentralErrorHandler(c, err)
 		}
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return badRequest(c, err)
 	}
 
 	return c.JSON(dto.ToTaskResponse(task))
@@ -196,14 +180,10 @@ func (h *TaskHandlers) SyncPR(c fiber.Ctx) error {
 func (h *TaskHandlers) GetSession(c fiber.Ctx) error {
 	taskID, err := parseTaskID(c)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return badRequest(c, err)
 	}
 
-	user := CurrentUser(c)
-	userID := ""
-	if user != nil {
-		userID = user.ID
-	}
+	userID := currentUserID(c)
 
 	sessionDTO, err := h.taskService.GetTaskSession(c.Context(), taskID, userID)
 	if err != nil {
@@ -218,19 +198,15 @@ func (h *TaskHandlers) GetSession(c fiber.Ctx) error {
 func (h *TaskHandlers) PromptSession(c fiber.Ctx) error {
 	taskID, err := parseTaskID(c)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return badRequest(c, err)
 	}
 
-	var req dto.TaskSessionPromptRequest
-	if err := c.Bind().Body(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	req, err := bindBody[dto.TaskSessionPromptRequest](c)
+	if err != nil {
+		return badRequest(c, err)
 	}
 
-	user := CurrentUser(c)
-	userID := ""
-	if user != nil {
-		userID = user.ID
-	}
+	userID := currentUserID(c)
 
 	if err := h.taskService.PromptTaskSession(c.Context(), taskID, userID, &req); err != nil {
 		return CentralErrorHandler(c, err)
@@ -244,14 +220,10 @@ func (h *TaskHandlers) PromptSession(c fiber.Ctx) error {
 func (h *TaskHandlers) CompactSession(c fiber.Ctx) error {
 	taskID, err := parseTaskID(c)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return badRequest(c, err)
 	}
 
-	user := CurrentUser(c)
-	userID := ""
-	if user != nil {
-		userID = user.ID
-	}
+	userID := currentUserID(c)
 
 	if err := h.taskService.CompactTaskSession(c.Context(), taskID, userID); err != nil {
 		return CentralErrorHandler(c, err)
@@ -264,17 +236,13 @@ func (h *TaskHandlers) CompactSession(c fiber.Ctx) error {
 func (h *TaskHandlers) GetDiff(c fiber.Ctx) error {
 	taskID, err := parseTaskID(c)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return badRequest(c, err)
 	}
 	if taskID == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "task id is required"})
 	}
 
-	user := CurrentUser(c)
-	userID := ""
-	if user != nil {
-		userID = user.ID
-	}
+	userID := currentUserID(c)
 
 	diff, err := h.taskService.GetTaskDiff(c.Context(), taskID, userID)
 	if err != nil {

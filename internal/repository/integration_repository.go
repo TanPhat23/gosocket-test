@@ -31,11 +31,7 @@ func (r *integrationRepo) Create(ctx context.Context, integ *models.ProjectInteg
 }
 
 func (r *integrationRepo) GetByID(ctx context.Context, id string) (*models.ProjectIntegration, error) {
-	integ, err := gorm.G[models.ProjectIntegration](r.db).Where("id = ?", id).First(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &integ, nil
+	return findFirst[models.ProjectIntegration](ctx, r.db, "id = ?", id)
 }
 
 func (r *integrationRepo) ListByProjectID(ctx context.Context, projectID string) ([]models.ProjectIntegration, error) {
@@ -46,13 +42,7 @@ func (r *integrationRepo) ListByProjectID(ctx context.Context, projectID string)
 }
 
 func (r *integrationRepo) GetActiveByProviderAndExternalID(ctx context.Context, provider models.IntegrationProvider, externalID string) (*models.ProjectIntegration, error) {
-	integ, err := gorm.G[models.ProjectIntegration](r.db).
-		Where("provider = ? AND external_id = ? AND enabled = ?", provider, externalID, true).
-		First(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &integ, nil
+	return findFirst[models.ProjectIntegration](ctx, r.db, "provider = ? AND external_id = ? AND enabled = ?", provider, externalID, true)
 }
 
 func (r *integrationRepo) Update(ctx context.Context, integ *models.ProjectIntegration) error {

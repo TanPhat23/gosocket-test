@@ -24,11 +24,7 @@ func NewTokenRepository(db *gorm.DB) TokenRepository {
 }
 
 func (r *tokenRepo) GetByHash(ctx context.Context, tokenHash string) (*models.APIToken, error) {
-	token, err := gorm.G[models.APIToken](r.db).Where("token_hash = ?", tokenHash).First(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &token, nil
+	return findFirst[models.APIToken](ctx, r.db, "token_hash = ?", tokenHash)
 }
 
 func (r *tokenRepo) UpdateLastUsed(ctx context.Context, tokenID string, lastUsed time.Time) error {

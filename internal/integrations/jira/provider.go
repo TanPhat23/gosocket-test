@@ -1,21 +1,18 @@
 package jira
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
-	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/integrations"
+	"agent-task-manager/internal/integrations/httpx"
 	"agent-task-manager/internal/models"
 )
 
@@ -103,7 +100,7 @@ func (p *Provider) resolveHost(integration *models.ProjectIntegration) (string, 
 
 	host := ""
 	if integration.Config != nil {
-		if h, ok := integration.Config["host"].(string); ok {
+		if h, ok := models.ConfigValue[string](integration.Config, "host"); ok {
 			host = h
 		}
 	}
@@ -128,7 +125,7 @@ func (p *Provider) resolveHost(integration *models.ProjectIntegration) (string, 
 func (p *Provider) buildAuthHeader(integration *models.ProjectIntegration, plainSecret string) string {
 	email := ""
 	if integration != nil && integration.Config != nil {
-		if e, ok := integration.Config["user_email"].(string); ok {
+		if e, ok := models.ConfigValue[string](integration.Config, "user_email"); ok {
 			email = e
 		}
 	}
@@ -142,33 +139,8 @@ func (p *Provider) buildAuthHeader(integration *models.ProjectIntegration, plain
 }
 
 func (p *Provider) doRequest(ctx context.Context, method, fullURL, authHeader string, body any) (*http.Response, error) {
-	var bodyReader io.Reader
-	if body != nil {
-		b, err := common.Marshal(body)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal request body: %w", err)
-		}
-		bodyReader = bytes.NewReader(b)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, method, fullURL, bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Accept", "application/json")
-	if authHeader != "" {
-		req.Header.Set("Authorization", authHeader)
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("jira api request failed: %w", err)
-	}
-	return resp, nil
+	headers := map[string]string{"Accept": "application/json", "Authorization": authHeader}
+	return httpx.Do(ctx, p.httpClient, method, fullURL, body, headers, "jira api")
 }
 
 type jiraIssueFieldStatus struct {
@@ -201,7 +173,7 @@ func (p *Provider) FetchIssues(ctx context.Context, integration *models.ProjectI
 
 	jql := ""
 	if integration.Config != nil {
-		if q, ok := integration.Config["jql"].(string); ok {
+		if q, ok := models.ConfigValue[string](integration.Config, "jql"); ok {
 			jql = q
 		}
 	}
@@ -222,14 +194,13 @@ func (p *Provider) FetchIssues(ctx context.Context, integration *models.ProjectI
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("jira search returned status %d: %s", resp.StatusCode, string(b))
+	if err := httpx.CheckSuccess(resp, "jira search returned status"); err != nil {
+		return nil, err
 	}
 
-	var searchResp jiraSearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
-		return nil, fmt.Errorf("failed to decode jira response: %w", err)
+	searchResp, err := httpx.DecodeJSON[jiraSearchResponse](resp.Body, "jira response")
+	if err != nil {
+		return nil, err
 	}
 
 	var issues []integrations.ExternalIssue
@@ -278,14 +249,13 @@ func (p *Provider) UpdateIssueStatus(ctx context.Context, integration *models.Pr
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("jira fetch transitions returned %d: %s", resp.StatusCode, string(b))
+	if err := httpx.CheckSuccess(resp, "jira fetch transitions returned"); err != nil {
+		return err
 	}
 
-	var transResp jiraTransitionsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&transResp); err != nil {
-		return fmt.Errorf("failed to decode transitions: %w", err)
+	transResp, err := httpx.DecodeJSON[jiraTransitionsResponse](resp.Body, "transitions")
+	if err != nil {
+		return err
 	}
 
 	var targetTransitionID string
@@ -315,9 +285,8 @@ func (p *Provider) UpdateIssueStatus(ctx context.Context, integration *models.Pr
 	}
 	defer postResp.Body.Close()
 
-	if postResp.StatusCode < 200 || postResp.StatusCode >= 300 {
-		b, _ := io.ReadAll(postResp.Body)
-		return fmt.Errorf("jira execute transition returned %d: %s", postResp.StatusCode, string(b))
+	if err := httpx.CheckSuccess(postResp, "jira execute transition returned"); err != nil {
+		return err
 	}
 
 	return nil
@@ -358,9 +327,8 @@ func (p *Provider) AddComment(ctx context.Context, integration *models.ProjectIn
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("jira add comment returned %d: %s", resp.StatusCode, string(b))
+	if err := httpx.CheckSuccess(resp, "jira add comment returned"); err != nil {
+		return err
 	}
 
 	return nil

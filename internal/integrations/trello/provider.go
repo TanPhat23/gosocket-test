@@ -5,16 +5,15 @@ import (
 	"crypto/hmac"
 	"crypto/sha1"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"agent-task-manager/internal/integrations"
+	"agent-task-manager/internal/integrations/httpx"
 	"agent-task-manager/internal/models"
 )
 
@@ -86,7 +85,7 @@ func (p *Provider) resolveAuth(integration *models.ProjectIntegration, plainSecr
 
 	apiKey = ""
 	if integration.Config != nil {
-		if k, ok := integration.Config["api_key"].(string); ok {
+		if k, ok := models.ConfigValue[string](integration.Config, "api_key"); ok {
 			apiKey = k
 		}
 	}
@@ -107,18 +106,8 @@ func (p *Provider) doRequest(ctx context.Context, method, endpoint string, query
 	if len(queryParams) > 0 {
 		reqURL += "?" + queryParams.Encode()
 	}
-
-	req, err := http.NewRequestWithContext(ctx, method, reqURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("trello api request failed: %w", err)
-	}
-	return resp, nil
+	headers := map[string]string{"Accept": "application/json"}
+	return httpx.Do(ctx, p.httpClient, method, reqURL, nil, headers, "trello api")
 }
 
 type trelloCard struct {
@@ -156,14 +145,13 @@ func (p *Provider) FetchIssues(ctx context.Context, integration *models.ProjectI
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("trello fetch cards returned status %d: %s", resp.StatusCode, string(b))
+	if err := httpx.CheckSuccess(resp, "trello fetch cards returned status"); err != nil {
+		return nil, err
 	}
 
-	var cards []trelloCard
-	if err := json.NewDecoder(resp.Body).Decode(&cards); err != nil {
-		return nil, fmt.Errorf("failed to decode cards: %w", err)
+	cards, err := httpx.DecodeJSON[[]trelloCard](resp.Body, "cards")
+	if err != nil {
+		return nil, err
 	}
 
 	var issues []integrations.ExternalIssue
@@ -197,7 +185,7 @@ func (p *Provider) UpdateIssueStatus(ctx context.Context, integration *models.Pr
 
 	targetListID := status
 	if integration.Config != nil {
-		if listsMap, ok := integration.Config["lists"].(map[string]any); ok {
+		if listsMap, ok := models.ConfigValue[map[string]any](integration.Config, "lists"); ok {
 			statusKey := strings.ToLower(status)
 			if id, ok := listsMap[statusKey].(string); ok && id != "" {
 				targetListID = id
@@ -217,9 +205,8 @@ func (p *Provider) UpdateIssueStatus(ctx context.Context, integration *models.Pr
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("trello update card list returned status %d: %s", resp.StatusCode, string(b))
+	if err := httpx.CheckSuccess(resp, "trello update card list returned status"); err != nil {
+		return err
 	}
 
 	return nil
@@ -244,9 +231,8 @@ func (p *Provider) AddComment(ctx context.Context, integration *models.ProjectIn
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("trello add comment returned status %d: %s", resp.StatusCode, string(b))
+	if err := httpx.CheckSuccess(resp, "trello add comment returned status"); err != nil {
+		return err
 	}
 
 	return nil
