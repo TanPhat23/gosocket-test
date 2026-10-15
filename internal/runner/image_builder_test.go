@@ -38,6 +38,14 @@ type mockDockerClientForBuilder struct {
 	// Mock ImageInspectWithRaw
 	imageInspectFunc  func(ctx context.Context, imageID string) (types.ImageInspect, []byte, error)
 	imageInspectCalls []string
+
+	// Mock ImagePull
+	imagePullFunc func(ctx context.Context, ref string, options image.PullOptions) (io.ReadCloser, error)
+	pullRefs      []string
+	pullOptions   []image.PullOptions
+
+	// callOrder records "pull:<ref>" and "build" in call order.
+	callOrder []string
 }
 
 func (m *mockDockerClientForBuilder) ContainerCreate(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *ocispec.Platform, containerName string) (container.CreateResponse, error) {
@@ -63,11 +71,34 @@ func (m *mockDockerClientForBuilder) ContainerInspect(ctx context.Context, conta
 }
 
 func (m *mockDockerClientForBuilder) ImagePull(ctx context.Context, refStr string, options image.PullOptions) (io.ReadCloser, error) {
-	return nil, nil
+	m.mu.Lock()
+	m.pullRefs = append(m.pullRefs, refStr)
+	m.pullOptions = append(m.pullOptions, options)
+	m.callOrder = append(m.callOrder, "pull:"+refStr)
+	fn := m.imagePullFunc
+	m.mu.Unlock() // never hold the mock lock while a (possibly blocking) pull func runs
+	if fn != nil {
+		return fn(ctx, refStr, options)
+	}
+	return streamBody(pullOKStream), nil
 }
+
+// pullOKStream is a successful pull stream: status and progress only, no aux.
+const pullOKStream = `{"status":"Pulling from library/x","id":"3.24"}` + "\n" +
+	`{"status":"Downloading","progressDetail":{"current":1,"total":2},"progress":"[=>  ]","id":"abc"}` + "\n" +
+	`{"status":"Digest: sha256:` + "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" + `"}` + "\n" +
+	`{"status":"Status: Downloaded newer image"}` + "\n"
+
+func (m *mockDockerClientForBuilder) pulls() ([]string, []image.PullOptions, []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.pullRefs...), append([]image.PullOptions(nil), m.pullOptions...), append([]string(nil), m.callOrder...)
+}
+
 func (m *mockDockerClientForBuilder) ImageBuild(ctx context.Context, buildContext io.Reader, options types.ImageBuildOptions) (types.ImageBuildResponse, error) {
 	m.mu.Lock()
 	m.imageBuildCalls = append(m.imageBuildCalls, options)
+	m.callOrder = append(m.callOrder, "build")
 	if buildContext != nil {
 		data, _ := io.ReadAll(buildContext)
 		m.buildTarPayloads = append(m.buildTarPayloads, data)
@@ -998,6 +1029,11 @@ func (s *strictDockerClient) fail(method string) {
 
 func (s *strictDockerClient) ImageList(ctx context.Context, o image.ListOptions) ([]image.Summary, error) {
 	s.fail("ImageList")
+	return nil, errors.New("unexpected docker call")
+}
+
+func (s *strictDockerClient) ImagePull(ctx context.Context, ref string, o image.PullOptions) (io.ReadCloser, error) {
+	s.fail("ImagePull")
 	return nil, errors.New("unexpected docker call")
 }
 

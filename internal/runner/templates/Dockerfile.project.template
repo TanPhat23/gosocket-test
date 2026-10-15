@@ -1,4 +1,4 @@
-FROM {{.BaseImageRef}}
+FROM {{requirePinnedRef .BaseImageRef}}
 
 # Base utilities and runtime dependencies required for tools and Alpine musl compatibility
 RUN apk add --no-cache \
@@ -18,7 +18,7 @@ RUN apk add --no-cache \
     zlib
 
 # Multi-stage copy pinned OpenCode binary
-COPY --from=ghcr.io/anomalyco/opencode:2.0.26@{{.OpenCodeDigest}} /usr/local/bin/opencode /usr/local/bin/opencode
+COPY --from={{requirePinnedRef .OpenCodeImageRef}} /usr/local/bin/opencode /usr/local/bin/opencode
 
 # Unprivileged user and workspace directory
 RUN addgroup -g 1000 opencode && \

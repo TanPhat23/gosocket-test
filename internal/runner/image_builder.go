@@ -72,12 +72,13 @@ func newRuntimeImageBuilder(dockerCli sandbox.DockerClient, catalog RuntimeCatal
 	}
 }
 
-// TemplateData passed to Dockerfile.project.template
+// TemplateData passed to Dockerfile.project.template. OpenCodeImageRef is always built by
+// openCodeImageRef, the same function that names the image pulled before the build.
 type TemplateData struct {
-	Platform       string
-	BaseImageRef   string
-	OpenCodeDigest string
-	Toolchains     []RuntimeCatalogEntry
+	Platform         string
+	BaseImageRef     string
+	OpenCodeImageRef string
+	Toolchains       []RuntimeCatalogEntry
 }
 
 // Image label keys and value. The scheme label value is the short literal "v3". It names the
@@ -113,6 +114,8 @@ func (b *runtimeImageBuilder) BuildOrGetImage(ctx context.Context, profile *Reso
 	if err != nil {
 		return "", fmt.Errorf("failed to compute cache tag: %w", err)
 	}
+	// The exact images the rendered Dockerfile references; pulled only on a cache miss.
+	pullRefs := []string{profile.BaseImageRef, openCodeImageRef(profile.OpenCodeDigest)}
 
 	b.mu.Lock()
 	if flight, exists := b.inFlight[tag]; exists {
@@ -136,7 +139,7 @@ func (b *runtimeImageBuilder) BuildOrGetImage(ctx context.Context, profile *Reso
 	go func() {
 		defer close(flight.doneCh)
 		defer buildCancel() // release the timeout timer on every exit path
-		resTag, resErr := b.resolveImage(buildCtx, dockerfileBytes, tag)
+		resTag, resErr := b.resolveImage(buildCtx, dockerfileBytes, tag, pullRefs)
 		if resErr != nil && buildCtx.Err() != nil {
 			// Surface why the attempt was aborted (timeout or cancellation).
 			resErr = fmt.Errorf("%w: %w", resErr, buildCtx.Err())
@@ -155,8 +158,8 @@ func (b *runtimeImageBuilder) BuildOrGetImage(ctx context.Context, profile *Reso
 }
 
 // resolveImage runs inside a flight, with no builder lock held. A cache hit is verified and
-// never rebuilt or retagged over; an absent tag is built.
-func (b *runtimeImageBuilder) resolveImage(ctx context.Context, dockerfileBytes []byte, tag string) (string, error) {
+// never rebuilt or retagged over; an absent tag is built after its pinned images are pulled.
+func (b *runtimeImageBuilder) resolveImage(ctx context.Context, dockerfileBytes []byte, tag string, pullRefs []string) (string, error) {
 	listFilters := filters.NewArgs(filters.Arg("reference", tag))
 	images, err := b.dockerCli.ImageList(ctx, image.ListOptions{Filters: listFilters})
 	if err != nil {
@@ -169,7 +172,7 @@ func (b *runtimeImageBuilder) resolveImage(ctx context.Context, dockerfileBytes 
 			}
 		}
 	}
-	return b.executeBuild(ctx, dockerfileBytes, tag)
+	return b.executeBuild(ctx, dockerfileBytes, tag, pullRefs)
 }
 
 // verifyCachedImage fails closed with ErrImageIdentityMismatch unless the image carrying tag
@@ -235,14 +238,20 @@ func (b *runtimeImageBuilder) renderDockerfile(verifiedTemplate []byte, profile 
 	}
 
 	return executeTemplate(verifiedTemplate, TemplateData{
-		Platform:       profile.Platform,
-		BaseImageRef:   profile.BaseImageRef,
-		OpenCodeDigest: profile.OpenCodeDigest,
-		Toolchains:     toolchains,
+		Platform:         profile.Platform,
+		BaseImageRef:     profile.BaseImageRef,
+		OpenCodeImageRef: openCodeImageRef(profile.OpenCodeDigest),
+		Toolchains:       toolchains,
 	})
 }
 
-func (b *runtimeImageBuilder) executeBuild(ctx context.Context, dockerfileBytes []byte, tag string) (string, error) {
+func (b *runtimeImageBuilder) executeBuild(ctx context.Context, dockerfileBytes []byte, tag string, pullRefs []string) (string, error) {
+	// BuildKit via the plain Engine API has no client session to resolve remote FROM/COPY
+	// --from refs, so the digest-pinned images must already be local. A pull failure is final.
+	if err := pullPinnedImages(ctx, b.dockerCli, pullRefs); err != nil {
+		return "", err
+	}
+
 	// Create tar archive in memory containing Dockerfile
 	tarBuf := new(bytes.Buffer)
 	tw := tar.NewWriter(tarBuf)

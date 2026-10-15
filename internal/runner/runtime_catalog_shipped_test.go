@@ -278,7 +278,7 @@ func TestRender_FailsClosedOnUnknownInstallLayout(t *testing.T) {
 		e := pfValidEntry()
 		e.InstallLayout = bad
 		_, err := executeTemplate(embeddedTemplate, TemplateData{
-			BaseImageRef: pfBase, OpenCodeDigest: pfOpenCode, Toolchains: []RuntimeCatalogEntry{e},
+			BaseImageRef: pfBase, OpenCodeImageRef: openCodeImageRef(pfOpenCode), Toolchains: []RuntimeCatalogEntry{e},
 		})
 		if err == nil {
 			t.Fatalf("render with layout %q should fail", bad)

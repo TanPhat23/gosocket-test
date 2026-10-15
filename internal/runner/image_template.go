@@ -20,7 +20,7 @@ var embeddedTemplate []byte
 // ExpectedTemplateSHA256 is the pinned SHA-256 of templates/Dockerfile.project.template.
 // Update it deliberately, in the same reviewed change as any template edit; the golden test
 // in image_template_test.go pins the same value.
-const ExpectedTemplateSHA256 = "40249046289f1077befefa10716ffa8e744f4b16e253de22905e02196c2efb15"
+const ExpectedTemplateSHA256 = "d0d3a432020c728c68071be8594d3397abdd5998aebaa7967d5fe3055f6721c8"
 
 // loadVerifiedTemplate returns raw only if it hashes to expectedSHA. It never parses raw.
 func loadVerifiedTemplate(raw []byte, expectedSHA string) ([]byte, error) {
@@ -66,7 +66,7 @@ func requireInstallLayout(s string) (string, error) {
 func newDockerfileTemplate(verified []byte) (*template.Template, error) {
 	return template.New("dockerfile").
 		Option("missingkey=error").
-		Funcs(template.FuncMap{"requireSHA256": requireSHA256, "tarFlag": tarFlag, "requireInstallLayout": requireInstallLayout}).
+		Funcs(template.FuncMap{"requireSHA256": requireSHA256, "tarFlag": tarFlag, "requireInstallLayout": requireInstallLayout, "requirePinnedRef": requirePinnedRef}).
 		Parse(string(verified))
 }
 

@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"time"
 
 	"agent-task-manager/internal/sandbox"
@@ -94,4 +95,9 @@ func SetBuildLogfForTest(f func(format string, args ...any)) (restore func()) {
 	old := buildLogf
 	buildLogf = f
 	return func() { buildLogf = old }
+}
+
+// PullPinnedImageForTest exposes the single-ref pre-build pull.
+func PullPinnedImageForTest(ctx context.Context, cli sandbox.DockerClient, ref string) error {
+	return pullPinnedImage(ctx, cli, ref)
 }

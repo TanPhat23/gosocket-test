@@ -12,7 +12,7 @@ import (
 // goldenTemplateSHA256 is derived independently with `sha256sum` of
 // templates/Dockerfile.project.template. Update it deliberately, in the same reviewed change
 // as any template edit. It must equal ExpectedTemplateSHA256.
-const goldenTemplateSHA256 = "40249046289f1077befefa10716ffa8e744f4b16e253de22905e02196c2efb15"
+const goldenTemplateSHA256 = "d0d3a432020c728c68071be8594d3397abdd5998aebaa7967d5fe3055f6721c8"
 
 func tplFixtureCatalog() *pfCatalog {
 	mk := func(rt, ver, ext, format string) RuntimeCatalogEntry {
@@ -181,7 +181,7 @@ func TestRender_FailsClosedOnInvalidSHA(t *testing.T) {
 		entry := pfValidEntry()
 		entry.SHA256 = bad
 		_, err := executeTemplate(embeddedTemplate, TemplateData{
-			BaseImageRef: pfBase, OpenCodeDigest: pfOpenCode, Toolchains: []RuntimeCatalogEntry{entry},
+			BaseImageRef: pfBase, OpenCodeImageRef: openCodeImageRef(pfOpenCode), Toolchains: []RuntimeCatalogEntry{entry},
 		})
 		if err == nil {
 			t.Fatalf("template execution with sha %q should fail", bad)
@@ -242,7 +242,7 @@ func TestRender_EntryWithoutURLStillRendersMandatoryBlock(t *testing.T) {
 	entry := pfValidEntry()
 	entry.ArchiveURL = ""
 	out, err := executeTemplate(embeddedTemplate, TemplateData{
-		BaseImageRef: pfBase, OpenCodeDigest: pfOpenCode, Toolchains: []RuntimeCatalogEntry{entry},
+		BaseImageRef: pfBase, OpenCodeImageRef: openCodeImageRef(pfOpenCode), Toolchains: []RuntimeCatalogEntry{entry},
 	})
 	if err != nil {
 		t.Fatalf("render: %v", err)
@@ -257,5 +257,38 @@ func TestRender_UncatalogedRuntimeFailsClosed(t *testing.T) {
 	_, err := b.renderDockerfile(embeddedTemplate, tplProfile(map[string]string{"ruby": "3.3.0"}))
 	if err == nil {
 		t.Fatalf("uncataloged runtime must fail closed")
+	}
+}
+
+func TestRender_OpenCodeRefComesFromPinnedConstant(t *testing.T) {
+	out := renderFixture(t, map[string]string{"go": "1.27.2"})
+	want := "COPY --from=" + openCodeImageRef(pfOpenCode) + " "
+	if strings.Count(out, "COPY --from=") != 1 || !strings.Contains(out, want) {
+		t.Fatalf("rendered Dockerfile lacks %q:\n%s", want, out)
+	}
+	if openCodeImageRef(pfOpenCode) != "ghcr.io/anomalyco/opencode:2.0.26@"+pfOpenCode {
+		t.Fatalf("openCodeImageRef = %q", openCodeImageRef(pfOpenCode))
+	}
+}
+
+func TestRender_FailsClosedOnUnpinnedImageRefs(t *testing.T) {
+	good := TemplateData{BaseImageRef: pfBase, OpenCodeImageRef: openCodeImageRef(pfOpenCode), Toolchains: []RuntimeCatalogEntry{pfValidEntry()}}
+	if _, err := executeTemplate(embeddedTemplate, good); err != nil {
+		t.Fatalf("valid data must render: %v", err)
+	}
+	for name, mut := range map[string]func(*TemplateData){
+		"empty opencode ref":    func(d *TemplateData) { d.OpenCodeImageRef = "" },
+		"unpinned opencode ref": func(d *TemplateData) { d.OpenCodeImageRef = "ghcr.io/anomalyco/opencode:2.0.26" },
+		"injected opencode ref": func(d *TemplateData) { d.OpenCodeImageRef = openCodeImageRef(pfOpenCode) + "\nRUN evil" },
+		"empty base ref":        func(d *TemplateData) { d.BaseImageRef = "" },
+		"unpinned base ref":     func(d *TemplateData) { d.BaseImageRef = "alpine:3.24" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := good
+			mut(&d)
+			if out, err := executeTemplate(embeddedTemplate, d); err == nil {
+				t.Fatalf("render must fail closed:\n%s", out)
+			}
+		})
 	}
 }
