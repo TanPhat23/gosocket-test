@@ -52,7 +52,6 @@ type Config struct {
 	OpenCodeBinPath   string
 	OpenCodeHomePath  string
 	OpenCodeConfigDir string
-	OpenCodeDataDir   string
 }
 
 // Load loads the configuration from environment variables with sensible defaults.
@@ -83,7 +82,6 @@ func Load() (*Config, error) {
 		OpenCodeBinPath:                 getEnv("OPENCODE_BIN_PATH", "/home/ghug/.opencode/bin/opencode"),
 		OpenCodeHomePath:                getEnv("OPENCODE_HOME_PATH", "/home/ghug/.opencode"),
 		OpenCodeConfigDir:               getEnv("OPENCODE_CONFIG_DIR", "/home/ghug/.config/opencode"),
-		OpenCodeDataDir:                 getEnv("OPENCODE_DATA_DIR", "/home/ghug/.local/share/opencode"),
 	}
 
 	if cfg.OpenCodePassword == "" {

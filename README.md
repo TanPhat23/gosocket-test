@@ -171,8 +171,7 @@ The control plane is configured via environment variables defined in `.env` or p
 | `OPENCODE_PASSWORD` | *(empty)* | Authentication token/password for the OpenCode server API. |
 | `OPENCODE_BIN_PATH` | `/home/ghug/.opencode/bin/opencode` | Path to the local `opencode` binary executable. |
 | `OPENCODE_HOME_PATH` | `/home/ghug/.opencode` | Host path mapped to agent sandbox container `/root/.opencode`. |
-| `OPENCODE_CONFIG_DIR`| `/home/ghug/.config/opencode` | Host path mapped to agent sandbox container `/root/.config/opencode`. |
-| `OPENCODE_DATA_DIR`  | `/home/ghug/.local/share/opencode` | Host path mapped to agent sandbox container `/root/.local/share/opencode`. |
+| `OPENCODE_CONFIG_DIR`| `/home/ghug/.config/opencode` | Host OpenCode config dir (read for `service.json`); no longer mounted into task containers. |
 | `OIDC_ISSUER_URL` | `http://localhost/dex` | Public OIDC issuer URL for browser authentication redirects. |
 | `OIDC_INTERNAL_ISSUER_URL` | `http://dex:5556/dex` | Internal OIDC issuer URL reachable by the backend container. |
 | `OIDC_CLIENT_ID` | `agent-control-plane` | Registered OIDC client ID. |

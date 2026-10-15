@@ -29,7 +29,7 @@
 
 ## Stage 1: remaining no-blocker hardening
 
-1. ~~Remove `OpenCodeConfigDir` / `OpenCodeDataDir`~~ NOT dead: `config.go` still reads `service.json` from `OpenCodeConfigDir`, and `config.go` has other sessions' uncommitted edits. `OpenCodeDataDir` is now unused by the runner; remove it once config.go is clean.
+1. DONE: removed unused `OpenCodeDataDir` / `OPENCODE_DATA_DIR`. `OpenCodeConfigDir` stays: `config.go` reads `service.json` from it.
 2. DONE: static guard `TestCredentialNamesOnlyInReviewedPlaces` (AST scan of `internal/runner` and `internal/sandbox`; new credential-name literals need a reviewed allowlist entry).
 3. DONE: `TestProjectPassword_NeverLoggedOrSerialized` (log and build-log sinks, JSON of the route handle).
 4. DONE: `TestProjectPassword_UniqueAndDiscardedOnStop`.
