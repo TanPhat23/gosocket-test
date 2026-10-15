@@ -20,6 +20,9 @@ import (
 	"agent-task-manager/internal/sandbox"
 )
 
+// opencodeUID is the unprivileged user the project container runs OpenCode as.
+const opencodeUID = 1000
+
 // ErrQuarantineActive is returned by EnsureProjectContainer while project container
 // provisioning is disabled. It wraps common.ErrRuntimeQuarantined.
 var ErrQuarantineActive = fmt.Errorf("%w", common.ErrRuntimeQuarantined)
@@ -207,8 +210,12 @@ func (m *projectSandboxManager) ensureProjectContainerDisabledDraft(ctx context.
 	tw := tar.NewWriter(tarBuf)
 	secretContent := []byte(opencodePassword)
 	hdr := &tar.Header{
-		Name:    "opencode",
-		Mode:    0600,
+		Name: "opencode",
+		// Owned by the unprivileged container user (opencode, 1000:1000); a root-owned file would be
+		// unreadable once the container drops privileges.
+		Uid:     opencodeUID,
+		Gid:     opencodeUID,
+		Mode:    0400,
 		Size:    int64(len(secretContent)),
 		ModTime: time.Now(),
 	}
