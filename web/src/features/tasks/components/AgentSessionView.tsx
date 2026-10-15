@@ -722,7 +722,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
                     Agent Execution Service Unavailable
                   </h4>
                   <p className="text-xs text-muted-foreground">
-                    The OpenCode daemon server is currently offline or unreachable (503). Ensure the background runner is initialized.
+                    Task execution is temporarily disabled by the server (503), so this task cannot run or be steered right now. An operator must re-enable the runtime.
                   </p>
                 </div>
                 <Button
