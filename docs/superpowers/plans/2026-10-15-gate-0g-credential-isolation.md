@@ -88,3 +88,18 @@ Fix: `deliverSecret` execs `sh -c "umask 077 && cat > /run/secrets/opencode.tmp 
 Status: Gate 0G remains blocked and unqualified. B1 (host operator or Gate 0D must allow only `sandbox bridge -> gateway:8082`) is the only open blocker for Stage 3 wiring. The Phase 1A quarantine is unchanged.
 
 Update: `internal/gateway.ServiceFromEnv` (env config, listener, firewall attestation guard) is committed but not wired into `cmd/server`. Remaining Stage 3: server wiring, per-attempt token minting and revocation, sandbox base-URL delivery. All wait on B1.
+
+## B1 decision update (user, 2026-10-15): firewall optional via explicit opt-out
+
+The user runs the host, so they are the host operator for B1, and chose not to require the firewall setup to use the gateway.
+
+| Item | Decision |
+|---|---|
+| Default | Unchanged and safe: the gateway refuses to start without `ATM_GATEWAY_FIREWALL_ATTESTATION=sandbox-bridge-to-gateway-only`. |
+| Opt-out | A deliberate `ATM_GATEWAY_ALLOW_UNRESTRICTED_NETWORK=true` lets it start without the attestation, logs a loud warning at startup, and is **refused in production mode**. **Not implemented yet**; the production-mode check needs the `AppEnv` value from `internal/config`, read-only. |
+| Risk accepted | A compromised sandbox may reach other host services and other projects' sandboxes, and capability tokens cross the link in cleartext (B4). Tolerable only where the host holds nothing sensitive. |
+| Gate 0G | Stays **BLOCKED / UNQUALIFIED**. The spec requires the restricted route (SEC-0G-03), so running with the opt-out never qualifies the gate. |
+| Quarantine | Phase 1A unchanged. Lifting it needs gates 0C, 0D, 0G, 0F and a separate explicit user decision. |
+| ATM and firewall rules | Unchanged: ATM does not modify firewall rules or receive `NET_ADMIN`. The opt-out removes a startup check only. |
+
+B1 is therefore no longer a blocker for *using* the gateway in development, but it still blocks gate qualification. The operator handoff doc stays valid for anyone who later wants the restricted route.
