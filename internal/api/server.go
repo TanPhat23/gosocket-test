@@ -13,18 +13,18 @@ import (
 
 // Server encapsulates the Fiber application and dependencies.
 type Server struct {
-	App               *fiber.App
-	Config            *config.Config
-	SessionManager    *auth.SessionManager
+	App                *fiber.App
+	Config             *config.Config
+	SessionManager     *auth.SessionManager
 	AuthService        service.AuthService
 	CredentialService  service.CredentialService
 	WebhookService     service.WebhookService
 	TaskService        service.TaskService
 	IntegrationService service.IntegrationService
 	TeamRepo           repository.TeamRepository
-	ProjectRepo       repository.ProjectRepository
-	WSHandler         *WSHandler
-	OpenCodeClient    runner.OpenCodeClient
+	ProjectRepo        repository.ProjectRepository
+	WSHandler          *WSHandler
+	OpenCodeClient     runner.OpenCodeClient
 }
 
 // ServerOptions allows optional configuration or dependencies when constructing Server.
@@ -136,7 +136,7 @@ func (s *Server) setupRoutes() {
 
 	// Model discovery endpoint
 	modelHandlers := NewModelHandlers(s.Config)
-	v1.Get("/models", modelHandlers.ListModels)
+	v1.Get("/models", RequireAuth(s.AuthService, s.SessionManager), modelHandlers.ListModels)
 
 	// Task routes
 	if s.TaskService != nil {
@@ -160,32 +160,40 @@ func (s *Server) setupRoutes() {
 
 	// Team & Project routes
 	if s.TeamRepo != nil || s.ProjectRepo != nil {
-		teamHandlers := NewTeamHandlers(s.TeamRepo, s.ProjectRepo)
+		// Listing is filtered to the caller's teams; project creation requires RoleAdmin on the target
+		// team (checked in the handler because team_id is in the body); deletion requires RoleAdmin on
+		// the project's team.
+		teamHandlers := NewTeamHandlers(s.TeamRepo, s.ProjectRepo, s.AuthService)
 		if s.TeamRepo != nil {
-			v1.Get("/teams", teamHandlers.ListTeams)
+			v1.Get("/teams", RequireAuth(s.AuthService, s.SessionManager), teamHandlers.ListTeams)
 		}
 		if s.ProjectRepo != nil {
-			v1.Get("/projects", teamHandlers.ListProjects)
-			v1.Post("/projects", teamHandlers.CreateProject)
-			v1.Delete("/projects/:id", teamHandlers.DeleteProject)
+			v1.Get("/projects", RequireAuth(s.AuthService, s.SessionManager), teamHandlers.ListProjects)
+			v1.Post("/projects", RequireAuth(s.AuthService, s.SessionManager), teamHandlers.CreateProject)
+			v1.Delete("/projects/:id", RequireAuth(s.AuthService, s.SessionManager),
+				RequireProjectRole(s.AuthService, s.ProjectRepo, "id", models.RoleAdmin), teamHandlers.DeleteProject)
 		}
 	}
 
-	// WebSocket routes: live events & terminal logs
+	// WebSocket routes: live events & terminal logs. Browsers send the atm_session cookie on the
+	// handshake; the handlers additionally enforce same-origin and per-task authorization.
 	if s.WSHandler != nil {
-		v1.Get("/ws/events", s.WSHandler.HandleEventsWS)
-		v1.Get("/ws/terminal/:task_id", s.WSHandler.HandleTerminalWS)
+		v1.Get("/ws/events", RequireAuth(s.AuthService, s.SessionManager), s.WSHandler.HandleEventsWS)
+		v1.Get("/ws/terminal/:task_id", RequireAuth(s.AuthService, s.SessionManager), s.WSHandler.HandleTerminalWS)
 	}
 
-	// Project integrations routes
+	// Project integrations routes: reads require RoleViewer, writes RoleAdmin on the project's team.
+	// The service rejects integration IDs that do not belong to :project_id.
 	if s.IntegrationService != nil {
 		integHandlers := NewIntegrationHandlers(s.IntegrationService)
-		projIntegGroup := v1.Group("/projects/:project_id/integrations")
-		projIntegGroup.Get("", integHandlers.List)
-		projIntegGroup.Post("", integHandlers.Create)
-		projIntegGroup.Get("/:id", integHandlers.Get)
-		projIntegGroup.Patch("/:id", integHandlers.Update)
-		projIntegGroup.Delete("/:id", integHandlers.Delete)
+		integRead := RequireProjectRole(s.AuthService, s.ProjectRepo, "project_id", models.RoleViewer)
+		integWrite := RequireProjectRole(s.AuthService, s.ProjectRepo, "project_id", models.RoleAdmin)
+		projIntegGroup := v1.Group("/projects/:project_id/integrations", RequireAuth(s.AuthService, s.SessionManager))
+		projIntegGroup.Get("", integRead, integHandlers.List)
+		projIntegGroup.Post("", integWrite, integHandlers.Create)
+		projIntegGroup.Get("/:id", integRead, integHandlers.Get)
+		projIntegGroup.Patch("/:id", integWrite, integHandlers.Update)
+		projIntegGroup.Delete("/:id", integWrite, integHandlers.Delete)
 	}
 
 	// Team credential routes protected by RequireAuth and RequireTeamRole(owner)

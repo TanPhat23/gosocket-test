@@ -5,10 +5,13 @@ import (
 	"strings"
 
 	"agent-task-manager/internal/auth"
+	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/models"
+	"agent-task-manager/internal/repository"
 	"agent-task-manager/internal/service"
 
 	"github.com/gofiber/fiber/v3"
+	"gorm.io/gorm"
 )
 
 const (
@@ -155,6 +158,65 @@ func RequireTeamRole(authService service.AuthService, minRole models.TeamRole) f
 
 		c.Locals(LocalsTeamRoleKey, actualRole)
 		c.Locals(LocalsTeamIDKey, teamID)
+
+		return c.Next()
+	}
+}
+
+// RequireProjectRole enforces team-level RBAC for routes addressed by a project ID path parameter.
+// It resolves the project's owning team and checks the authenticated user's role against minRole.
+// An unknown project yields the same 403 as non-membership so project existence is not disclosed,
+// matching the task service's project authorization.
+func RequireProjectRole(authService service.AuthService, projectRepo repository.ProjectRepository, param string, minRole models.TeamRole) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		user := CurrentUser(c)
+		if user == nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "Unauthorized",
+			})
+		}
+		if projectRepo == nil {
+			return CentralErrorHandler(c, common.ErrServiceUnavailable)
+		}
+
+		projectID := c.Params(param)
+		if projectID == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "Missing project id parameter",
+			})
+		}
+
+		project, err := projectRepo.GetByID(c.Context(), projectID)
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, common.ErrNotFound) {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+					"error": "Access denied: you are not a member of this team",
+				})
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "Database error checking project permissions",
+			})
+		}
+
+		actualRole, err := authService.AuthorizeTeamRole(c.Context(), project.TeamID, user.ID, minRole)
+		if err != nil {
+			if errors.Is(err, service.ErrNotTeamMember) {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+					"error": "Access denied: you are not a member of this team",
+				})
+			}
+			if errors.Is(err, service.ErrForbidden) {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+					"error": "Forbidden: insufficient team role permissions",
+				})
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "Database error checking team permissions",
+			})
+		}
+
+		c.Locals(LocalsTeamRoleKey, actualRole)
+		c.Locals(LocalsTeamIDKey, project.TeamID)
 
 		return c.Next()
 	}

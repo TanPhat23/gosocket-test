@@ -236,6 +236,7 @@ func TestTaskAndTeamHandlers(t *testing.T) {
 
 	t.Run("GET /api/v1/teams", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/teams", nil)
+		req.AddCookie(adminCookie)
 		resp, err := server.App.Test(req)
 		if err != nil {
 			t.Fatalf("GET /api/v1/teams failed: %v", err)
@@ -258,6 +259,7 @@ func TestTaskAndTeamHandlers(t *testing.T) {
 
 	t.Run("GET /api/v1/projects", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/projects?team_id="+teamID, nil)
+		req.AddCookie(adminCookie)
 		resp, err := server.App.Test(req)
 		if err != nil {
 			t.Fatalf("GET /api/v1/projects failed: %v", err)
@@ -536,6 +538,7 @@ func TestTaskAndTeamHandlers(t *testing.T) {
 
 	t.Run("GET /api/v1/ws/terminal/:task_id - non-websocket returns 400", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/ws/terminal/"+createdTaskID, nil)
+		req.AddCookie(adminCookie)
 		resp, err := server.App.Test(req)
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
