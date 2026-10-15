@@ -35,7 +35,7 @@
 | B2 | Provider key comes from server env/secret via `Config.Key`, read per request (rotation without restart). No DB key store. | Closed for v1. |
 | B3 | Per-attempt request count + token ceiling; no pricing table. Reservation is `len(body) + clamped max_tokens`, never refunded. | Closed for v1. Not a dollar cap; over-counts rather than under-counts. |
 | B4 | Plain HTTP on the dedicated sandbox bridge (deviates from spec §5/PROBE-18, which require TLS). | Accepted risk: capability tokens cross the bridge in cleartext. Only safe if B1 keeps the route narrow (sandbox bridge -> gateway only). Upstream (gateway -> provider) is https-only and enforced in `NewHandler`. |
-| B1 | Still open: host operator / Gate 0D must allow only `sandbox bridge -> gateway:8082`. ATM must not touch firewall rules. | **Blocks Stage 3 and any gate qualification.** |
+| B1 | Still open: host operator / Gate 0D must allow only `sandbox bridge -> gateway:8082`. ATM must not touch firewall rules. Operator handoff (topology, example rule, 5-point verification, env table): `2026-10-15-gate-0g-operator-firewall-handoff.md`. | **Blocks enabling the gateway and any gate qualification.** The gateway code now ships disabled and refuses to start without the operator's attestation (`internal/gateway/serve.go`). |
 | B5 | Still open: needs a live probe of OpenCode 2.0.26 (custom `baseURL`, SSE, `serve --hostname 0.0.0.0`, tmpfs `CopyToContainer`) in a disposable VM with Docker. | **Blocks Stage 3.** |
 
 ## Stage 1: remaining no-blocker hardening
@@ -86,3 +86,5 @@ Commit `4e29ca5` delivered the password with `docker cp`. Live probe: it fails w
 Fix: `deliverSecret` execs `sh -c "umask 077 && cat > /run/secrets/opencode.tmp && mv … /run/secrets/opencode"` as `1000:1000` with the password on stdin (never argv/env/inspect); the rename is atomic. Verified live with read-only rootfs and `cap-drop ALL`. Delivery follows start and failure rolls the container back; the exec-after-start race is covered by the entrypoint's 30s wait. Unit tests and 9 mutants (no-mv, no-umask, wrong user, no stdin, no CloseWrite, skipped exit check, password in Cmd, deliver-before-start, no rollback) pin the contract. `CopyToContainer` is no longer used by the runner but remains on the `DockerClient` interface.
 
 Status: Gate 0G remains blocked and unqualified. B1 (host operator or Gate 0D must allow only `sandbox bridge -> gateway:8082`) is the only open blocker for Stage 3 wiring. The Phase 1A quarantine is unchanged.
+
+Update: `internal/gateway.ServiceFromEnv` (env config, listener, firewall attestation guard) is committed but not wired into `cmd/server`. Remaining Stage 3: server wiring, per-attempt token minting and revocation, sandbox base-URL delivery. All wait on B1.
