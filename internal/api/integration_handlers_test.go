@@ -194,3 +194,20 @@ func TestIntegrationHandlers_CRUD(t *testing.T) {
 		t.Fatalf("expected 404 on get after delete, got %d", resp.StatusCode)
 	}
 }
+
+func TestIntegrationHandlers_InvalidWebhookCallbackURL(t *testing.T) {
+	app, _ := setupIntegrationApp(t)
+	projID := "11111111-1111-1111-1111-111111111111"
+	body, _ := json.Marshal(dto.CreateIntegrationRequest{
+		CredentialID:       "22222222-2222-2222-2222-222222222222",
+		Provider:           "github",
+		Repo:               "octocat/spoon-knife",
+		WebhookCallbackURL: "javascript:alert(1)",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+projID+"/integrations", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil || resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid callback url, got %d (err: %v)", resp.StatusCode, err)
+	}
+}

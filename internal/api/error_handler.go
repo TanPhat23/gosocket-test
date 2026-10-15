@@ -37,6 +37,7 @@ func CentralErrorHandler(c fiber.Ctx, err error) error {
 			errors.Is(err, service.ErrMissingDeliveryID),
 			errors.Is(err, service.ErrInvalidRepoSlug),
 			errors.Is(err, service.ErrInvalidBaseBranch),
+			errors.Is(err, service.ErrInvalidWebhookCallbackURL),
 			errors.Is(err, service.ErrInvalidProvider),
 			errors.Is(err, service.ErrInvalidState),
 			errors.Is(err, service.ErrStateMismatch):
