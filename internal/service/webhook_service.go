@@ -12,6 +12,7 @@ import (
 	"agent-task-manager/internal/dto"
 	"agent-task-manager/internal/integrations"
 	"agent-task-manager/internal/integrations/github"
+	"agent-task-manager/internal/integrations/trello"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/queue"
 	"agent-task-manager/internal/repository"
@@ -29,8 +30,8 @@ var (
 // WebhookService encapsulates external webhook verification, idempotency, and task creation.
 type WebhookService interface {
 	HandleGitHubWebhook(ctx context.Context, payload []byte, deliveryID, signature string) (*dto.WebhookResultDTO, error)
-	HandleJiraWebhook(ctx context.Context, payload []byte, eventID string) (*dto.WebhookResultDTO, error)
-	HandleTrelloWebhook(ctx context.Context, payload []byte, isHead bool) (*dto.WebhookResultDTO, error)
+	HandleJiraWebhook(ctx context.Context, payload []byte, eventID, signature string) (*dto.WebhookResultDTO, error)
+	HandleTrelloWebhook(ctx context.Context, payload []byte, isHead bool, signature string) (*dto.WebhookResultDTO, error)
 }
 
 type webhookService struct {
@@ -471,7 +472,7 @@ func (s *webhookService) findTaskByPRURL(ctx context.Context, projectID, prURL s
 	return nil
 }
 
-func (s *webhookService) HandleJiraWebhook(ctx context.Context, payload []byte, eventID string) (*dto.WebhookResultDTO, error) {
+func (s *webhookService) HandleJiraWebhook(ctx context.Context, payload []byte, eventID, signature string) (*dto.WebhookResultDTO, error) {
 	if eventID == "" {
 		eventID = uuid.NewString()
 	}
@@ -499,6 +500,12 @@ func (s *webhookService) HandleJiraWebhook(ctx context.Context, payload []byte, 
 		}, nil
 	}
 
+	// Authenticate against the integration's shared secret BEFORE any idempotency write. Fail closed
+	// when no secret is configured.
+	if !github.VerifySignature(integrationConfigString(integration, "webhook_secret"), payload, signature) {
+		return nil, ErrInvalidSignature
+	}
+
 	if s.idempotencyStore != nil {
 		firstSeen, err := s.idempotencyStore.RecordEvent(ctx, string(models.IntegrationJira), integration.ProjectID, eventID)
 		if err != nil {
@@ -519,7 +526,7 @@ func (s *webhookService) HandleJiraWebhook(ctx context.Context, payload []byte, 
 	}, nil
 }
 
-func (s *webhookService) HandleTrelloWebhook(ctx context.Context, payload []byte, isHead bool) (*dto.WebhookResultDTO, error) {
+func (s *webhookService) HandleTrelloWebhook(ctx context.Context, payload []byte, isHead bool, signature string) (*dto.WebhookResultDTO, error) {
 	if isHead {
 		return &dto.WebhookResultDTO{
 			Status: "processed",
@@ -557,6 +564,12 @@ func (s *webhookService) HandleTrelloWebhook(ctx context.Context, payload []byte
 		}, nil
 	}
 
+	if !trello.VerifyWebhookSignature(
+		integrationConfigString(integration, "webhook_secret"), payload,
+		integrationConfigString(integration, "webhook_callback_url"), signature) {
+		return nil, ErrInvalidSignature
+	}
+
 	if s.idempotencyStore != nil {
 		firstSeen, err := s.idempotencyStore.RecordEvent(ctx, string(models.IntegrationTrello), integration.ProjectID, eventID)
 		if err != nil {
@@ -575,4 +588,13 @@ func (s *webhookService) HandleTrelloWebhook(ctx context.Context, payload []byte
 		Status:  "processed",
 		EventID: eventID,
 	}, nil
+}
+
+// integrationConfigString returns a string value from an integration's config, or "" when absent.
+func integrationConfigString(integ *models.ProjectIntegration, key string) string {
+	if integ == nil || integ.Config == nil {
+		return ""
+	}
+	v, _ := integ.Config[key].(string)
+	return v
 }

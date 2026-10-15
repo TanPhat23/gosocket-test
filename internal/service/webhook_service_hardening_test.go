@@ -17,6 +17,11 @@ import (
 	"agent-task-manager/internal/service"
 )
 
+const (
+	hardeningWebhookSecret = "hook-secret"
+	hardeningCallbackURL   = "https://atm.example/api/v1/webhooks/trello"
+)
+
 const hardeningCipherKey = "01234567890123456789012345678901"
 
 // hardeningFixture wires a real webhook service over an in-memory sqlite DB.
@@ -71,6 +76,9 @@ func (f *hardeningFixture) addIntegration(t *testing.T, integ models.ProjectInte
 	// Persist disabled integrations through an explicit update instead.
 	disabled := !integ.Enabled
 	integ.Enabled = true
+	if (integ.Provider == models.IntegrationJira || integ.Provider == models.IntegrationTrello) && integ.Config == nil {
+		integ.Config = models.JSONMap{"webhook_secret": hardeningWebhookSecret, "webhook_callback_url": hardeningCallbackURL}
+	}
 	if err := f.integRepo.Create(f.ctx, &integ); err != nil {
 		t.Fatalf("create integration %s: %v", integ.ID, err)
 	}
@@ -816,7 +824,7 @@ func TestHandleJiraWebhook_Hardening(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			res, err := f.svc.HandleJiraWebhook(f.ctx, tc.body, tc.eventID)
+			res, err := f.jira(tc.body, tc.eventID)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -843,29 +851,29 @@ func TestHandleJiraWebhook_Hardening_MalformedAndReplay(t *testing.T) {
 	valid := []byte(`{"webhookEvent":"jira:issue_updated","issue":{"fields":{"project":{"key":"RPL"}}}}`)
 
 	t.Run("malformed json rejected", func(t *testing.T) {
-		res, err := f.svc.HandleJiraWebhook(f.ctx, []byte(`{"issue":`), "jira-mal-1")
+		res, err := f.jira([]byte(`{"issue":`), "jira-mal-1")
 		if !errors.Is(err, service.ErrInvalidWebhookPayload) || res != nil {
 			t.Fatalf("expected ErrInvalidWebhookPayload with nil result, got res=%+v err=%v", res, err)
 		}
 	})
 
 	t.Run("malformed attempt does not consume event ID", func(t *testing.T) {
-		res, err := f.svc.HandleJiraWebhook(f.ctx, valid, "jira-mal-1")
+		res, err := f.jira(valid, "jira-mal-1")
 		if err != nil || res.Status != "processed" {
 			t.Fatalf("expected processed after malformed attempt, got res=%+v err=%v", res, err)
 		}
 	})
 
 	t.Run("replayed event ID is duplicate", func(t *testing.T) {
-		res, err := f.svc.HandleJiraWebhook(f.ctx, valid, "jira-mal-1")
+		res, err := f.jira(valid, "jira-mal-1")
 		if err != nil || res.Status != "duplicate" {
 			t.Fatalf("expected duplicate, got res=%+v err=%v", res, err)
 		}
 	})
 
 	t.Run("empty event ID generates a fresh ID per call", func(t *testing.T) {
-		r1, err1 := f.svc.HandleJiraWebhook(f.ctx, valid, "")
-		r2, err2 := f.svc.HandleJiraWebhook(f.ctx, valid, "")
+		r1, err1 := f.jira(valid, "")
+		r2, err2 := f.jira(valid, "")
 		if err1 != nil || err2 != nil {
 			t.Fatalf("unexpected errors: %v, %v", err1, err2)
 		}
@@ -878,7 +886,7 @@ func TestHandleJiraWebhook_Hardening_MalformedAndReplay(t *testing.T) {
 	})
 
 	t.Run("empty body rejected", func(t *testing.T) {
-		if _, err := f.svc.HandleJiraWebhook(f.ctx, nil, "jira-empty"); !errors.Is(err, service.ErrInvalidWebhookPayload) {
+		if _, err := f.jira(nil, "jira-empty"); !errors.Is(err, service.ErrInvalidWebhookPayload) {
 			t.Fatalf("expected ErrInvalidWebhookPayload, got %v", err)
 		}
 	})
@@ -889,17 +897,11 @@ func TestHandleJiraWebhook_Hardening_MalformedAndReplay(t *testing.T) {
 			Provider: models.IntegrationJira, ExternalID: "RP2", Enabled: true,
 		})
 		other := []byte(`{"webhookEvent":"jira:issue_updated","issue":{"fields":{"project":{"key":"RP2"}}}}`)
-		res, err := f.svc.HandleJiraWebhook(f.ctx, other, "jira-mal-1")
+		res, err := f.jira(other, "jira-mal-1")
 		if err != nil || res.Status != "processed" {
 			t.Errorf("expected processed for other project, got res=%+v err=%v", res, err)
 		}
 	})
-}
-
-// TestHandleJiraWebhook_Hardening_NoSignatureVerification documents the missing authentication
-// on the Jira inbound path. The service signature has no secret or signature parameter.
-func TestHandleJiraWebhook_Hardening_NoSignatureVerification(t *testing.T) {
-	t.Skip("BUG: HandleJiraWebhook performs no signature or shared-secret verification; any caller that knows a project key can write idempotency records. Add a verified-secret check before enabling this test.")
 }
 
 func TestHandleTrelloWebhook_Hardening(t *testing.T) {
@@ -914,41 +916,41 @@ func TestHandleTrelloWebhook_Hardening(t *testing.T) {
 	})
 
 	t.Run("HEAD probe succeeds without parsing body", func(t *testing.T) {
-		res, err := f.svc.HandleTrelloWebhook(f.ctx, []byte("not json"), true)
+		res, err := f.trello([]byte("not json"), true)
 		if err != nil || res.Status != "processed" || res.EventID != "" {
 			t.Fatalf("expected processed probe, got res=%+v err=%v", res, err)
 		}
 	})
 
 	t.Run("malformed json rejected", func(t *testing.T) {
-		res, err := f.svc.HandleTrelloWebhook(f.ctx, []byte(`{"model":`), false)
+		res, err := f.trello([]byte(`{"model":`), false)
 		if !errors.Is(err, service.ErrInvalidWebhookPayload) || res != nil {
 			t.Fatalf("expected ErrInvalidWebhookPayload, got res=%+v err=%v", res, err)
 		}
 	})
 
 	t.Run("empty body rejected", func(t *testing.T) {
-		if _, err := f.svc.HandleTrelloWebhook(f.ctx, nil, false); !errors.Is(err, service.ErrInvalidWebhookPayload) {
+		if _, err := f.trello(nil, false); !errors.Is(err, service.ErrInvalidWebhookPayload) {
 			t.Fatalf("expected ErrInvalidWebhookPayload, got %v", err)
 		}
 	})
 
 	t.Run("missing board id ignored", func(t *testing.T) {
-		res, err := f.svc.HandleTrelloWebhook(f.ctx, []byte(`{"model":{},"action":{"id":"act-x"}}`), false)
+		res, err := f.trello([]byte(`{"model":{},"action":{"id":"act-x"}}`), false)
 		if err != nil || res.Status != "ignored" || res.Reason != "missing board id" {
 			t.Fatalf("expected ignored missing board id, got res=%+v err=%v", res, err)
 		}
 	})
 
 	t.Run("unknown board ignored with event ID echoed", func(t *testing.T) {
-		res, err := f.svc.HandleTrelloWebhook(f.ctx, []byte(`{"model":{"idBoard":"board-none"},"action":{"id":"act-u"}}`), false)
+		res, err := f.trello([]byte(`{"model":{"idBoard":"board-none"},"action":{"id":"act-u"}}`), false)
 		if err != nil || res.Status != "ignored" || res.Reason != "no active integration" || res.EventID != "act-u" {
 			t.Fatalf("expected ignored no integration, got res=%+v err=%v", res, err)
 		}
 	})
 
 	t.Run("model id is used when idBoard is absent", func(t *testing.T) {
-		res, err := f.svc.HandleTrelloWebhook(f.ctx, []byte(`{"model":{"id":"board-A"},"action":{"id":"act-fb"}}`), false)
+		res, err := f.trello([]byte(`{"model":{"id":"board-A"},"action":{"id":"act-fb"}}`), false)
 		if err != nil || res.Status != "processed" || res.EventID != "act-fb" {
 			t.Fatalf("expected processed via model id, got res=%+v err=%v", res, err)
 		}
@@ -956,10 +958,10 @@ func TestHandleTrelloWebhook_Hardening(t *testing.T) {
 
 	t.Run("replayed action ID is duplicate", func(t *testing.T) {
 		body := []byte(`{"model":{"idBoard":"board-A"},"action":{"id":"act-dup"}}`)
-		if res, err := f.svc.HandleTrelloWebhook(f.ctx, body, false); err != nil || res.Status != "processed" {
+		if res, err := f.trello(body, false); err != nil || res.Status != "processed" {
 			t.Fatalf("first delivery: res=%+v err=%v", res, err)
 		}
-		res, err := f.svc.HandleTrelloWebhook(f.ctx, body, false)
+		res, err := f.trello(body, false)
 		if err != nil || res.Status != "duplicate" {
 			t.Fatalf("expected duplicate, got res=%+v err=%v", res, err)
 		}
@@ -967,8 +969,8 @@ func TestHandleTrelloWebhook_Hardening(t *testing.T) {
 
 	t.Run("missing action ID generates fresh event ID", func(t *testing.T) {
 		body := []byte(`{"model":{"idBoard":"board-A"},"action":{}}`)
-		r1, err1 := f.svc.HandleTrelloWebhook(f.ctx, body, false)
-		r2, err2 := f.svc.HandleTrelloWebhook(f.ctx, body, false)
+		r1, err1 := f.trello(body, false)
+		r2, err2 := f.trello(body, false)
 		if err1 != nil || err2 != nil {
 			t.Fatalf("unexpected errors: %v, %v", err1, err2)
 		}
@@ -979,15 +981,9 @@ func TestHandleTrelloWebhook_Hardening(t *testing.T) {
 
 	t.Run("same action ID on another board is independent", func(t *testing.T) {
 		body := []byte(`{"model":{"idBoard":"board-B"},"action":{"id":"act-dup"}}`)
-		res, err := f.svc.HandleTrelloWebhook(f.ctx, body, false)
+		res, err := f.trello(body, false)
 		if err != nil || res.Status != "processed" {
 			t.Errorf("expected processed for other project, got res=%+v err=%v", res, err)
 		}
 	})
-}
-
-// TestHandleTrelloWebhook_Hardening_NoSignatureVerification documents the missing authentication
-// on the Trello inbound path. The service accepts no signature or callback secret.
-func TestHandleTrelloWebhook_Hardening_NoSignatureVerification(t *testing.T) {
-	t.Skip("BUG: HandleTrelloWebhook performs no callback signature verification (HMAC over body and callback URL); any caller that knows a board ID can write idempotency records. Add verification before enabling this test.")
 }

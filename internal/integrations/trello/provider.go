@@ -2,6 +2,9 @@ package trello
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha1"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +22,22 @@ const (
 	defaultBaseURL = "https://api.trello.com"
 	defaultTimeout = 10 * time.Second
 )
+
+// VerifyWebhookSignature validates a Trello webhook delivery: base64(HMAC-SHA1(secret, body + callbackURL))
+// compared in constant time against the X-Trello-Webhook header. It fails closed on any empty input.
+func VerifyWebhookSignature(secret string, payload []byte, callbackURL, signatureHeader string) bool {
+	if secret == "" || callbackURL == "" || signatureHeader == "" {
+		return false
+	}
+	got, err := base64.StdEncoding.DecodeString(signatureHeader)
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha1.New, []byte(secret))
+	mac.Write(payload)
+	mac.Write([]byte(callbackURL))
+	return hmac.Equal(got, mac.Sum(nil))
+}
 
 // Provider implements integrations.SyncProvider for Trello.
 type Provider struct {

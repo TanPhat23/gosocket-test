@@ -3,7 +3,9 @@ package api_test
 import (
 	"bytes"
 	"crypto/hmac"
+	"crypto/sha1"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -23,7 +25,32 @@ import (
 	"gorm.io/gorm"
 )
 
-const hardeningWebhookPath = "/api/v1/webhooks/"
+const (
+	hardeningWebhookPath = "/api/v1/webhooks/"
+	hardeningHookSecret  = "http-hook-secret"
+	hardeningTrelloURL   = "https://atm.example/api/v1/webhooks/trello"
+)
+
+func hardeningHookConfig() models.JSONMap {
+	return models.JSONMap{"webhook_secret": hardeningHookSecret, "webhook_callback_url": hardeningTrelloURL}
+}
+
+func hardeningJiraHeaders(body []byte, extra map[string]string) map[string]string {
+	mac := hmac.New(sha256.New, []byte(hardeningHookSecret))
+	mac.Write(body)
+	h := map[string]string{"X-Hub-Signature": "sha256=" + hex.EncodeToString(mac.Sum(nil))}
+	for k, v := range extra {
+		h[k] = v
+	}
+	return h
+}
+
+func hardeningTrelloHeaders(body []byte) map[string]string {
+	mac := hmac.New(sha1.New, []byte(hardeningHookSecret))
+	mac.Write(body)
+	mac.Write([]byte(hardeningTrelloURL))
+	return map[string]string{"X-Trello-Webhook": base64.StdEncoding.EncodeToString(mac.Sum(nil))}
+}
 
 type hardeningWebhookResult struct {
 	Status     string `json:"status"`
@@ -417,7 +444,7 @@ func TestWebhookHTTP_Hardening_JiraHandling(t *testing.T) {
 	app, db := newHardeningWebhookApp(t)
 	if err := db.Create(&models.ProjectIntegration{
 		ID: "integ-http-jira", ProjectID: "proj-http-jira", CredentialID: "cred-jira",
-		Provider: models.IntegrationJira, ExternalID: "HJ", Enabled: true,
+		Provider: models.IntegrationJira, ExternalID: "HJ", Enabled: true, Config: hardeningHookConfig(),
 	}).Error; err != nil {
 		t.Fatalf("seed jira integration: %v", err)
 	}
@@ -427,7 +454,7 @@ func TestWebhookHTTP_Hardening_JiraHandling(t *testing.T) {
 
 	t.Run("valid event processed and echoes header", func(t *testing.T) {
 		status, raw := doHardeningRequest(t, app, http.MethodPost, hardeningWebhookPath+"jira", valid,
-			map[string]string{"X-Atlassian-Webhook-Identifier": "jira-h-1"})
+			hardeningJiraHeaders(valid, map[string]string{"X-Atlassian-Webhook-Identifier": "jira-h-1"}))
 		res := decodeHardeningResult(t, raw)
 		if status != http.StatusOK || res.Status != "processed" || res.EventID != "jira-h-1" {
 			t.Errorf("expected 200 processed jira-h-1, got %d %+v", status, res)
@@ -436,14 +463,14 @@ func TestWebhookHTTP_Hardening_JiraHandling(t *testing.T) {
 
 	t.Run("replayed identifier is duplicate", func(t *testing.T) {
 		status, raw := doHardeningRequest(t, app, http.MethodPost, hardeningWebhookPath+"jira", valid,
-			map[string]string{"X-Atlassian-Webhook-Identifier": "jira-h-1"})
+			hardeningJiraHeaders(valid, map[string]string{"X-Atlassian-Webhook-Identifier": "jira-h-1"}))
 		if res := decodeHardeningResult(t, raw); status != http.StatusOK || res.Status != "duplicate" {
 			t.Errorf("expected 200 duplicate, got %d %+v", status, res)
 		}
 	})
 
 	t.Run("unknown project key is ignored with 200", func(t *testing.T) {
-		status, raw := doHardeningRequest(t, app, http.MethodPost, hardeningWebhookPath+"jira", unknown, nil)
+		status, raw := doHardeningRequest(t, app, http.MethodPost, hardeningWebhookPath+"jira", unknown, hardeningJiraHeaders(unknown, nil))
 		if res := decodeHardeningResult(t, raw); status != http.StatusOK || res.Status != "ignored" {
 			t.Errorf("expected 200 ignored, got %d %+v", status, res)
 		}
@@ -464,10 +491,22 @@ func TestWebhookHTTP_Hardening_JiraHandling(t *testing.T) {
 	})
 
 	t.Run("missing identifier still answers 200 with generated event ID", func(t *testing.T) {
-		status, raw := doHardeningRequest(t, app, http.MethodPost, hardeningWebhookPath+"jira", valid, nil)
+		status, raw := doHardeningRequest(t, app, http.MethodPost, hardeningWebhookPath+"jira", valid, hardeningJiraHeaders(valid, nil))
 		res := decodeHardeningResult(t, raw)
 		if status != http.StatusOK || res.Status != "processed" || res.EventID == "" {
 			t.Errorf("expected 200 processed with generated ID, got %d %+v", status, res)
+		}
+	})
+
+	t.Run("missing or wrong signature is 401", func(t *testing.T) {
+		status, _ := doHardeningRequest(t, app, http.MethodPost, hardeningWebhookPath+"jira", valid, nil)
+		if status != http.StatusUnauthorized {
+			t.Errorf("unsigned: expected 401, got %d", status)
+		}
+		status, _ = doHardeningRequest(t, app, http.MethodPost, hardeningWebhookPath+"jira", valid,
+			map[string]string{"X-Hub-Signature": "sha256=" + strings.Repeat("0", 64)})
+		if status != http.StatusUnauthorized {
+			t.Errorf("bad signature: expected 401, got %d", status)
 		}
 	})
 
@@ -480,7 +519,7 @@ func TestWebhookHTTP_Hardening_Trello(t *testing.T) {
 	app, db := newHardeningWebhookApp(t)
 	if err := db.Create(&models.ProjectIntegration{
 		ID: "integ-http-trello", ProjectID: "proj-http-trello", CredentialID: "cred-trello",
-		Provider: models.IntegrationTrello, ExternalID: "board-http", Enabled: true,
+		Provider: models.IntegrationTrello, ExternalID: "board-http", Enabled: true, Config: hardeningHookConfig(),
 	}).Error; err != nil {
 		t.Fatalf("seed trello integration: %v", err)
 	}
@@ -509,21 +548,32 @@ func TestWebhookHTTP_Hardening_Trello(t *testing.T) {
 	})
 
 	t.Run("unknown board is ignored with 200", func(t *testing.T) {
-		status, raw := doHardeningRequest(t, app, http.MethodPost, path,
-			[]byte(`{"model":{"idBoard":"board-none"},"action":{"id":"act-none"}}`), nil)
+		body := []byte(`{"model":{"idBoard":"board-none"},"action":{"id":"act-none"}}`)
+		status, raw := doHardeningRequest(t, app, http.MethodPost, path, body, hardeningTrelloHeaders(body))
 		if res := decodeHardeningResult(t, raw); status != http.StatusOK || res.Status != "ignored" {
 			t.Errorf("expected 200 ignored, got %d %+v", status, res)
 		}
 	})
 
 	t.Run("valid event processed then replay duplicate", func(t *testing.T) {
-		status, raw := doHardeningRequest(t, app, http.MethodPost, path, valid, nil)
+		status, raw := doHardeningRequest(t, app, http.MethodPost, path, valid, hardeningTrelloHeaders(valid))
 		if res := decodeHardeningResult(t, raw); status != http.StatusOK || res.Status != "processed" || res.EventID != "act-http-1" {
 			t.Fatalf("expected 200 processed, got %d %+v", status, res)
 		}
-		status, raw = doHardeningRequest(t, app, http.MethodPost, path, valid, nil)
+		status, raw = doHardeningRequest(t, app, http.MethodPost, path, valid, hardeningTrelloHeaders(valid))
 		if res := decodeHardeningResult(t, raw); status != http.StatusOK || res.Status != "duplicate" {
 			t.Errorf("expected 200 duplicate on replay, got %d %+v", status, res)
+		}
+	})
+
+	t.Run("missing or wrong signature is 401", func(t *testing.T) {
+		status, _ := doHardeningRequest(t, app, http.MethodPost, path, valid, nil)
+		if status != http.StatusUnauthorized {
+			t.Errorf("unsigned: expected 401, got %d", status)
+		}
+		status, _ = doHardeningRequest(t, app, http.MethodPost, path, valid, map[string]string{"X-Trello-Webhook": "AAAA"})
+		if status != http.StatusUnauthorized {
+			t.Errorf("bad signature: expected 401, got %d", status)
 		}
 	})
 

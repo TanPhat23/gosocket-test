@@ -47,7 +47,7 @@ func (h *WebhookHandlers) HandleWebhook(c fiber.Ctx) error {
 
 	case string(models.IntegrationJira):
 		eventID := c.Get("X-Atlassian-Webhook-Identifier")
-		res, err := h.webhookService.HandleJiraWebhook(c.Context(), payload, eventID)
+		res, err := h.webhookService.HandleJiraWebhook(c.Context(), payload, eventID, jiraSignature(c))
 		if err != nil {
 			return h.handleError(c, err)
 		}
@@ -55,7 +55,7 @@ func (h *WebhookHandlers) HandleWebhook(c fiber.Ctx) error {
 
 	case string(models.IntegrationTrello):
 		isHead := c.Method() == fiber.MethodHead
-		res, err := h.webhookService.HandleTrelloWebhook(c.Context(), payload, isHead)
+		res, err := h.webhookService.HandleTrelloWebhook(c.Context(), payload, isHead, c.Get("X-Trello-Webhook"))
 		if err != nil {
 			return h.handleError(c, err)
 		}
@@ -77,4 +77,12 @@ func (h *WebhookHandlers) handleError(c fiber.Ctx, err error) error {
 	default:
 		return CentralErrorHandler(c, err)
 	}
+}
+
+// jiraSignature returns the Jira webhook HMAC header (X-Hub-Signature, sha256=<hex>).
+func jiraSignature(c fiber.Ctx) string {
+	if sig := c.Get("X-Hub-Signature"); sig != "" {
+		return sig
+	}
+	return c.Get("X-Hub-Signature-256")
 }
