@@ -287,3 +287,66 @@ func TestPullRequestProvider(t *testing.T) {
 		t.Errorf("unexpected pr url: %s", url)
 	}
 }
+
+// A delivery whose processing failed was acknowledged with an error, so the provider will redeliver it
+// under the same id. That redelivery must be processed again, exactly once, and never after success.
+func TestIdempotencyStores_RetryFailedEvent(t *testing.T) {
+	stores := map[string]func(t *testing.T) integrations.IdempotencyStore{
+		"memory": func(t *testing.T) integrations.IdempotencyStore { return integrations.NewMemoryIdempotencyStore() },
+		"db":     func(t *testing.T) integrations.IdempotencyStore { return integrations.NewDBIdempotencyStore(setupTestDB(t)) },
+	}
+	for name, mk := range stores {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := mk(t)
+
+			if first, err := store.RecordEvent(ctx, "github", "p", "evt"); err != nil || !first {
+				t.Fatalf("first: %v %v", first, err)
+			}
+			// A received (in-flight) event is not retryable: that would double-process concurrent deliveries.
+			if again, _ := store.RecordEvent(ctx, "github", "p", "evt"); again {
+				t.Fatal("in-flight event must stay a duplicate")
+			}
+			if err := store.MarkFailed(ctx, "github", "p", "evt", "boom"); err != nil {
+				t.Fatal(err)
+			}
+			// The failed event is reclaimed by exactly one redelivery.
+			if retry, err := store.RecordEvent(ctx, "github", "p", "evt"); err != nil || !retry {
+				t.Fatalf("failed event must be retryable, got %v %v", retry, err)
+			}
+			if second, _ := store.RecordEvent(ctx, "github", "p", "evt"); second {
+				t.Fatal("only one redelivery may reclaim a failed event")
+			}
+			// Another provider or project with the same id is independent.
+			if other, _ := store.RecordEvent(ctx, "jira", "p", "evt"); !other {
+				t.Fatal("different provider must be independent")
+			}
+			// Once processed, redeliveries are duplicates again, and a late failure mark does not reopen them.
+			if err := store.MarkProcessed(ctx, "github", "p", "evt"); err != nil {
+				t.Fatal(err)
+			}
+			if again, _ := store.RecordEvent(ctx, "github", "p", "evt"); again {
+				t.Fatal("processed event must stay a duplicate")
+			}
+		})
+	}
+}
+
+func TestDBIdempotencyStore_RetryClearsFailureState(t *testing.T) {
+	db := setupTestDB(t)
+	store := integrations.NewDBIdempotencyStore(db)
+	ctx := context.Background()
+
+	_, _ = store.RecordEvent(ctx, "github", "p", "evt")
+	_ = store.MarkFailed(ctx, "github", "p", "evt", "boom")
+	if retry, err := store.RecordEvent(ctx, "github", "p", "evt"); err != nil || !retry {
+		t.Fatalf("retry: %v %v", retry, err)
+	}
+	var ev models.WebhookEvent
+	if err := db.Where("provider_event_id = ?", "evt").First(&ev).Error; err != nil {
+		t.Fatal(err)
+	}
+	if ev.Status != models.WebhookReceived || ev.ErrorMessage != nil || ev.ProcessedAt != nil {
+		t.Errorf("reclaimed event must be back in received state without stale failure data: %+v", ev)
+	}
+}

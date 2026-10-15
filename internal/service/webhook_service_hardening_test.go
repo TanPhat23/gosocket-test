@@ -531,9 +531,10 @@ func TestHandleGitHubWebhook_Hardening_DuplicateDeliveryIsNoOp(t *testing.T) {
 	}
 }
 
-func TestHandleGitHubWebhook_Hardening_FailedCreateIsNotRetried(t *testing.T) {
-	// Pins current behaviour: a delivery whose task creation failed is recorded as failed,
-	// and any redelivery with the same ID is answered as "duplicate" rather than retried.
+func TestHandleGitHubWebhook_Hardening_FailedCreateIsRetried(t *testing.T) {
+	// A delivery whose task creation failed was answered with an error, so the provider redelivers it
+	// under the same id. That redelivery must be processed again; once it succeeds, later redeliveries
+	// are duplicates.
 	db := setupTestDB(t)
 	cipher, _ := crypto.NewSecretCipher([]byte(hardeningCipherKey))
 	integRepo := repository.NewIntegrationRepository(db)
@@ -549,31 +550,41 @@ func TestHandleGitHubWebhook_Hardening_FailedCreateIsNotRetried(t *testing.T) {
 		t.Fatalf("create integration: %v", err)
 	}
 
-	svc := service.NewWebhookService(integRepo, credRepo, failingCreateTaskRepo{repository.NewTaskRepository(db)},
+	taskRepo := &flakyCreateTaskRepo{TaskRepository: repository.NewTaskRepository(db), fail: true}
+	svc := service.NewWebhookService(integRepo, credRepo, taskRepo,
 		integrations.NewMemoryIdempotencyStore(), cipher, nil)
 
 	payload := hardeningIssuePayload(repo, 70, "Create fails")
 	sig := hardeningGitHubSig(secret, payload)
-	if _, err := svc.HandleGitHubWebhook(ctx, payload, "del-failcreate-1", sig); err == nil || !strings.Contains(err.Error(), "failed to create task") {
-		t.Fatalf("expected task creation failure, got %v", err)
+	for i := 0; i < 2; i++ { // a still-failing retry fails again instead of being swallowed as a duplicate
+		if _, err := svc.HandleGitHubWebhook(ctx, payload, "del-failcreate-1", sig); err == nil || !strings.Contains(err.Error(), "failed to create task") {
+			t.Fatalf("attempt %d: expected task creation failure, got %v", i, err)
+		}
 	}
 
+	taskRepo.fail = false
 	res, err := svc.HandleGitHubWebhook(ctx, payload, "del-failcreate-1", sig)
-	if err != nil {
-		t.Fatalf("redelivery returned error: %v", err)
+	if err != nil || res.Status != "processed" || res.TaskID == "" {
+		t.Fatalf("retry after recovery must create the task, got res=%+v err=%v", res, err)
 	}
-	if res.Status != "duplicate" {
-		t.Errorf("expected redelivery of failed delivery to be reported as duplicate, got %+v", res)
+
+	res, err = svc.HandleGitHubWebhook(ctx, payload, "del-failcreate-1", sig)
+	if err != nil || res.Status != "duplicate" {
+		t.Errorf("redelivery after success must be a duplicate, got res=%+v err=%v", res, err)
 	}
 }
 
-// failingCreateTaskRepo fails every Create while delegating reads to the real repository.
-type failingCreateTaskRepo struct {
+// flakyCreateTaskRepo fails Create while fail is set, delegating everything else to the real repository.
+type flakyCreateTaskRepo struct {
 	repository.TaskRepository
+	fail bool
 }
 
-func (failingCreateTaskRepo) Create(context.Context, *models.Task) error {
-	return errors.New("simulated insert failure")
+func (r *flakyCreateTaskRepo) Create(ctx context.Context, t *models.Task) error {
+	if r.fail {
+		return errors.New("simulated insert failure")
+	}
+	return r.TaskRepository.Create(ctx, t)
 }
 
 func TestHandleGitHubWebhook_Hardening_CrossProjectIsolation(t *testing.T) {
