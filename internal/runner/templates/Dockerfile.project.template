@@ -20,6 +20,9 @@ RUN apk add --no-cache \
 # Multi-stage copy pinned OpenCode binary
 COPY --from={{requirePinnedRef .OpenCodeImageRef}} /usr/local/bin/opencode /usr/local/bin/opencode
 
+# Entrypoint that loads the per-instance OpenCode password from the tmpfs secret file (Gate 0G)
+COPY --chmod=0555 atm-entrypoint.sh /usr/local/bin/atm-entrypoint
+
 # Unprivileged user and workspace directory
 RUN addgroup -g 1000 opencode && \
     adduser -u 1000 -G opencode -s /bin/sh -D opencode && \
@@ -52,3 +55,5 @@ ENV PATH="{{.ExtractPath}}/bin:${PATH}"
 
 WORKDIR /workspaces
 USER opencode:opencode
+ENTRYPOINT ["/usr/local/bin/atm-entrypoint"]
+CMD ["opencode", "serve", "--hostname", "0.0.0.0", "--port", "4096"]

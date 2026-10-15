@@ -172,7 +172,7 @@ func (m *projectSandboxManager) ensureProjectContainerDisabledDraft(ctx context.
 		},
 		Tmpfs: map[string]string{
 			"/tmp":         "rw,noexec,nosuid,size=512m",
-			"/run/secrets": "rw,noexec,nosuid,size=16m,mode=0700",
+			"/run/secrets": "rw,noexec,nosuid,size=1m,uid=1000,gid=1000,mode=0700",
 		},
 		Resources: container.Resources{
 			Memory:    4 * 1024 * 1024 * 1024, // 4GB
@@ -205,7 +205,14 @@ func (m *projectSandboxManager) ensureProjectContainerDisabledDraft(ctx context.
 		return nil, cause
 	}
 
-	// 7. Inject OPENCODE_PASSWORD via tmpfs tar archive into /run/secrets/opencode
+	// 7. Start container
+	if err := m.dockerCli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
+		return rollback(fmt.Errorf("failed to start project container: %w", err))
+	}
+
+	// 8. Deliver OPENCODE_PASSWORD via tar archive into the running container's tmpfs at /run/secrets/opencode.
+	// It must follow start: a stopped container's tmpfs is mounted fresh at start, discarding earlier copies.
+	// The entrypoint waits for the file, loads it into its own environment and unlinks it.
 	tarBuf := new(bytes.Buffer)
 	tw := tar.NewWriter(tarBuf)
 	secretContent := []byte(opencodePassword)
@@ -231,11 +238,6 @@ func (m *projectSandboxManager) ensureProjectContainerDisabledDraft(ctx context.
 
 	if err := m.dockerCli.CopyToContainer(ctx, containerID, "/run/secrets", tarBuf, container.CopyToContainerOptions{}); err != nil {
 		return rollback(fmt.Errorf("failed to inject secret into container: %w", err))
-	}
-
-	// 8. Start container
-	if err := m.dockerCli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
-		return rollback(fmt.Errorf("failed to start project container: %w", err))
 	}
 
 	// 9. Inspect container to resolve IP address

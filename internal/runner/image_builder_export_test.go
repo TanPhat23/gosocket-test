@@ -103,3 +103,13 @@ func PullPinnedImageForTest(ctx context.Context, cli sandbox.DockerClient, ref s
 
 // DefaultBuildTimeoutForTest is the production build timeout.
 const DefaultBuildTimeoutForTest = defaultBuildTimeout
+
+// EmbeddedEntrypointForTest returns a copy of the embedded entrypoint script.
+func EmbeddedEntrypointForTest() []byte { return append([]byte(nil), embeddedEntrypoint...) }
+
+// SetEntrypointForTest swaps the embedded entrypoint and returns a restore func.
+func SetEntrypointForTest(b []byte) func() {
+	orig := embeddedEntrypoint
+	embeddedEntrypoint = b
+	return func() { embeddedEntrypoint = orig }
+}

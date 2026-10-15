@@ -272,7 +272,12 @@ func (b *runtimeImageBuilder) executeBuild(ctx context.Context, dockerfileBytes 
 		return "", err
 	}
 
-	// Create tar archive in memory containing Dockerfile
+	entrypoint, err := loadVerifiedTemplate(embeddedEntrypoint, ExpectedEntrypointSHA256)
+	if err != nil {
+		return "", err
+	}
+
+	// Create tar archive in memory containing Dockerfile and the pinned entrypoint
 	tarBuf := new(bytes.Buffer)
 	tw := tar.NewWriter(tarBuf)
 	hdr := &tar.Header{
@@ -285,6 +290,12 @@ func (b *runtimeImageBuilder) executeBuild(ctx context.Context, dockerfileBytes 
 	}
 	if _, err := tw.Write(dockerfileBytes); err != nil {
 		return "", fmt.Errorf("failed to write Dockerfile into tar: %w", err)
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: "atm-entrypoint.sh", Mode: 0755, Size: int64(len(entrypoint))}); err != nil {
+		return "", fmt.Errorf("failed to write entrypoint tar header: %w", err)
+	}
+	if _, err := tw.Write(entrypoint); err != nil {
+		return "", fmt.Errorf("failed to write entrypoint into tar: %w", err)
 	}
 	if err := tw.Close(); err != nil {
 		return "", fmt.Errorf("failed to close tar writer: %w", err)

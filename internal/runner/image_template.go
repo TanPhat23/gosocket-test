@@ -17,10 +17,17 @@ var ErrTemplateIntegrity = errors.New("dockerfile template failed integrity chec
 //go:embed templates/Dockerfile.project.template
 var embeddedTemplate []byte
 
+//go:embed templates/atm-entrypoint.sh
+var embeddedEntrypoint []byte
+
 // ExpectedTemplateSHA256 is the pinned SHA-256 of templates/Dockerfile.project.template.
 // Update it deliberately, in the same reviewed change as any template edit; the golden test
 // in image_template_test.go pins the same value.
-const ExpectedTemplateSHA256 = "d0d3a432020c728c68071be8594d3397abdd5998aebaa7967d5fe3055f6721c8"
+const ExpectedTemplateSHA256 = "4e27c911727315d0e5fedd81730d0894d079163b66ab1eea0aaaf3dd8f424001"
+
+// ExpectedEntrypointSHA256 is the pinned SHA-256 of templates/atm-entrypoint.sh, which is copied into
+// the image build context. Update it in the same reviewed change as any edit to the script.
+const ExpectedEntrypointSHA256 = "caf3a098b914ab73339e3b7e3186535fe1222bad4745374aafbaeb87c669b191"
 
 // loadVerifiedTemplate returns raw only if it hashes to expectedSHA. It never parses raw.
 func loadVerifiedTemplate(raw []byte, expectedSHA string) ([]byte, error) {
