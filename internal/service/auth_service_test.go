@@ -117,3 +117,25 @@ func TestAuthService_LoginWithCredentials_GrantsNoMembership(t *testing.T) {
 		}
 	}
 }
+
+// A missing membership is a plain denial; a failing membership lookup is not "not a member" and must
+// surface as an error (fail closed, but reported as a server fault rather than a 403).
+func TestAuthService_AuthorizeTeamRole_DistinguishesDeniedFromFailure(t *testing.T) {
+	db := setupTestDB(t)
+	authSvc := service.NewAuthService(repository.NewUserRepository(db), repository.NewTeamRepository(db),
+		repository.NewTokenRepository(db), &mockAuthenticator{issuerURL: "http://localhost/dex"})
+
+	if _, err := authSvc.AuthorizeTeamRole(context.Background(), "team-x", "user-x", models.RoleViewer); !errors.Is(err, service.ErrNotTeamMember) {
+		t.Fatalf("no membership row: want ErrNotTeamMember, got %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := authSvc.AuthorizeTeamRole(ctx, "team-x", "user-x", models.RoleViewer)
+	if err == nil {
+		t.Fatal("failing lookup must not authorize")
+	}
+	if errors.Is(err, service.ErrNotTeamMember) || errors.Is(err, service.ErrForbidden) {
+		t.Fatalf("lookup failure must not be reported as a denial, got %v", err)
+	}
+}

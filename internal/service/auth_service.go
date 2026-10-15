@@ -13,6 +13,7 @@ import (
 	"agent-task-manager/internal/repository"
 
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 var (
@@ -274,7 +275,10 @@ func (s *authService) AuthorizeTeamRole(ctx context.Context, teamID, userID stri
 	}
 	membership, err := s.teamRepo.GetMembership(ctx, teamID, userID)
 	if err != nil {
-		return 0, ErrNotTeamMember
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, ErrNotTeamMember
+		}
+		return 0, fmt.Errorf("look up team membership: %w", err)
 	}
 
 	if !auth.HasRolePermission(membership.Role, requiredRole) {
