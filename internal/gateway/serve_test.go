@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -51,12 +52,30 @@ func TestServiceFromEnv_DisabledByDefault(t *testing.T) {
 	}
 }
 
-func TestServiceFromEnv_RefusesWithoutFirewallAttestation(t *testing.T) {
+func TestServiceFromEnv_WarnsWithoutFirewallAttestation(t *testing.T) {
 	for name, v := range map[string]string{"missing": "-", "empty": "", "wrong": "yes", "case": strings.ToUpper(FirewallAttestation), "prefix": "sandbox", "suffix": FirewallAttestation + "-x", "padded": " " + FirewallAttestation} {
-		_, err := ServiceFromEnv(goodEnv(map[string]string{"ATM_GATEWAY_FIREWALL_ATTESTATION": v}), noFiles, nil)
-		if err == nil || !strings.Contains(err.Error(), "firewall") {
-			t.Errorf("%s: want firewall attestation error, got %v", name, err)
+		var logs []string
+		logf := func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }
+		svc, err := ServiceFromEnv(goodEnv(map[string]string{"ATM_GATEWAY_FIREWALL_ATTESTATION": v}), noFiles, logf)
+		if err != nil || svc == nil {
+			t.Errorf("%s: gateway must still start, got (%v,%v)", name, svc, err)
+			continue
 		}
+		if len(logs) != 1 || !strings.Contains(logs[0], "WARNING") || !strings.Contains(logs[0], "firewall") {
+			t.Errorf("%s: want exactly one firewall warning, got %q", name, logs)
+		}
+	}
+
+	// The warning is never silent, even without a logger (it falls back to the standard log).
+	if svc, err := ServiceFromEnv(goodEnv(map[string]string{"ATM_GATEWAY_FIREWALL_ATTESTATION": "-"}), noFiles, nil); err != nil || svc == nil {
+		t.Errorf("nil logger: gateway must still start, got (%v,%v)", svc, err)
+	}
+
+	// With the attestation there is nothing to warn about.
+	var logs []string
+	logf := func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }
+	if _, err := ServiceFromEnv(goodEnv(nil), noFiles, logf); err != nil || len(logs) != 0 {
+		t.Errorf("attested start must be quiet, got err=%v logs=%q", err, logs)
 	}
 }
 

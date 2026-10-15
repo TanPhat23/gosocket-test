@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"strconv"
@@ -11,10 +12,11 @@ import (
 	"time"
 )
 
-// FirewallAttestation is the exact value ATM_GATEWAY_FIREWALL_ATTESTATION must hold before the gateway
-// starts. The gateway speaks plain HTTP to sandboxes (Gate 0G decision B4), which is only safe when the
-// host operator has restricted the sandbox bridges to reaching this listener and nothing else. ATM never
-// changes firewall rules; the operator states here that they did (see the Gate 0G operator handoff).
+// FirewallAttestation is the value ATM_GATEWAY_FIREWALL_ATTESTATION holds when the host operator has
+// restricted the sandbox bridges to reaching this listener and nothing else. The gateway speaks plain
+// HTTP to sandboxes (Gate 0G decision B4), which is only safe with that restriction. ATM never changes
+// firewall rules. Without the attestation the gateway still starts but logs a warning (user decision,
+// 2026-10-15), and Gate 0G stays unqualified.
 const FirewallAttestation = "sandbox-bridge-to-gateway-only"
 
 const (
@@ -36,7 +38,8 @@ type Service struct {
 }
 
 // ServiceFromEnv builds the gateway from ATM_GATEWAY_* settings. It returns (nil, nil) when the gateway
-// is not enabled, and an error, never a partially configured service, for anything unsafe or missing.
+// is not enabled, and an error, never a partially configured service, for anything unsafe or missing,
+// except the firewall attestation, whose absence only logs a warning.
 // Errors name the offending setting and never include secret values.
 func ServiceFromEnv(getenv func(string) string, readFile func(string) ([]byte, error), logf func(string, ...any)) (*Service, error) {
 	switch getenv("ATM_GATEWAY_ENABLED") {
@@ -46,8 +49,11 @@ func ServiceFromEnv(getenv func(string) string, readFile func(string) ([]byte, e
 	default:
 		return nil, errors.New("gateway: ATM_GATEWAY_ENABLED must be \"true\" or \"false\"")
 	}
+	if logf == nil {
+		logf = log.Printf
+	}
 	if getenv("ATM_GATEWAY_FIREWALL_ATTESTATION") != FirewallAttestation {
-		return nil, fmt.Errorf("gateway: ATM_GATEWAY_FIREWALL_ATTESTATION must be %q: the host operator must first install the firewall rule that restricts sandbox bridges to the gateway listener", FirewallAttestation)
+		logf("gateway: WARNING: no firewall attestation (ATM_GATEWAY_FIREWALL_ATTESTATION=%s). Starting anyway; sandboxes may reach other host services and capability tokens cross the network in cleartext. Restrict sandbox bridges to the gateway listener to remove this risk.", FirewallAttestation)
 	}
 	addr, err := listenAddr(getenv("ATM_GATEWAY_LISTEN_ADDR"))
 	if err != nil {

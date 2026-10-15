@@ -95,8 +95,8 @@ The user runs the host, so they are the host operator for B1, and chose not to r
 
 | Item | Decision |
 |---|---|
-| Default | Unchanged and safe: the gateway refuses to start without `ATM_GATEWAY_FIREWALL_ATTESTATION=sandbox-bridge-to-gateway-only`. |
-| Opt-out | A deliberate `ATM_GATEWAY_ALLOW_UNRESTRICTED_NETWORK=true` lets it start without the attestation, logs a loud warning at startup, and is **refused in production mode**. **Not implemented yet**; the production-mode check needs the `AppEnv` value from `internal/config`, read-only. |
+| Behaviour | **Implemented.** The gateway starts without `ATM_GATEWAY_FIREWALL_ATTESTATION=sandbox-bridge-to-gateway-only` and logs a `WARNING` at startup (falls back to the standard logger if none is given). With the attestation it starts quietly. The other startup guards (https upstream, no wildcard bind, key/secret/limits) are unchanged. |
+| Opt-out / production | No separate opt-out variable and no production-mode refusal (the user chose warn-and-start). A production refusal could be added later. |
 | Risk accepted | A compromised sandbox may reach other host services and other projects' sandboxes, and capability tokens cross the link in cleartext (B4). Tolerable only where the host holds nothing sensitive. |
 | Gate 0G | Stays **BLOCKED / UNQUALIFIED**. The spec requires the restricted route (SEC-0G-03), so running with the opt-out never qualifies the gate. |
 | Quarantine | Phase 1A unchanged. Lifting it needs gates 0C, 0D, 0G, 0F and a separate explicit user decision. |

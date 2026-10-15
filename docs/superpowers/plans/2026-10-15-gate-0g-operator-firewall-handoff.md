@@ -1,6 +1,6 @@
 # Gate 0G: Operator Handoff for Blocker B1 (sandbox → gateway firewall route)
 
-**Status:** handoff only. Nothing here has been applied or tested against a real firewall. ATM never changes firewall rules and never gets `NET_ADMIN`; the host operator owns this policy. Gate 0G stays BLOCKED and the Phase 1A quarantine stays active until the operator completes this and Gates 0C, 0D, 0F and a separate explicit user decision are done. This document is not a security sign-off.
+**Status:** optional; the gateway starts without it (with a warning). Handoff only. Nothing here has been applied or tested against a real firewall. ATM never changes firewall rules and never gets `NET_ADMIN`; the host operator owns this policy. Gate 0G stays BLOCKED and the Phase 1A quarantine stays active until the operator completes this and Gates 0C, 0D, 0F and a separate explicit user decision are done. This document is not a security sign-off.
 
 ## 1. What is needed
 
@@ -67,12 +67,12 @@ All five must hold. Record the output next to the commit that turns the gateway 
 
 ## 6. Turning the gateway on (after section 5 passes)
 
-The gateway ships **disabled**. `internal/gateway.ServiceFromEnv` refuses to start unless the operator attests this exact rule exists.
+The gateway ships **disabled**. When enabled, `internal/gateway.ServiceFromEnv` starts even without the firewall attestation but logs a `WARNING` (user decision 2026-10-15); setting the attestation after section 5 passes silences it. Gate 0G is not qualified until the restricted route exists.
 
 | Variable | Required | Notes |
 |---|---|---|
 | `ATM_GATEWAY_ENABLED` | yes | `true`; empty/`false` = off; anything else is an error |
-| `ATM_GATEWAY_FIREWALL_ATTESTATION` | yes | exactly `sandbox-bridge-to-gateway-only`; set it only after section 5 passes |
+| `ATM_GATEWAY_FIREWALL_ATTESTATION` | no | exactly `sandbox-bridge-to-gateway-only`; set it only after section 5 passes. Any other value or absence logs a warning |
 | `ATM_GATEWAY_LISTEN_ADDR` | yes | explicit `host:port`, e.g. `172.29.0.2:8082`; wildcard, empty host and port 0 are rejected |
 | `ATM_GATEWAY_UPSTREAM_URL` | yes | `https` only |
 | `ATM_GATEWAY_PROVIDER_KEY` **or** `ATM_GATEWAY_PROVIDER_KEY_FILE` | exactly one | the file is re-read per request, so rotation needs no restart (decision B2) |
