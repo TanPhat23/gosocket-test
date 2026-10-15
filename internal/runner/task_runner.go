@@ -905,6 +905,32 @@ func (r *AgentTaskRunner) BuildProcessEnv(task *models.Task, model string, homeD
 	}
 }
 
+// scrubSandboxEnv removes OpenCode passwords and model-provider API keys from a container environment.
+func scrubSandboxEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, e := range env {
+		name := strings.ToUpper(strings.SplitN(e, "=", 2)[0])
+		if strings.HasSuffix(name, "_API_KEY") || strings.Contains(name, "PASSWORD") {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// agentSandboxBinds returns the bind mounts for a task container. It deliberately never mounts the host
+// OpenCode config/data directories, which may contain provider credentials (auth.json).
+func agentSandboxBinds(hostPath, hostBinPath string) []string {
+	binds := []string{
+		fmt.Sprintf("%s:/workspace:rw", hostPath),
+		fmt.Sprintf("%s:/usr/local/bin/opencode:ro", hostBinPath),
+	}
+	if hostPath != "/workspace" {
+		binds = append(binds, fmt.Sprintf("%s:%s:rw", hostPath, hostPath))
+	}
+	return binds
+}
+
 func (r *AgentTaskRunner) runInDocker(ctx context.Context, task *models.Task, attempt *models.TaskAttempt, hostPath, model, prompt string) error {
 	imageName := "agent-sandbox:latest"
 	if override := os.Getenv("ATM_SANDBOX_IMAGE"); override != "" {
@@ -929,7 +955,8 @@ func (r *AgentTaskRunner) runInDocker(ctx context.Context, task *models.Task, at
 		prompt,
 	}
 
-	env := r.BuildProcessEnv(task, model, "/root")
+	// Model credentials and the OpenCode password must not enter the task container (Gate 0G).
+	env := scrubSandboxEnv(r.BuildProcessEnv(task, model, "/root"))
 
 	containerCfg := &container.Config{
 		Image:        imageName,
@@ -945,18 +972,8 @@ func (r *AgentTaskRunner) runInDocker(ctx context.Context, task *models.Task, at
 		hostBinPath = "/home/ghug/.opencode/bin/opencode"
 	}
 
-	binds := []string{
-		fmt.Sprintf("%s:/workspace:rw", hostPath),
-		fmt.Sprintf("%s:/usr/local/bin/opencode:ro", hostBinPath),
-		fmt.Sprintf("%s:/root/.config/opencode:ro", r.cfg.OpenCodeConfigDir),
-		fmt.Sprintf("%s:/root/.local/share/opencode:rw", r.cfg.OpenCodeDataDir),
-	}
-	if hostPath != "/workspace" {
-		binds = append(binds, fmt.Sprintf("%s:%s:rw", hostPath, hostPath))
-	}
-
 	hostCfg := &container.HostConfig{
-		Binds:  binds,
+		Binds:  agentSandboxBinds(hostPath, hostBinPath),
 		Memory: 4 * 1024 * 1024 * 1024,
 	}
 
