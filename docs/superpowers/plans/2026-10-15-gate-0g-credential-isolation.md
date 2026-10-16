@@ -103,3 +103,13 @@ The user runs the host, so they are the host operator for B1, and chose not to r
 | ATM and firewall rules | Unchanged: ATM does not modify firewall rules or receive `NET_ADMIN`. The opt-out removes a startup check only. |
 
 B1 is therefore no longer a blocker for *using* the gateway in development, but it still blocks gate qualification. The operator handoff doc stays valid for anyone who later wants the restricted route.
+
+## Stage 3 wiring and live probe (2026-10-16)
+
+Committed `db22464`, `81bda33`: gateway startup in `cmd/server` (only with `ATM_GATEWAY_ENABLED=true`), `GatewayAccess`/`NewProjectSandboxManagerWithGateway`, lease-scoped token (lease = container ID) released on stop and on every failed provisioning, OpenCode config delivered over exec stdin to `/run/secrets/opencode-config` before the password, entrypoint extended and `ExpectedEntrypointSHA256` re-pinned to `87f8f33f…`.
+
+Verified in `atm-guest` (offline, vendored): `go test ./internal/runner ./internal/gateway ./internal/quarantineguard` pass, 4 new `TestProjectGateway_*` tests, mutation checks on stop-release, rollback-release and config delivery all KILLED. `-race` not run (no cgo in guest).
+
+Live probe in `atm-build` (Docker 29.1.3, OpenCode 2.0.26, read-only rootfs, cap-drop ALL, tmpfs secrets): delivery order config then password works; both files are consumed and unlinked; `OPENCODE_CONFIG_CONTENT` and `OPENCODE_PASSWORD` are set in PID 1 environ (accepted B6 risk); token and password absent from `docker inspect` and `docker logs`; without a config file no `OPENCODE_CONFIG_CONTENT` is set.
+
+Not done: no caller builds the sandbox manager with a broker (quarantine), sandbox-facing gateway URL setting, full end-to-end through a real gateway. Gate 0G stays **BLOCKED / UNQUALIFIED**: SEC-0G-03 needs the restricted route (B1) and the quarantine is unchanged.
