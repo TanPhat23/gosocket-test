@@ -29,6 +29,11 @@ RUN addgroup -g 1000 opencode && \
     mkdir -p /workspaces /var/lib/opencode && \
     chown -R opencode:opencode /workspaces /var/lib/opencode
 
+# Task shells start from OpenCode's environment, which holds the OpenCode password and the gateway capability
+# token. Non-interactive bash sources BASH_ENV (set by the controller) first, so task commands do not inherit them.
+RUN printf '%s\n' 'unset OPENCODE_PASSWORD OPENCODE_SERVER_PASSWORD OPENCODE_CONFIG_CONTENT' > /usr/local/lib/atm-scrub.sh && \
+    chmod 0444 /usr/local/lib/atm-scrub.sh
+
 {{range .Toolchains}}{{$layout := requireInstallLayout .InstallLayout}}
 # Toolchain: {{.Runtime}} {{.Version}}
 RUN set -eu; \

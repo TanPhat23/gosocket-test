@@ -12,7 +12,7 @@ import (
 // goldenTemplateSHA256 is derived independently with `sha256sum` of
 // templates/Dockerfile.project.template. Update it deliberately, in the same reviewed change
 // as any template edit. It must equal ExpectedTemplateSHA256.
-const goldenTemplateSHA256 = "40928be57cb1772c6a1b9a1037292a18db8bc2cae00864d00d9d657e90021f59"
+const goldenTemplateSHA256 = "ece3e020347dbbaa31cb15aeb1008173a14e56e2f85014eb4bf3ea8aa84d843e"
 
 func tplFixtureCatalog() *pfCatalog {
 	mk := func(rt, ver, ext, format string) RuntimeCatalogEntry {

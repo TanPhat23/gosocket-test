@@ -23,7 +23,7 @@ var embeddedEntrypoint []byte
 // ExpectedTemplateSHA256 is the pinned SHA-256 of templates/Dockerfile.project.template.
 // Update it deliberately, in the same reviewed change as any template edit; the golden test
 // in image_template_test.go pins the same value.
-const ExpectedTemplateSHA256 = "40928be57cb1772c6a1b9a1037292a18db8bc2cae00864d00d9d657e90021f59"
+const ExpectedTemplateSHA256 = "ece3e020347dbbaa31cb15aeb1008173a14e56e2f85014eb4bf3ea8aa84d843e"
 
 // ExpectedEntrypointSHA256 is the pinned SHA-256 of templates/atm-entrypoint.sh, which is copied into
 // the image build context. Update it in the same reviewed change as any edit to the script.

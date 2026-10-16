@@ -122,7 +122,7 @@ Ran the spec §10 matrix (0G-PROBE-01..18) on the Gate 0D firewall VM (`atm-fw`,
 |---|---|---|
 | 01 env | PASS | `docker exec env` shows no key, token or password. |
 | 02 `/proc/*/environ` | PASS for provider key; password and gateway token present in PID 1 only | 4 pids scanned, zero provider-key or `sk-` hits. `OPENCODE_PASSWORD` and `OPENCODE_CONFIG_CONTENT` (capability token) are in PID 1 environ (accepted B6). |
-| 03 task child env | **FAIL** (password, token); PASS (provider key) | A model-requested `shell` tool call ran `printenv`; the output (and so the model provider's request body) contained `OPENCODE_PASSWORD=` and `OPENCODE_CONFIG_CONTENT=` with the capability token. No provider key. This is a consequence of B6: OpenCode passes its own environment to tool children. |
+| 03 task child env | FAIL before the fix, **PASS after** (see Fix for probe 03) | A model-requested `shell` tool call ran `printenv`; the output (and so the model provider's request body) contained `OPENCODE_PASSWORD=` and `OPENCODE_CONFIG_CONTENT=` with the capability token. No provider key. This is a consequence of B6: OpenCode passes its own environment to tool children. |
 | 04 inspect | PASS | No password, token or key; only `OPENCODE_SERVER_PORT`. |
 | 05 logs | PASS | 40 bytes (`server listening`), no secrets; secret files consumed and unlinked. |
 | 06 direct provider egress | PASS | `api.anthropic.com`, `api.openai.com` time out from `sbA` and from the real sandbox container. |
@@ -147,3 +147,8 @@ Also verified: end to end, OpenCode prompt, gateway, fake upstream returns strea
 
 ### Status
 Gate 0G stays **UNQUALIFIED**. Open items for the user: 03 (password/token visible to task children and so to the model provider), 18 (plain HTTP, B4), 12 (quota rather than spend cap, B3). Evidence came from a QEMU VM, not a production host. The quarantine is unchanged.
+
+### Fix for probe 03 (2026-10-16, user decision: accept B6 and scrub)
+OpenCode runs the shell tool as `/bin/bash` directly under PID 1, so it inherits the OpenCode environment. `SHELL=` is ignored (live-tested, still leaked). Non-interactive bash sources `BASH_ENV`, so the image now carries a root-owned read-only `/usr/local/lib/atm-scrub.sh` (`unset OPENCODE_PASSWORD OPENCODE_SERVER_PASSWORD OPENCODE_CONFIG_CONTENT`) and the container env sets `BASH_ENV` to it. Live, same `printenv` task as before: leaked before, no `OPENCODE_PASSWORD` or `OPENCODE_CONFIG_CONTENT` after (image-baked file, env set as the draft does). Template hash pin recomputed again; `TestProjectContainer_TaskShellScrubsSecrets` fails when `BASH_ENV` is mutated; full `go test ./...` passes in `atm-guest`.
+
+Limits, stated plainly: this is hygiene, not a boundary. Task code runs as the same UID, so it can still read `/proc/1/environ` (accepted B6) and can run a shell that skips `BASH_ENV` (`sh`, `bash --norc` does not skip it, but `env BASH_ENV= bash`/`sh` do). It stops the accidental and the model-driven `printenv` path that sent the secrets to the model provider. Gate 0G remains **UNQUALIFIED**; open items are 18 (plain HTTP, B4) and 12 (quota, not a spend cap, B3).
