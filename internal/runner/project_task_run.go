@@ -3,6 +3,8 @@ package runner
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -241,6 +243,68 @@ func (r *AgentTaskRunner) resolveGitHubIntegration(ctx context.Context, task *mo
 	return integ, token, nil
 }
 
+// projectRuntimeImage returns the image to run the project in: built or reused from the project's resolved
+// runtime profile when a resolver and builder are set, otherwise the fixed projectImage. Repository manifests
+// are not read yet, so the profile comes from the catalog baseline plus project.RuntimeConfig.
+func (r *AgentTaskRunner) projectRuntimeImage(ctx context.Context, project *models.Project) (string, error) {
+	if r.imageResolver == nil || r.imageBuilder == nil {
+		return r.projectImage, nil
+	}
+	profile, err := r.imageResolver.ResolveMultiRepo(ctx, nil, project)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve runtime profile: %w", err)
+	}
+	tag, err := r.imageBuilder.BuildOrGetImage(ctx, profile)
+	if err != nil {
+		return "", fmt.Errorf("failed to build runtime image: %w", err)
+	}
+	return tag, nil
+}
+
+const injectConfigScript = `set -e
+mkdir -p .claude
+printf %s "$1" | base64 -d > opencode.json
+printf %s "$2" | base64 -d > .claude/config.json
+ex=$(git rev-parse --git-path info/exclude)
+mkdir -p "$(dirname "$ex")"
+printf '%s\n' /opencode.json /.claude/config.json >> "$ex"`
+
+// injectTaskConfigInContainer writes the task's skills and MCP server names where the legacy draft wrote them
+// (opencode.json, .claude/config.json), but inside the container worktree. It writes nothing for a task with
+// neither, and keeps the files out of the commit via the repository's info/exclude. File content travels as a
+// base64 argument, so nothing is interpolated into a shell command.
+func (r *AgentTaskRunner) injectTaskConfigInContainer(ctx context.Context, containerID, worktree string, task *models.Task) error {
+	if len(task.Skills) == 0 && len(task.MCPServers) == 0 {
+		return nil
+	}
+	skills, mcp := task.Skills, task.MCPServers
+	if skills == nil {
+		skills = []string{}
+	}
+	if mcp == nil {
+		mcp = []string{}
+	}
+	oc, err := json.Marshal(OpenCodeConfigFile{Skills: skills, MCPServers: mcp})
+	if err != nil {
+		return err
+	}
+	cl, err := json.Marshal(ClaudeConfigFile{Skills: skills, MCPServers: mcp})
+	if err != nil {
+		return err
+	}
+	res, err := execInContainer(ctx, r.dockerCli, containerID, worktree, []string{
+		"sh", "-c", injectConfigScript, "sh",
+		base64.StdEncoding.EncodeToString(oc), base64.StdEncoding.EncodeToString(cl),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to inject task config: %w", err)
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("task config injection exited with code %d: %s", res.ExitCode, strings.TrimSpace(res.Output))
+	}
+	return nil
+}
+
 // runTaskInProjectContainerDisabledDraft runs one task end to end in the project container. It does not do the
 // run bookkeeping (running/completed/done channels) that RunTask owns.
 //
@@ -252,12 +316,16 @@ func (r *AgentTaskRunner) runTaskInProjectContainerDisabledDraft(ctx context.Con
 	if r.repoTransfer == nil || r.projectSandboxMgr == nil || r.dockerCli == nil || r.projectRepo == nil {
 		return errors.New("project container runtime is not configured")
 	}
-	if r.projectImage == "" {
+	if r.projectImage == "" && (r.imageResolver == nil || r.imageBuilder == nil) {
 		return errors.New("no project runtime image is configured")
 	}
 	project, err := r.projectRepo.GetByID(ctx, task.ProjectID)
 	if err != nil {
 		return fmt.Errorf("failed to lookup project %s: %w", task.ProjectID, err)
+	}
+	imageTag, err := r.projectRuntimeImage(ctx, project)
+	if err != nil {
+		return err
 	}
 	integ, token, err := r.resolveGitHubIntegration(ctx, task)
 	if err != nil {
@@ -272,7 +340,7 @@ func (r *AgentTaskRunner) runTaskInProjectContainerDisabledDraft(ctx context.Con
 		return err
 	}
 
-	route, err := r.projectSandboxMgr.EnsureProjectContainer(ctx, project, r.projectImage)
+	route, err := r.projectSandboxMgr.EnsureProjectContainer(ctx, project, imageTag)
 	if err != nil {
 		return fmt.Errorf("failed to ensure project container: %w", err)
 	}
@@ -300,6 +368,10 @@ func (r *AgentTaskRunner) runTaskInProjectContainerDisabledDraft(ctx context.Con
 	}
 	if err := oc.EnsureSessionAtLocation(ctx, sessionID, task.Title, worktree); err != nil {
 		return fmt.Errorf("failed to bind session to %s: %w", worktree, err)
+	}
+
+	if err := r.injectTaskConfigInContainer(ctx, route.ContainerID, worktree, task); err != nil {
+		return err
 	}
 
 	baseSHA, err := r.runGit(ctx, route.ContainerID, worktree, "rev-parse", "HEAD")
@@ -333,10 +405,15 @@ func (r *AgentTaskRunner) runTaskInProjectContainerDisabledDraft(ctx context.Con
 		if sess, err := oc.GetSession(ctx, sessionID); err == nil {
 			before = sess.UpdatedAt
 		}
+		subCtx, subCancel := context.WithCancel(ctx)
+		go r.watchChildSubagents(subCtx, oc, task.ID, attempt.ID, sessionID)
 		if err := oc.PromptSession(ctx, sessionID, prompt); err != nil {
+			subCancel()
 			return fmt.Errorf("failed to prompt session: %w", err)
 		}
-		if err := r.waitForSessionOutcome(ctx, oc, sessionID, before); err != nil {
+		waitErr := r.waitForSessionOutcome(ctx, oc, sessionID, before)
+		subCancel()
+		if err := waitErr; err != nil {
 			r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\r\n\x1b[31m[Agent Control Plane] Execution failed in iteration %d: %v\x1b[0m\r\n", iteration, err))
 			return err
 		}

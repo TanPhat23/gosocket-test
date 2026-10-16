@@ -4,8 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -152,6 +156,9 @@ type ptrOC struct {
 	bound    string
 	updated  time.Time
 	status   string
+
+	mu         sync.Mutex
+	childPolls int
 }
 
 func (o *ptrOC) EnsureSessionAtLocation(_ context.Context, _, _, dir string) error {
@@ -402,5 +409,154 @@ func TestExecInContainer_ReturnsExitCodeAndCapsOutput(t *testing.T) {
 	}
 	if res.ExitCode != 7 || len(res.Output) != containerExecOutputCap {
 		t.Fatalf("exit %d len %d", res.ExitCode, len(res.Output))
+	}
+}
+
+func (o *ptrOC) ListChildSessions(context.Context, string) ([]OpenCodeSessionDTO, error) {
+	o.mu.Lock()
+	o.childPolls++
+	o.mu.Unlock()
+	return nil, nil
+}
+
+type ptrResolver struct {
+	RuntimeResolver
+	proj *models.Project
+	err  error
+}
+
+func (r *ptrResolver) ResolveMultiRepo(_ context.Context, m map[string]*RepositoryManifest, p *models.Project) (*ResolvedRuntimeProfile, error) {
+	r.proj = p
+	if len(m) != 0 {
+		panic("manifests are not read yet")
+	}
+	return &ResolvedRuntimeProfile{}, r.err
+}
+
+type ptrBuilder struct {
+	tag string
+	err error
+	n   int
+}
+
+func (b *ptrBuilder) BuildOrGetImage(context.Context, *ResolvedRuntimeProfile) (string, error) {
+	b.n++
+	return b.tag, b.err
+}
+
+func TestProjectTaskRun_UsesBuiltImageForResolvedProfile(t *testing.T) {
+	f := newPtrFixture(t, []string{"succeeded"}, []int{0}, true)
+	f.r.projectImage = ""
+	res, b := &ptrResolver{}, &ptrBuilder{tag: "built@sha256:def"}
+	f.r.imageResolver, f.r.imageBuilder = res, b
+	if err := f.run(t); err != nil {
+		t.Fatal(err)
+	}
+	if f.sb.imgSeen != "built@sha256:def" || res.proj == nil || res.proj.ID != "p1" || b.n != 1 {
+		t.Fatalf("image %q proj %v builds %d", f.sb.imgSeen, res.proj, b.n)
+	}
+}
+
+func TestProjectTaskRun_ImageBuildOrResolveFailureStopsBeforeContainer(t *testing.T) {
+	for name, set := range map[string]func(*ptrFixture){
+		"build": func(f *ptrFixture) {
+			f.r.imageResolver, f.r.imageBuilder = &ptrResolver{}, &ptrBuilder{err: errors.New("boom")}
+		},
+		"resolve": func(f *ptrFixture) {
+			f.r.imageResolver, f.r.imageBuilder = &ptrResolver{err: errors.New("bad")}, &ptrBuilder{}
+		},
+	} {
+		f := newPtrFixture(t, []string{"succeeded"}, nil, true)
+		f.r.projectImage = ""
+		set(f)
+		if err := f.run(t); err == nil || f.sb.called != 0 || f.tm.ingest != nil {
+			t.Fatalf("%s: err=%v called=%d", name, err, f.sb.called)
+		}
+	}
+}
+
+func TestProjectTaskRun_InjectsSkillsAndMCPAsBase64AndExcludesThemFromTheCommit(t *testing.T) {
+	f := newPtrFixture(t, []string{"succeeded"}, []int{0}, true)
+	f.task.Skills = []string{"s1"}
+	f.task.MCPServers = []string{"m';rm -rf /;'"}
+	if err := f.run(t); err != nil {
+		t.Fatal(err)
+	}
+	var inject string
+	for _, c := range f.dk.argvs() {
+		if strings.Contains(c, "info/exclude") {
+			inject = c
+		}
+	}
+	if inject == "" || !strings.Contains(inject, "/opencode.json /.claude/config.json") {
+		t.Fatalf("no injection with exclude: %v", f.dk.argvs())
+	}
+	if strings.Contains(inject, "rm -rf") {
+		t.Fatalf("server name reached the shell script unencoded: %s", inject)
+	}
+	if !strings.Contains(inject, base64.StdEncoding.EncodeToString([]byte(`{"skills":["s1"],"mcp_servers":["m';rm -rf /;'"]}`))) {
+		t.Fatalf("opencode.json payload missing: %s", inject)
+	}
+}
+
+func TestProjectTaskRun_NoSkillsNoInjection(t *testing.T) {
+	f := newPtrFixture(t, []string{"succeeded"}, []int{0}, true)
+	if err := f.run(t); err != nil {
+		t.Fatal(err)
+	}
+	if f.dk.ran("info/exclude") {
+		t.Fatal("injected config for a task with no skills or MCP servers")
+	}
+}
+
+func TestProjectTaskRun_WatchesChildSubagentsOnTheProjectClient(t *testing.T) {
+	f := newPtrFixture(t, []string{"succeeded"}, []int{0}, true)
+	if err := f.run(t); err != nil {
+		t.Fatal(err)
+	}
+	if f.r.openCodeClient != nil {
+		t.Fatal("fixture must not have a host client")
+	}
+	// The watcher does a final poll when its turn ends, on the project client it was handed.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		f.oc.mu.Lock()
+		n := f.oc.childPolls
+		f.oc.mu.Unlock()
+		if n > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("child sessions were never polled on the project client")
+}
+
+// The fake docker cannot show what the script does, so run the real script against a real repository.
+func TestInjectConfigScript_WritesFilesAndKeepsThemOutOfGitStatus(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	dir := t.TempDir()
+	for _, args := range [][]string{{"init", "-q"}, {"-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "i"}} {
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	oc, cl := `{"skills":["s"]}`, `{"skills":["c"]}`
+	cmd := exec.Command("sh", "-c", injectConfigScript, "sh",
+		base64.StdEncoding.EncodeToString([]byte(oc)), base64.StdEncoding.EncodeToString([]byte(cl)))
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("script: %v %s", err, out)
+	}
+	for path, want := range map[string]string{"opencode.json": oc, ".claude/config.json": cl} {
+		got, err := os.ReadFile(filepath.Join(dir, path))
+		if err != nil || string(got) != want {
+			t.Fatalf("%s = %q, %v", path, got, err)
+		}
+	}
+	out, err := exec.Command("git", "-C", dir, "status", "--porcelain").Output()
+	if err != nil || strings.TrimSpace(string(out)) != "" {
+		t.Fatalf("injected files are visible to git add -A: %q %v", out, err)
 	}
 }

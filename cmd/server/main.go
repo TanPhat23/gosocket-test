@@ -237,7 +237,8 @@ func main() {
 	// Gates 0D/0G: the project runtime (sandbox manager with gateway tokens and firewall proof, image builder
 	// with the gateway CA) is assembled only when ATM_PROJECT_RUNTIME_ENABLED=true. Every entry point still
 	// refuses while the runtime is quarantined, so this changes configuration validation, not behaviour.
-	projectRuntime, err := runner.ProjectRuntimeFromEnv(os.Getenv, os.ReadFile, dockerCli, runner.NewDefaultRuntimeCatalog(), gatewaySvc)
+	runtimeCatalog := runner.NewDefaultRuntimeCatalog()
+	projectRuntime, err := runner.ProjectRuntimeFromEnv(os.Getenv, os.ReadFile, dockerCli, runtimeCatalog, gatewaySvc)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
@@ -246,7 +247,10 @@ func main() {
 		runner.WithRunnerTaskRepoTransfer(repoTransfer),
 	}
 	if projectRuntime != nil {
-		runnerOpts = append(runnerOpts, runner.WithRunnerProjectSandboxManager(projectRuntime.Manager))
+		runnerOpts = append(runnerOpts,
+			runner.WithRunnerProjectSandboxManager(projectRuntime.Manager),
+			runner.WithRunnerRuntimeImage(runner.NewRuntimeResolver(runtimeCatalog), projectRuntime.Builder),
+		)
 		log.Printf("project runtime configured (gateway CA baked into images, firewall proof before sandbox start); runtime stays quarantined")
 	}
 
