@@ -59,6 +59,15 @@ Startup fails closed with a message naming the bad setting. Per-project containe
 fails (check the firewall and canary first). You also need a GitHub integration on the project, since the run ingests
 and pushes through the transfer helper.
 
+## Managing a session from the web UI (tunnel)
+In the task's session view a Member can steer (prompt), compact and interrupt the running OpenCode turn; a Viewer can
+read the transcript. The browser only talks to the control plane (`/api/v1/tasks/:id/session[/prompt|/compact|/interrupt]`);
+the control plane holds the OpenCode password and forwards each allowlisted call to that task's own project sandbox.
+There is deliberately no raw proxy to OpenCode, so nothing outside these calls is reachable. Interrupt stops the turn,
+not the task. Steer only delivers the prompt: it does not move the task status or push the result. If the project
+container is not running the calls fail with "service unavailable". Not yet built: subagent (child session) listing and a
+live event stream (the view still polls).
+
 ## Back to the simulated runtime
 `docker compose up -d` without the override. Known limits: the model comes from the gateway config (no per-task
 model); the dev proxy has no SNI or private-address checks; `EnsureTaskWorktree` still refuses.

@@ -183,6 +183,7 @@ func (s *Server) setupRoutes() {
 		sessionGroup.Get("", taskHandlers.GetSession)
 		sessionGroup.Post("/prompt", taskHandlers.PromptSession)
 		sessionGroup.Post("/compact", taskHandlers.CompactSession)
+		sessionGroup.Post("/interrupt", taskHandlers.InterruptSession)
 	}
 
 	// Team & Project routes

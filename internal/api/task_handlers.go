@@ -232,6 +232,21 @@ func (h *TaskHandlers) CompactSession(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"status": "compacted"})
 }
 
+// InterruptSession handles POST /api/v1/tasks/:id/session/interrupt
+// Protected by RequireAuth. Stops the running turn; the task itself is not cancelled.
+func (h *TaskHandlers) InterruptSession(c fiber.Ctx) error {
+	taskID, err := parseTaskID(c)
+	if err != nil {
+		return badRequest(c, err)
+	}
+
+	if err := h.taskService.InterruptTaskSession(c.Context(), taskID, currentUserID(c)); err != nil {
+		return CentralErrorHandler(c, err)
+	}
+
+	return c.JSON(fiber.Map{"status": "interrupted"})
+}
+
 // GetDiff returns the unified git diff for a task.
 func (h *TaskHandlers) GetDiff(c fiber.Ctx) error {
 	taskID, err := parseTaskID(c)

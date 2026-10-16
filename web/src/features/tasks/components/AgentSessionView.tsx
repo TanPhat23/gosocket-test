@@ -31,6 +31,7 @@ import {
   CornerDownLeft,
   ArrowDown,
   Info,
+  Square,
 } from 'lucide-react';
 import { AgentQuestionnaire, type QuestionItemData } from './AgentQuestionnaire';
 import { extractQuestionsFromText } from '../utils/questionParser';
@@ -228,6 +229,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
 
   // Compact state
   const [isCompacting, setIsCompacting] = useState<boolean>(false);
+  const [isInterrupting, setIsInterrupting] = useState<boolean>(false);
   const [compactMessage, setCompactMessage] = useState<string | null>(null);
 
   // View toggles for Inspector tabs
@@ -494,6 +496,22 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
     }
   };
 
+  const handleInterruptSession = async () => {
+    setIsInterrupting(true);
+    setCompactMessage(null);
+    try {
+      await taskApi.interruptTaskSession(taskId);
+      setCompactMessage('Interrupt sent. The current turn is stopping.');
+      await fetchSession(false);
+      setTimeout(() => setCompactMessage(null), 4000);
+    } catch (err: unknown) {
+      const apiErr = err as { message?: string };
+      setCompactMessage(`Interrupt failed: ${apiErr?.message || 'Unknown error'}`);
+    } finally {
+      setIsInterrupting(false);
+    }
+  };
+
   const handleCompactSession = async () => {
     setIsCompacting(true);
     setCompactMessage(null);
@@ -594,6 +612,20 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
                 >
                   <Zap className={`size-3 ${isCompacting ? 'animate-spin text-amber-500' : 'text-amber-500'}`} />
                   <span className="hidden sm:inline">{isCompacting ? 'Compacting...' : 'Compact'}</span>
+                </Button>
+
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={loading || isInterrupting || isUnavailable || isSimulated}
+                  onClick={handleInterruptSession}
+                  className="h-6 px-2 text-[11px] font-mono gap-1 text-muted-foreground hover:text-foreground"
+                  title="Interrupt the running turn (the task is not cancelled)"
+                  data-testid="interrupt-session-btn"
+                >
+                  <Square className="size-3 text-red-500" />
+                  <span className="hidden sm:inline">{isInterrupting ? 'Interrupting...' : 'Interrupt'}</span>
                 </Button>
 
                 <Button
