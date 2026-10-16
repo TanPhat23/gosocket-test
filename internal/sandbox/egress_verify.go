@@ -69,10 +69,10 @@ func validEndpoint(s string) bool {
 	return ip != nil && ip.To4() != nil
 }
 
-// VerifyEgressFirewall runs the probe and returns nil only when it proves the policy is enforced.
-func VerifyEgressFirewall(ctx context.Context, cli DockerClient, cfg EgressVerifyConfig) error {
-	if cli == nil || cfg.Image == "" || cfg.Network == "" {
-		return errors.New("egress verification: a Docker client, image and network are required")
+// ValidateEgressVerifyConfig checks cfg without touching Docker, so a bad setting fails at startup.
+func ValidateEgressVerifyConfig(cfg EgressVerifyConfig) error {
+	if cfg.Image == "" || cfg.Network == "" {
+		return errors.New("egress verification: an image and network are required")
 	}
 	if !validEndpoint(cfg.Control) {
 		return fmt.Errorf("egress verification: control %q must be ipv4:port", cfg.Control)
@@ -84,6 +84,17 @@ func VerifyEgressFirewall(ctx context.Context, cli DockerClient, cfg EgressVerif
 		if !validEndpoint(c) {
 			return fmt.Errorf("egress verification: canary %q must be ipv4:port", c)
 		}
+	}
+	return nil
+}
+
+// VerifyEgressFirewall runs the probe and returns nil only when it proves the policy is enforced.
+func VerifyEgressFirewall(ctx context.Context, cli DockerClient, cfg EgressVerifyConfig) error {
+	if cli == nil {
+		return errors.New("egress verification: a Docker client, image and network are required")
+	}
+	if err := ValidateEgressVerifyConfig(cfg); err != nil {
+		return err
 	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {

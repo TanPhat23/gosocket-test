@@ -234,6 +234,22 @@ func main() {
 		log.Printf("git transfer adapter enabled (image %s); runtime stays quarantined", os.Getenv("ATM_GIT_TRANSFER_IMAGE"))
 	}
 
+	// Gates 0D/0G: the project runtime (sandbox manager with gateway tokens and firewall proof, image builder
+	// with the gateway CA) is assembled only when ATM_PROJECT_RUNTIME_ENABLED=true. Every entry point still
+	// refuses while the runtime is quarantined, so this changes configuration validation, not behaviour.
+	projectRuntime, err := runner.ProjectRuntimeFromEnv(os.Getenv, os.ReadFile, dockerCli, runner.NewDefaultRuntimeCatalog(), gatewaySvc)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	runnerOpts := []runner.RunnerOption{
+		runner.WithRunnerGitHubIntegration(integrationRepo, credRepo, cipher, ghProvider),
+		runner.WithRunnerTaskRepoTransfer(repoTransfer),
+	}
+	if projectRuntime != nil {
+		runnerOpts = append(runnerOpts, runner.WithRunnerProjectSandboxManager(projectRuntime.Manager))
+		log.Printf("project runtime configured (gateway CA baked into images, firewall proof before sandbox start); runtime stays quarantined")
+	}
+
 	// Concrete Agent Task Runner (orchestrating worktrees, OpenCode, and diff snapshots)
 	agentRunner := runner.NewAgentTaskRunner(
 		cfg,
@@ -244,8 +260,7 @@ func main() {
 		dockerRunner,
 		dockerCli,
 		hub,
-		runner.WithRunnerGitHubIntegration(integrationRepo, credRepo, cipher, ghProvider),
-		runner.WithRunnerTaskRepoTransfer(repoTransfer),
+		runnerOpts...,
 	)
 
 	// Concurrency-bounded Asynq Worker Server

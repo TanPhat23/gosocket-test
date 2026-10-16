@@ -78,3 +78,25 @@ func TestVerifyEgressFirewall_DockerFailuresFailClosed(t *testing.T) {
 		t.Fatal("nil client must not pass")
 	}
 }
+
+func TestValidateEgressVerifyConfig(t *testing.T) {
+	ok := EgressVerifyConfig{Image: "img", Network: "n", Control: "172.28.200.10:3128", Canaries: []string{"10.0.0.1:22"}}
+	if err := ValidateEgressVerifyConfig(ok); err != nil {
+		t.Fatalf("valid config rejected: %v", err)
+	}
+	bad := map[string]func(*EgressVerifyConfig){
+		"no image":     func(c *EgressVerifyConfig) { c.Image = "" },
+		"no network":   func(c *EgressVerifyConfig) { c.Network = "" },
+		"bad control":  func(c *EgressVerifyConfig) { c.Control = "proxy:3128" },
+		"no canaries":  func(c *EgressVerifyConfig) { c.Canaries = nil },
+		"bad canary":   func(c *EgressVerifyConfig) { c.Canaries = []string{"10.0.0.1"} },
+		"port too big": func(c *EgressVerifyConfig) { c.Canaries = []string{"10.0.0.1:70000"} },
+	}
+	for name, mutate := range bad {
+		c := ok
+		mutate(&c)
+		if err := ValidateEgressVerifyConfig(c); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
+	}
+}
