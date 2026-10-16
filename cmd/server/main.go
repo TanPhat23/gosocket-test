@@ -40,6 +40,10 @@ func main() {
 		log.Fatalf("failed to load configuration: %v", err)
 	}
 
+	if err := config.ValidateRawProductionConfig(cfg.ToRaw()); err != nil {
+		log.Fatalf("production preflight validation failed: %v", err)
+	}
+
 	fmt.Printf("Starting Agent Task Manager Control Plane on port %d (env: %s)\n", cfg.Port, cfg.AppEnv)
 
 	// Database connection and auto-migration
@@ -112,11 +116,11 @@ func main() {
 	integrationRepo := repository.NewIntegrationRepository(gormDB)
 
 	// Cryptographic Cipher
-	masterKey := []byte(cfg.SecretEncryptionKey)
-	if len(masterKey) != 32 {
-		log.Fatalf("SECRET_ENCRYPTION_KEY must be exactly 32 bytes (got %d)", len(masterKey))
+	masterKey, err := config.NormalizeEncryptionKey(cfg.SecretEncryptionKey)
+	if err != nil {
+		log.Fatalf("failed to initialize encryption key: %v", err)
 	}
-	cipher, err := crypto.NewGCMCipher(masterKey)
+	cipher, err := crypto.NewGCMCipher(masterKey.RawBytes[:])
 	if err != nil {
 		log.Fatalf("failed to initialize secret cipher: %v", err)
 	}

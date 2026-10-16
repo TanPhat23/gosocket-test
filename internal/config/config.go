@@ -1,12 +1,60 @@
 package config
 
 import (
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 )
+
+// RawEnvironmentConfig captures the initial unmarshaled environment inputs.
+type RawEnvironmentConfig struct {
+	AppEnv              string
+	PreflightStrict     bool
+	DatabaseURL         string
+	DatabasePassword    string
+	RedisPassword       string
+	SecretEncryptionKey string
+	SessionSecret       string
+	OIDCClientSecret    string
+	OpenCodeAuthMode    string
+	OpenCodePassword    string
+}
+
+// MasterEncryptionKey holds a validated and normalized 256-bit AES master key.
+type MasterEncryptionKey struct {
+	RawBytes    [32]byte
+	IsHexFormat bool
+}
+
+// ProductionHardeningConfig governs preflight boundaries and secret validation.
+type ProductionHardeningConfig struct {
+	PreflightStrict  bool
+	RequireTLS       bool
+	DisallowDefaults bool
+}
+
+// ProposedConfig represents the modernized target application configuration contract.
+type ProposedConfig struct {
+	AppEnv           string
+	Port             int
+	Hardening        ProductionHardeningConfig
+	MasterKey        MasterEncryptionKey
+	SessionSecret    string
+	DatabaseURL      string
+	DatabasePassword string
+	RedisAddr        string
+	RedisPassword    string
+	Domain           string
+	OIDCClientID     string
+	OIDCClientSecret string
+	OpenCodeAuthMode string
+	OpenCodePassword string
+}
 
 // Config represents the application configuration.
 type Config struct {
@@ -169,4 +217,126 @@ func getEnvFirst(keys ...string) string {
 		}
 	}
 	return ""
+}
+
+// ToRaw converts Config to RawEnvironmentConfig.
+func (c *Config) ToRaw() *RawEnvironmentConfig {
+	return &RawEnvironmentConfig{
+		AppEnv:              c.AppEnv,
+		PreflightStrict:     os.Getenv("PREFLIGHT_STRICT") == "true",
+		DatabaseURL:         c.DatabaseURL,
+		RedisPassword:       c.RedisPassword,
+		SecretEncryptionKey: c.SecretEncryptionKey,
+		SessionSecret:       c.SessionSecret,
+		OIDCClientSecret:    c.OIDCClientSecret,
+		OpenCodeAuthMode:    "legacy_static",
+		OpenCodePassword:    c.OpenCodePassword,
+	}
+}
+
+// NormalizeEncryptionKey decodes and normalizes a 64-hex or 32-literal character encryption key.
+func NormalizeEncryptionKey(keyStr string) (*MasterEncryptionKey, error) {
+	if keyStr == "" {
+		return nil, errors.New("SECRET_ENCRYPTION_KEY is required and cannot be empty")
+	}
+
+	key := &MasterEncryptionKey{}
+	if len(keyStr) == 64 {
+		decoded, err := hex.DecodeString(keyStr)
+		if err != nil {
+			return nil, errors.New("invalid SECRET_ENCRYPTION_KEY: 64-character key contains invalid hex encoding")
+		}
+		copy(key.RawBytes[:], decoded)
+		key.IsHexFormat = true
+		return key, nil
+	} else if len(keyStr) == 32 {
+		copy(key.RawBytes[:], []byte(keyStr))
+		key.IsHexFormat = false
+		return key, nil
+	}
+
+	return nil, fmt.Errorf("invalid SECRET_ENCRYPTION_KEY: must be either a 64-character hex string or exactly 32 bytes literal (got length %d)", len(keyStr))
+}
+
+// ValidateRawProductionConfig performs fail-closed startup validation on raw inputs.
+func ValidateRawProductionConfig(raw *RawEnvironmentConfig) error {
+	isProduction := raw.AppEnv == "production"
+	isPreflightStrict := raw.PreflightStrict || os.Getenv("PREFLIGHT_STRICT") == "true"
+	if !isProduction && !isPreflightStrict {
+		return nil
+	}
+
+	// Extract database password from raw.DatabasePassword or raw.DatabaseURL
+	dbPass := raw.DatabasePassword
+	if dbPass == "" && raw.DatabaseURL != "" {
+		if u, err := url.Parse(raw.DatabaseURL); err == nil && u.User != nil {
+			dbPass, _ = u.User.Password()
+		}
+	}
+
+	insecurePostgres := map[string]bool{
+		"postgres": true,
+		"password": true,
+		"admin":    true,
+		"root":     true,
+		"secret":   true,
+		"":         true,
+	}
+	if insecurePostgres[dbPass] {
+		return errors.New("production preflight check failed: database password uses an insecure default or is empty")
+	}
+
+	insecureRedis := map[string]bool{
+		"secretredis": true,
+		"redis":       true,
+		"password":    true,
+		"admin":       true,
+		"":            true,
+	}
+	if insecureRedis[raw.RedisPassword] {
+		return errors.New("production preflight check failed: REDIS_PASSWORD uses an insecure default or is empty")
+	}
+
+	masterKey, err := NormalizeEncryptionKey(raw.SecretEncryptionKey)
+	if err != nil {
+		return err
+	}
+
+	insecureHexKeys := map[string]bool{
+		"3031323334353637383930313233343536373839303132333435363738393031": true, // literal ASCII "01234567890123456789012345678901"
+		"3132333435363738393031323334353637383930313233343536373839303132": true, // literal ASCII "12345678901234567890123456789012"
+		"3030303030303030303030303030303030303030303030303030303030303030": true, // literal ASCII 32 '0's
+		"3131313131313131313131313131313131313131313131313131313131313131": true, // literal ASCII 32 '1's
+		"0000000000000000000000000000000000000000000000000000000000000000": true, // 32 zero bytes
+		"1111111111111111111111111111111111111111111111111111111111111111": true, // 32 0x11 bytes
+	}
+	if insecureHexKeys[hex.EncodeToString(masterKey.RawBytes[:])] {
+		return errors.New("production preflight check failed: SECRET_ENCRYPTION_KEY uses an insecure default")
+	}
+
+	if raw.SessionSecret == "dev-session-secret-change-in-prod-1234" || len(raw.SessionSecret) < 32 {
+		return errors.New("production preflight check failed: SESSION_SECRET uses an insecure default or is shorter than 32 characters")
+	}
+
+	insecureOIDC := map[string]bool{
+		"dev-oidc-secret-change-in-prod-1234": true,
+		"secret":                              true,
+		"":                                    true,
+	}
+	if insecureOIDC[raw.OIDCClientSecret] {
+		return errors.New("production preflight check failed: OIDC_CLIENT_SECRET uses an insecure default or is empty")
+	}
+
+	if raw.OpenCodeAuthMode == "legacy_static" {
+		insecureOpenCode := map[string]bool{
+			"4YXQ3udRl8k_UkFdyhHSFF-bdInQgKk0F9Qz6zp2y0U": true,
+			"opencode":                                   true,
+			"":                                           true,
+		}
+		if insecureOpenCode[raw.OpenCodePassword] {
+			return errors.New("production preflight check failed: OPENCODE_PASSWORD uses an insecure default or is empty in legacy static auth mode")
+		}
+	}
+
+	return nil
 }
