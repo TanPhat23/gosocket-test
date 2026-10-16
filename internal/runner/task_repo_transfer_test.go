@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"agent-task-manager/internal/git/transfer"
+	"agent-task-manager/internal/sandbox"
 )
 
 type fakeTransferMgr struct {
@@ -72,5 +73,33 @@ func TestTaskRepoTransfer_PushAndErrorsDoNotLeakToken(t *testing.T) {
 	err := NewTaskRepoTransfer(f).PushTaskBranch(context.Background(), "p", "t1", "org/repo", "SECRETTOKEN")
 	if !errors.Is(err, transfer.ErrPushRejected) || strings.Contains(err.Error(), "SECRETTOKEN") {
 		t.Fatalf("want wrapped ErrPushRejected without the token, got %v", err)
+	}
+}
+
+func TestTaskRepoTransferFromEnv(t *testing.T) {
+	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+	pinned := "alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"
+	cli := sandbox.NewMockDockerClient()
+	for _, off := range []string{"", "false"} {
+		if got, err := TaskRepoTransferFromEnv(env(map[string]string{"ATM_GIT_TRANSFER_ENABLED": off}), cli); got != nil || err != nil {
+			t.Errorf("flag %q: want nil,nil got %v,%v", off, got, err)
+		}
+	}
+	bad := []map[string]string{
+		{"ATM_GIT_TRANSFER_ENABLED": "yes", "ATM_GIT_TRANSFER_IMAGE": pinned},
+		{"ATM_GIT_TRANSFER_ENABLED": "true"},
+		{"ATM_GIT_TRANSFER_ENABLED": "true", "ATM_GIT_TRANSFER_IMAGE": "atm-helper:latest"},
+		{"ATM_GIT_TRANSFER_ENABLED": "true", "ATM_GIT_TRANSFER_IMAGE": "alpine:3.24@sha256:" + PendingSHA256},
+	}
+	for _, m := range bad {
+		if got, err := TaskRepoTransferFromEnv(env(m), cli); got != nil || err == nil {
+			t.Errorf("%v: want error, got %v,%v", m, got, err)
+		}
+	}
+	if got, err := TaskRepoTransferFromEnv(env(map[string]string{"ATM_GIT_TRANSFER_ENABLED": "true", "ATM_GIT_TRANSFER_IMAGE": pinned}), nil); got != nil || err == nil {
+		t.Errorf("nil client: want error, got %v,%v", got, err)
+	}
+	if got, err := TaskRepoTransferFromEnv(env(map[string]string{"ATM_GIT_TRANSFER_ENABLED": "true", "ATM_GIT_TRANSFER_IMAGE": pinned}), cli); got == nil || err != nil {
+		t.Errorf("pinned image: want adapter, got %v,%v", got, err)
 	}
 }

@@ -224,6 +224,16 @@ func main() {
 		log.Printf("warning: Docker client initialization failed: %v", err)
 	}
 
+	// Gate 0C: the git transfer adapter is built only when ATM_GIT_TRANSFER_ENABLED=true. The runner holds
+	// it but RunTask still refuses while the runtime is quarantined.
+	repoTransfer, err := runner.TaskRepoTransferFromEnv(os.Getenv, dockerCli)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	if repoTransfer != nil {
+		log.Printf("git transfer adapter enabled (image %s); runtime stays quarantined", os.Getenv("ATM_GIT_TRANSFER_IMAGE"))
+	}
+
 	// Concrete Agent Task Runner (orchestrating worktrees, OpenCode, and diff snapshots)
 	agentRunner := runner.NewAgentTaskRunner(
 		cfg,
@@ -235,6 +245,7 @@ func main() {
 		dockerCli,
 		hub,
 		runner.WithRunnerGitHubIntegration(integrationRepo, credRepo, cipher, ghProvider),
+		runner.WithRunnerTaskRepoTransfer(repoTransfer),
 	)
 
 	// Concurrency-bounded Asynq Worker Server

@@ -2,11 +2,13 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 
 	"agent-task-manager/internal/git/transfer"
+	"agent-task-manager/internal/sandbox"
 )
 
 // githubSlugRegex matches "owner/repo" as GitHub allows it. It rejects anything that could change the
@@ -67,4 +69,29 @@ func (t *TaskRepoTransfer) PushTaskBranch(ctx context.Context, projectID, taskID
 		return fmt.Errorf("push task %s to %s: %w", taskID, slug, err)
 	}
 	return nil
+}
+
+// TaskRepoTransferFromEnv builds the adapter when ATM_GIT_TRANSFER_ENABLED=true. It returns nil, nil
+// when the feature is off (unset or "false"), and an error, never a half-configured adapter, for an
+// invalid flag, a missing Docker client, or a ATM_GIT_TRANSFER_IMAGE that is not digest-pinned.
+// The image is the one built from deploy/git-transfer/Dockerfile.
+func TaskRepoTransferFromEnv(getenv func(string) string, cli sandbox.DockerClient) (*TaskRepoTransfer, error) {
+	switch getenv("ATM_GIT_TRANSFER_ENABLED") {
+	case "", "false":
+		return nil, nil
+	case "true":
+	default:
+		return nil, errors.New("git transfer: ATM_GIT_TRANSFER_ENABLED must be \"true\" or \"false\"")
+	}
+	if cli == nil {
+		return nil, errors.New("git transfer: a Docker client is required")
+	}
+	image, err := requirePinnedRef(getenv("ATM_GIT_TRANSFER_IMAGE"))
+	if err != nil {
+		return nil, errors.New("git transfer: ATM_GIT_TRANSFER_IMAGE must be a digest-pinned image reference")
+	}
+	return NewTaskRepoTransfer(transfer.NewGitTransferManager(
+		transfer.NewVolumeTransferHelper(cli, image),
+		transfer.NewCredentialedGitWorker(cli, image),
+	)), nil
 }
