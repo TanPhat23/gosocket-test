@@ -20,6 +20,10 @@ import (
 var (
 	// ErrEgressOpen means a canary was reachable from a sandbox: the firewall is missing or too loose.
 	ErrEgressOpen = errors.New("egress firewall verification failed: a canary address is reachable from the sandbox network")
+	// ErrEgressCanaryAnswered means a canary refused or rejected the connection quickly instead of
+	// timing out. The packet reached something that answered, so no firewall dropped it; a missing
+	// firewall in front of a port with no listener would otherwise look "blocked".
+	ErrEgressCanaryAnswered = errors.New("egress firewall verification failed: a canary address answered (refused or rejected) instead of dropping the connection")
 	// ErrEgressControlUnreachable means the control (the egress proxy) was not reachable, so the probe
 	// cannot tell "blocked" from "no network at all".
 	ErrEgressControlUnreachable = errors.New("egress firewall verification failed: the egress proxy is not reachable from the sandbox network")
@@ -28,6 +32,7 @@ var (
 const (
 	probeExitControlUnreachable = 3
 	probeExitCanaryReachable    = 10
+	probeExitCanaryAnswered     = 11
 )
 
 // probeScript takes the control as $1 and the canaries as $2.., each "ipv4:port". Addresses are
@@ -36,7 +41,10 @@ const probeScript = `command -v nc >/dev/null 2>&1 || exit 2
 nc -w3 -z "${1%:*}" "${1##*:}" || exit 3
 shift
 for c in "$@"; do
+  s=$(date +%s)
   if nc -w3 -z "${c%:*}" "${c##*:}"; then exit 10; fi
+  e=$(date +%s)
+  [ $((e - s)) -ge 2 ] || exit 11
 done
 exit 0`
 
@@ -45,7 +53,7 @@ type EgressVerifyConfig struct {
 	Image    string   // digest-pinned image with busybox nc (deploy/git-transfer/Dockerfile)
 	Network  string   // the sandbox network the probe joins
 	Control  string   // ipv4:port that MUST be reachable (the egress proxy)
-	Canaries []string // ipv4:port that MUST NOT be reachable (host services, LAN, gateway listener-excluded addresses)
+	Canaries []string // ipv4:port that MUST be dropped (host services, LAN, WAN fixture); a fast refusal also fails
 	Timeout  time.Duration
 }
 
@@ -116,6 +124,8 @@ func VerifyEgressFirewall(ctx context.Context, cli DockerClient, cfg EgressVerif
 			return nil
 		case probeExitCanaryReachable:
 			return ErrEgressOpen
+		case probeExitCanaryAnswered:
+			return ErrEgressCanaryAnswered
 		case probeExitControlUnreachable:
 			return ErrEgressControlUnreachable
 		default:

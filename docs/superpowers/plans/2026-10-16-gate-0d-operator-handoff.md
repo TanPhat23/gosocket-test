@@ -201,3 +201,38 @@ Note the peer-sandbox block comes from Docker, not from the ATM ruleset.
 **`sandbox.VerifyEgressFirewall` against this setup** (4 canaries: bridge gateway, host IP, WAN, peer sandbox): no ruleset gives `ErrEgressOpen`; handoff ruleset gives nil; wrong control port gives `ErrEgressControlUnreachable`; the gateway listed as a canary gives `ErrEgressOpen`. Positive control held for each canary.
 
 Still untested: IPv6, rule persistence across reboot, a rebuilt sandbox network, an outside canary on real hardware, and 0G through this path.
+
+### 9a. Full spec section 8.1 matrix (same VM, later the same day)
+
+Probe container: `debian:bookworm-slim` + curl, dig, netcat-openbsd, UID 1000, `--cap-drop=ALL --read-only --security-opt no-new-privileges`, `--dns 192.0.2.1` (the dead-DNS decision, not `--dns=127.0.0.1`), proxy env set. Canaries are logging listeners (`deploy/egress-firewall/qualify/canary.py`): host ports 9999, 8080, 2222 (reached via the bridge gateway IP), `172.28.0.2:5432` and `198.51.100.50:80/tcp,5353/udp` on dummy interfaces, a TCP:80 listener in a peer sandbox, and a proxy-side connect to a sandbox listener. Run by `deploy/egress-firewall/qualify/full.sh on|off`. No probe touched IMDS or a public endpoint for a negative test.
+
+| ID | Ruleset OFF (positive control) | Ruleset ON |
+|---|---|---|
+| NEG-0D-01..04 | connected, 1 canary hit each | timeout (exit 28 / nc timeout), 0 hits |
+| NEG-0D-05 peer sandbox | connected | timeout |
+| NEG-0D-06, 07 WAN fixture TCP | connected, 1 hit each | timeout, 0 hits |
+| NEG-0D-11 WAN fixture UDP | 1 UDP hit logged | 0 hits |
+| NEG-0D-12 raw DNS | 4 packets carrying the qname on the WAN interface | 0 packets on the WAN interface |
+| NEG-0D-13 proxy to sandbox | connected | refused/timeout |
+| NEG-0D-08..10 github, anthropic, example.com | n/a (L7) | `CONNECT tunnel failed, response 403` |
+| NEG-0D-14 proxy stopped | n/a | POS-0D-01 fails (connect failed); recovers after restart |
+| NEG-0D-15 table flushed | verifier returns `ErrEgressOpen` | verifier returns nil |
+| POS-0D-01..07 | n/a | all exit 0; 200 except POS-0D-03 (302 redirect, `-f` passes) |
+
+The peer-sandbox and proxy-to-sandbox positive controls needed Docker's own isolation lifted (a raw and `DOCKER-USER` accept for the control phase only, removed afterwards). Those two paths are therefore blocked by Docker as well as by the ruleset (defence in depth). The `POS-0D-03` URL answers 302 to a CDN, not 200 as the spec states.
+
+IPv6: the sandbox network has `EnableIPv6=false`, the container has no inet6 address, and a connect to the host's IPv6 address failed. The ruleset's `ip saddr` matches are IPv4-only, so an IPv6-enabled sandbox network would bypass it. **Never create a sandbox network with IPv6 on a host using this ruleset**, or extend the ruleset first.
+
+### 9b. Defects and operator requirements found
+
+1. Section 4 as written leaves the proxy unreachable (raw + `DOCKER-USER` accepts above; shipped in `deploy/egress-firewall/atm-fw-apply.sh`).
+2. **`docker0` shared the sandbox pool.** With `default-address-pools` 172.30.0.0/16, `docker0` took 172.30.0.0/24 and the ruleset dropped its traffic (an image build hung). Set `bip` for `docker0` outside the pool, or keep sandbox networks in a pool nothing else uses.
+3. **Nothing persists by default.** After a reboot the dummy interface, nft table, iptables accepts and non-restarting containers were gone. `atm-fw.service` plus `--restart unless-stopped` on the proxy restored all of it with no manual step; after that reboot the verifier passed (with canaries listening) and npm via the proxy returned 200. The firewall comes up after `docker.service`, so there is a window at boot; the pre-launch canary probe is what covers it.
+4. **`VerifyEgressFirewall` false pass (fixed).** With no firewall and nothing listening on the canary port, nc fails with an immediate refusal and the probe reported "blocked". Reproduced live (`NO listener + NO firewall -> nil`). The probe now requires each canary connect to run to the timeout (a drop); a fast refusal returns `ErrEgressCanaryAnswered` (exit 11). Re-verified live in all four combinations: firewall on without listeners (nil), on with listeners (nil), off with listeners (`ErrEgressOpen`), off without listeners (`ErrEgressCanaryAnswered`). Consequence: canaries must be DROPped, not REJECTed, and an ICMP-reject rule would fail the check.
+5. The 3-second `nc -w` window means a very slow drop and a dropped packet look the same; that is intended.
+
+### 9c. What is and is not established
+
+Established in a QEMU VM: the topology, rules and probe behave as designed, every negative has a demonstrated positive control, the persistence unit works across a reboot, and the ATM-side verifier is no longer fooled by a silent canary. Not established: behaviour on a real multi-NIC production host or LAN, cloud metadata paths (deliberately not probed), IPv6-enabled sandbox networks, Docker upgrades rewriting rule order, rule-order after the sandbox networks are recreated by ATM at runtime, the 0G gateway end to end through this path, and review by someone who owns the production firewall. The packaged apply script differs from the one tested in the VM only by dropping the two fixture dummy interfaces.
+
+Qualification is the operator's and the user's sign-off; this section is the evidence for it.

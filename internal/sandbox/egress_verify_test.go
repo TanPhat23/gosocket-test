@@ -16,7 +16,7 @@ func TestVerifyEgressFirewall_ExitCodes(t *testing.T) {
 		code int64
 		want error
 		any  bool
-	}{{0, nil, false}, {10, ErrEgressOpen, false}, {3, ErrEgressControlUnreachable, false}, {2, nil, true}, {1, nil, true}, {137, nil, true}} {
+	}{{0, nil, false}, {10, ErrEgressOpen, false}, {3, ErrEgressControlUnreachable, false}, {11, ErrEgressCanaryAnswered, false}, {2, nil, true}, {1, nil, true}, {137, nil, true}} {
 		m := NewMockDockerClient()
 		m.WaitStatusCode = tc.code
 		err := VerifyEgressFirewall(context.Background(), m, verifyCfg())

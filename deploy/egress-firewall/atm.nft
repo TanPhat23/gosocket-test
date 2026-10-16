@@ -1,0 +1,40 @@
+table inet atm_confinement {
+    define SANDBOX_POOL = 172.30.0.0/16
+    define DMZ_NET      = 172.28.200.0/24
+    define PROXY_IP     = 172.28.200.10
+    define PROXY_PORT   = 3128
+    define GATEWAY_IP   = 172.29.0.2
+    define GATEWAY_PORT = 8082
+    define WAN_IFACE    = "CHANGE_ME"  # the host uplink interface
+
+    chain forward {
+        type filter hook forward priority 0; policy accept;
+
+        ct state invalid ip saddr { $SANDBOX_POOL, $DMZ_NET } drop
+
+        # sandbox -> proxy only (and its replies)
+        ip saddr $SANDBOX_POOL ip daddr $PROXY_IP tcp dport $PROXY_PORT ct direction original ct state new,established accept
+        ip saddr $PROXY_IP ip daddr $SANDBOX_POOL tcp sport $PROXY_PORT ct direction reply ct state established accept
+
+        # proxy -> WAN: HTTPS and DNS only
+        iifname "atm-egress-dmz" oifname $WAN_IFACE tcp dport 443 ct direction original ct state new,established accept
+        iifname "atm-egress-dmz" oifname $WAN_IFACE udp dport 53  ct direction original ct state new,established accept
+        iifname "atm-egress-dmz" oifname $WAN_IFACE tcp dport 53  ct direction original ct state new,established accept
+        iifname $WAN_IFACE oifname "atm-egress-dmz" ct direction reply ct state established accept
+
+        # everything else from a sandbox or the DMZ is dropped: direct WAN, peer sandboxes, other bridges
+        ip saddr $SANDBOX_POOL drop
+        iifname "atm-egress-dmz" drop
+    }
+
+    chain input {
+        type filter hook input priority 0; policy accept;
+
+        # Gate 0G: the one host service a sandbox may reach. Must come before the drop (finding D3).
+        ip saddr $SANDBOX_POOL ip daddr $GATEWAY_IP tcp dport $GATEWAY_PORT accept
+
+        # nothing else on the host, including the bridge gateway IP, SSH, Docker, Postgres, Redis, Dex, the API
+        ip saddr $SANDBOX_POOL drop
+        iifname "atm-egress-dmz" drop
+    }
+}

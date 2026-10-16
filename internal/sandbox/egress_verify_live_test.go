@@ -40,19 +40,26 @@ func TestLiveVerifyEgressFirewall(t *testing.T) {
 	}
 	run("run", "-d", "--name", "atmvctl", image, "sh", "-c", "while true; do nc -l -p 3128; done")
 	run("run", "-d", "--name", "atmvcan", image, "sh", "-c", "while true; do nc -l -p 2222; done")
+	// 2223 on a live host refuses at once, which must now fail. A dropped canary is modelled by an
+	// unused address on the same subnet: nothing answers ARP, so the connect hangs until the timeout.
 	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", "atmvctl", "atmvcan").Run() })
 	ctl, can := ip("atmvctl"), ip("atmvcan")
 	cfg := func(control string, canaries ...string) EgressVerifyConfig {
 		return EgressVerifyConfig{Image: image, Network: "bridge", Control: control, Canaries: canaries}
 	}
 	ctx := context.Background()
-	if err := VerifyEgressFirewall(ctx, cli, cfg(ctl+":3128", can+":2223")); err != nil {
-		t.Errorf("control up, canary closed: want pass, got %v", err)
+	silent := run("network", "inspect", "-f", "{{(index .IPAM.Config 0).Subnet}}", "bridge")
+	silent = strings.TrimSuffix(strings.Split(silent, "/")[0], ".0") + ".250"
+	if err := VerifyEgressFirewall(ctx, cli, cfg(ctl+":3128", silent+":2223")); err != nil {
+		t.Errorf("control up, canary silent: want pass, got %v", err)
 	}
-	if err := VerifyEgressFirewall(ctx, cli, cfg(ctl+":3128", can+":2223", can+":2222")); !errors.Is(err, ErrEgressOpen) {
+	if err := VerifyEgressFirewall(ctx, cli, cfg(ctl+":3128", can+":2223")); !errors.Is(err, ErrEgressCanaryAnswered) {
+		t.Errorf("a refusing canary must fail with ErrEgressCanaryAnswered, got %v", err)
+	}
+	if err := VerifyEgressFirewall(ctx, cli, cfg(ctl+":3128", silent+":2223", can+":2222")); !errors.Is(err, ErrEgressOpen) {
 		t.Errorf("a reachable canary must fail with ErrEgressOpen, got %v", err)
 	}
-	if err := VerifyEgressFirewall(ctx, cli, cfg(ctl+":3129", can+":2223")); !errors.Is(err, ErrEgressControlUnreachable) {
+	if err := VerifyEgressFirewall(ctx, cli, cfg(ctl+":3129", silent+":2223")); !errors.Is(err, ErrEgressControlUnreachable) {
 		t.Errorf("unreachable control must fail with ErrEgressControlUnreachable, got %v", err)
 	}
 }
