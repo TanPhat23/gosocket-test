@@ -27,6 +27,7 @@ type Config struct {
 	IdleTimeout     time.Duration // aborts an upstream that sends nothing for this long
 	Issuer          *Issuer
 	Ledger          *Ledger
+	Pricing         Pricing           // required; must price every allowed model, so spend is always bounded
 	Transport       http.RoundTripper // optional; defaults to a proxy-less clone of the default transport
 	Logf            func(format string, args ...any)
 }
@@ -54,6 +55,11 @@ func NewHandler(cfg Config) (*Handler, error) {
 		len(cfg.AllowedPaths) == 0, len(cfg.AllowedModels) == 0,
 		cfg.MaxBodyBytes <= 0, cfg.MaxOutputTokens <= 0, cfg.IdleTimeout <= 0:
 		return nil, errors.New("gateway: incomplete configuration")
+	}
+	for _, m := range cfg.AllowedModels {
+		if _, ok := cfg.Pricing[m]; !ok {
+			return nil, errors.New("gateway: every allowed model needs a price")
+		}
 	}
 	if cfg.Logf == nil {
 		cfg.Logf = func(string, ...any) {}
@@ -100,12 +106,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	body, outTokens, status, msg := h.prepare(raw)
+	body, model, outTokens, status, msg := h.prepare(raw)
 	if status != 0 {
 		fail(w, status, msg)
 		return
 	}
-	if err := h.cfg.Ledger.Reserve(claims.AttemptID, int64(len(body))+outTokens); err != nil {
+	// Upper bound on spend: a token is at least one byte, so the body length bounds the prompt tokens,
+	// and max_tokens has been clamped so it bounds the completion.
+	bound, _ := h.cfg.Pricing.Cost(model, int64(len(body)), outTokens)
+	res, err := h.cfg.Ledger.ReserveSpend(claims.AttemptID, int64(len(body))+outTokens, bound)
+	if err != nil {
 		h.cfg.Logf("gateway: quota exceeded project=%s attempt=%s", claims.ProjectID, claims.AttemptID)
 		fail(w, http.StatusTooManyRequests, "quota exceeded")
 		return
@@ -139,6 +149,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		res.Settle(0) // the provider answered with an error and generated nothing
 		h.cfg.Logf("gateway: upstream status=%d project=%s attempt=%s", resp.StatusCode, claims.ProjectID, claims.AttemptID)
 		if resp.StatusCode == http.StatusTooManyRequests {
 			fail(w, http.StatusTooManyRequests, "upstream rate limited")
@@ -153,11 +164,27 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	flusher, _ := w.(http.Flusher)
+	sc := newUsageScanner(strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream"))
+	// A provider that ignores max_tokens could stream without bound; stop it well beyond any honest size.
+	maxBytes := outTokens*bytesPerTokenCeiling + streamOverheadBytes
+	var sent int64
+	defer func() {
+		if in, out, ok := sc.usage(); ok {
+			actual, _ := h.cfg.Pricing.Cost(model, in, out)
+			res.Settle(actual)
+		}
+	}()
 	buf := make([]byte, 4096)
 	for {
 		idle.Reset(h.cfg.IdleTimeout)
 		n, rerr := resp.Body.Read(buf)
 		if n > 0 {
+			sent += int64(n)
+			if sent > maxBytes {
+				h.cfg.Logf("gateway: aborted runaway response project=%s attempt=%s", claims.ProjectID, claims.AttemptID)
+				return
+			}
+			sc.write(buf[:n])
 			if _, werr := w.Write(buf[:n]); werr != nil {
 				return
 			}
@@ -171,16 +198,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// bytesPerTokenCeiling and streamOverheadBytes size the runaway guard: SSE framing makes one token chunk
+// a few hundred bytes, so 1 KiB per allowed output token plus 64 KiB is far above any honest response.
+const (
+	bytesPerTokenCeiling = 1024
+	streamOverheadBytes  = 64 << 10
+)
+
 // prepare validates the JSON body and clamps output-token limits. It returns a non-zero status on
 // rejection, and otherwise the clamped max_tokens used for the quota reservation.
-func (h *Handler) prepare(raw []byte) ([]byte, int64, int, string) {
+func (h *Handler) prepare(raw []byte) ([]byte, string, int64, int, string) {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &obj); err != nil || obj == nil {
-		return nil, 0, http.StatusBadRequest, "bad request"
+		return nil, "", 0, http.StatusBadRequest, "bad request"
 	}
 	var model string
 	if err := json.Unmarshal(obj["model"], &model); err != nil || !slices.Contains(h.cfg.AllowedModels, model) {
-		return nil, 0, http.StatusForbidden, "model not allowed"
+		return nil, "", 0, http.StatusForbidden, "model not allowed"
 	}
 	limit := h.cfg.MaxOutputTokens
 	var outTokens int64
@@ -191,7 +225,7 @@ func (h *Handler) prepare(raw []byte) ([]byte, int64, int, string) {
 		}
 		var n float64
 		if present && json.Unmarshal(v, &n) != nil {
-			return nil, 0, http.StatusBadRequest, "bad request"
+			return nil, "", 0, http.StatusBadRequest, "bad request"
 		}
 		if !present || n <= 0 || n > float64(limit) {
 			n = float64(limit)
@@ -201,11 +235,19 @@ func (h *Handler) prepare(raw []byte) ([]byte, int64, int, string) {
 			outTokens = int64(n)
 		}
 	}
+	// Streaming responses only carry usage when asked, and the spend ledger settles on it.
+	var stream bool
+	if json.Unmarshal(obj["stream"], &stream) == nil && stream {
+		opts := map[string]json.RawMessage{}
+		_ = json.Unmarshal(obj["stream_options"], &opts)
+		opts["include_usage"] = json.RawMessage("true")
+		obj["stream_options"], _ = json.Marshal(opts)
+	}
 	out, err := json.Marshal(obj)
 	if err != nil {
-		return nil, 0, http.StatusBadRequest, "bad request"
+		return nil, "", 0, http.StatusBadRequest, "bad request"
 	}
-	return out, outTokens, 0, ""
+	return out, model, outTokens, 0, ""
 }
 
 func callerToken(r *http.Request) string {

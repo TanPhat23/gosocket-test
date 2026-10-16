@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -56,6 +57,9 @@ func newFixture(t *testing.T, quota Quota) *fixture {
 		t.Fatal(err)
 	}
 	f.issuer = is
+	if quota.MaxMicroUSD == 0 {
+		quota.MaxMicroUSD = 1_000_000_000_000
+	}
 	f.ledger = NewLedger(quota)
 	h, err := NewHandler(Config{
 		UpstreamBaseURL: f.srv.URL,
@@ -69,6 +73,7 @@ func newFixture(t *testing.T, quota Quota) *fixture {
 		IdleTimeout:     2 * time.Second,
 		Issuer:          is,
 		Ledger:          f.ledger,
+		Pricing:         testPricing,
 		Logf:            func(format string, args ...any) { fmt.Fprintf(f.logs, format+"\n", args...) },
 	})
 	if err != nil {
@@ -95,6 +100,9 @@ func (f *fixture) do(token, body string, hdr map[string]string) *httptest.Respon
 	return rec
 }
 
+// testPricing: model-ok costs 1 micro-USD per input token and 2 per output token.
+var testPricing = Pricing{"model-ok": {Input: 1_000_000, Output: 2_000_000}}
+
 var goodBody = `{"model":"model-ok","max_tokens":50,"messages":[]}`
 
 func bigQuota() Quota { return Quota{MaxRequests: 100, MaxTokens: 100000} }
@@ -104,7 +112,7 @@ func TestNewHandler_FailsClosedOnBadConfig(t *testing.T) {
 	base := Config{
 		UpstreamBaseURL: "https://api.example.com", KeyHeader: "x-api-key", Key: func() string { return "k" },
 		AllowedPaths: []string{testPath}, AllowedModels: []string{"m"}, MaxBodyBytes: 1, MaxOutputTokens: 1,
-		IdleTimeout: time.Second, Issuer: is, Ledger: NewLedger(bigQuota()),
+		IdleTimeout: time.Second, Issuer: is, Ledger: NewLedger(bigQuota()), Pricing: Pricing{"m": {Input: 1_000_000, Output: 1_000_000}},
 	}
 	if _, err := NewHandler(base); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
@@ -116,6 +124,8 @@ func TestNewHandler_FailsClosedOnBadConfig(t *testing.T) {
 		"no paths":           func(c *Config) { c.AllowedPaths = nil },
 		"no issuer":          func(c *Config) { c.Issuer = nil },
 		"no ledger":          func(c *Config) { c.Ledger = nil },
+		"no pricing":         func(c *Config) { c.Pricing = nil },
+		"model unpriced":     func(c *Config) { c.AllowedModels = []string{"m", "other"} },
 		"no body cap":        func(c *Config) { c.MaxBodyBytes = 0 },
 		"no token cap":       func(c *Config) { c.MaxOutputTokens = 0 },
 		"no idle timeout":    func(c *Config) { c.IdleTimeout = 0 },
@@ -435,5 +445,217 @@ func TestHandler_ActiveStreamOutlivesIdleTimeout(t *testing.T) {
 	rec := f.do(f.token("p", "a"), goodBody, nil)
 	if got := strings.Count(rec.Body.String(), "data: x"); got != 8 {
 		t.Errorf("received %d/8 chunks; an active stream was cut off", got)
+	}
+}
+
+// spend: model-ok costs 1 micro-USD per input token and 2 per output token (testPricing).
+
+func (f *fixture) spent(attempt string) int64 {
+	f.ledger.mu.Lock()
+	defer f.ledger.mu.Unlock()
+	return f.ledger.used[attempt].micro
+}
+
+func spendQuota(micro int64) Quota {
+	return Quota{MaxRequests: 100, MaxTokens: 1_000_000, MaxMicroUSD: micro}
+}
+
+func TestHandler_SpendReservationIsUpperBound(t *testing.T) {
+	f := newFixture(t, spendQuota(1_000_000))
+	f.handler = func(w http.ResponseWriter, r *http.Request) { // reports no usage: the bound stands
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}
+	body := `{"model":"model-ok","max_tokens":50,"messages":[]}`
+	if rec := f.do(f.token("p", "a"), body, nil); rec.Code != 200 {
+		t.Fatalf("status %d", rec.Code)
+	}
+	sent := f.last.Load()
+	_ = sent
+	// bound = len(body as sent) input tokens * 1 + 50 output tokens * 2; the sent body is re-marshalled.
+	got := f.spent("a")
+	if got < int64(len(`{"max_tokens":50,"messages":[],"model":"model-ok"}`))+100 {
+		t.Errorf("reservation %d is below the conservative bound", got)
+	}
+}
+
+func TestHandler_SpendCapRejectsBeforeUpstream(t *testing.T) {
+	f := newFixture(t, spendQuota(150)) // one request reserves ~ body bytes + 100
+	tok := f.token("p", "a")
+	if rec := f.do(tok, goodBody, nil); rec.Code != 200 {
+		t.Fatalf("first request: %d", rec.Code)
+	}
+	calls := f.calls.Load()
+	rec := f.do(tok, goodBody, nil)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("second request must exceed the cap, got %d", rec.Code)
+	}
+	if f.calls.Load() != calls {
+		t.Error("a request over the cap must never reach the provider")
+	}
+}
+
+func TestHandler_SettlesToReportedUsage_NonStreaming(t *testing.T) {
+	f := newFixture(t, spendQuota(1_000_000))
+	f.handler = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"x","usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	}
+	if rec := f.do(f.token("p", "a"), goodBody, nil); rec.Code != 200 {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if got := f.spent("a"); got != 10*1+5*2 {
+		t.Errorf("spend must settle to 10 in + 5 out = 20 micro-USD, got %d", got)
+	}
+}
+
+func TestHandler_SettlesToReportedUsage_Streaming(t *testing.T) {
+	f := newFixture(t, spendQuota(1_000_000))
+	f.handler = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		for _, ev := range []string{
+			`data: {"choices":[{"delta":{"content":"hi"}}]}`,
+			``,
+			`data: {"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3}}`,
+			``,
+			`data: [DONE]`, // no trailing blank line or newline-terminated final event is also fine
+		} {
+			_, _ = w.Write([]byte(ev + "\n"))
+			fl.Flush()
+		}
+	}
+	body := `{"model":"model-ok","max_tokens":50,"stream":true,"messages":[]}`
+	if rec := f.do(f.token("p", "a"), body, nil); rec.Code != 200 {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if got := f.spent("a"); got != 7+3*2 {
+		t.Errorf("spend must settle to the streamed usage (13), got %d", got)
+	}
+	opts, _ := f.last.Load().body["stream_options"].(map[string]any)
+	if opts["include_usage"] != true {
+		t.Errorf("streaming requests must ask the provider for usage, sent %v", f.last.Load().body["stream_options"])
+	}
+}
+
+func TestHandler_StreamOptionsMergeKeepsCallerFields(t *testing.T) {
+	f := newFixture(t, spendQuota(1_000_000))
+	body := `{"model":"model-ok","stream":true,"stream_options":{"include_usage":false,"keep":1},"messages":[]}`
+	if rec := f.do(f.token("p", "a"), body, nil); rec.Code != 200 {
+		t.Fatalf("status %d", rec.Code)
+	}
+	opts, _ := f.last.Load().body["stream_options"].(map[string]any)
+	if opts["include_usage"] != true || opts["keep"] != float64(1) {
+		t.Errorf("include_usage must be forced on and other fields kept, got %v", opts)
+	}
+}
+
+func TestHandler_ProviderErrorRefundsSpend(t *testing.T) {
+	f := newFixture(t, spendQuota(1_000_000))
+	f.handler = func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusInternalServerError) }
+	if rec := f.do(f.token("p", "a"), goodBody, nil); rec.Code != http.StatusBadGateway {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if got := f.spent("a"); got != 0 {
+		t.Errorf("a provider error generated nothing and must refund the reservation, kept %d", got)
+	}
+}
+
+func TestHandler_NoReportedUsageKeepsConservativeBound(t *testing.T) {
+	f := newFixture(t, spendQuota(1_000_000))
+	f.handler = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"x"}`))
+	}
+	if rec := f.do(f.token("p", "a"), goodBody, nil); rec.Code != 200 {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if got := f.spent("a"); got < 100 {
+		t.Errorf("without usage the full bound must stay charged, got %d", got)
+	}
+}
+
+func TestHandler_ProviderCannotUnderstateBeyondItsReport(t *testing.T) {
+	// A provider reporting more than the reservation is charged in full (it exceeded the bound).
+	f := newFixture(t, spendQuota(1_000_000))
+	f.handler = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":1000,"completion_tokens":1000}}`))
+	}
+	if rec := f.do(f.token("p", "a"), goodBody, nil); rec.Code != 200 {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if got := f.spent("a"); got != 1000+2000 {
+		t.Errorf("reported usage above the bound must be charged in full (3000), got %d", got)
+	}
+}
+
+func TestHandler_ConcurrentRequestsCannotOverspend(t *testing.T) {
+	// Each request reserves about len(body)+100 micro-USD. A cap of 6 reservations admits exactly 6.
+	one := int64(len(`{"max_tokens":50,"messages":[],"model":"model-ok"}`)) + 100
+	f := newFixture(t, spendQuota(6*one))
+	release := make(chan struct{})
+	f.handler = func(w http.ResponseWriter, r *http.Request) { <-release; w.WriteHeader(200) }
+	tok := f.token("p", "a")
+	var wg sync.WaitGroup
+	var ok, limited atomic.Int64
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			switch f.do(tok, goodBody, nil).Code {
+			case 200:
+				ok.Add(1)
+			case http.StatusTooManyRequests:
+				limited.Add(1)
+			}
+		}()
+	}
+	for f.calls.Load() < 6 {
+		time.Sleep(time.Millisecond)
+	}
+	close(release)
+	wg.Wait()
+	if ok.Load() != 6 || limited.Load() != 4 {
+		t.Errorf("want 6 admitted and 4 limited, got %d and %d", ok.Load(), limited.Load())
+	}
+}
+
+func TestHandler_AbortsRunawayResponse(t *testing.T) {
+	f := newFixture(t, spendQuota(1_000_000))
+	f.handler = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		chunk := []byte(strings.Repeat("x", 4096))
+		for i := 0; i < 200; i++ { // 800 KiB against a limit of 100*1024 + 64 KiB
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+		}
+	}
+	rec := f.do(f.token("p", "a"), goodBody, nil)
+	if got := rec.Body.Len(); got > 100*1024+64*1024+4096 {
+		t.Errorf("a response past the output ceiling must be cut off, relayed %d bytes", got)
+	}
+	if !strings.Contains(f.logs.String(), "runaway") {
+		t.Error("the abort must be logged")
+	}
+}
+
+func TestUsageScanner_SSEEdgeCases(t *testing.T) {
+	u := newUsageScanner(true)
+	// event split across writes, CRLF line endings, an over-long line, and a final event with no newline
+	for _, p := range []string{"data: {\"usage\":{\"prompt_tokens\":", "4,\"completion_tokens\":2}}\r\n\r\n", "data: " + strings.Repeat("a", maxSSELine+5) + "\n", `data: {"usage":{"prompt_tokens":9,"completion_tokens":9}}`} {
+		u.write([]byte(p))
+	}
+	in, out, ok := u.usage()
+	if !ok || in != 9 || out != 9 {
+		t.Errorf("want last usage 9/9, got %d/%d ok=%v", in, out, ok)
+	}
+	if _, _, ok := newUsageScanner(true).usage(); ok {
+		t.Error("no usage seen must report not found")
+	}
+	z := newUsageScanner(false)
+	z.write([]byte(`{"usage":{"prompt_tokens":0,"completion_tokens":0}}`))
+	if _, _, ok := z.usage(); ok {
+		t.Error("all-zero usage must not count as reported")
 	}
 }

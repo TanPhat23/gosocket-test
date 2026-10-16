@@ -33,8 +33,8 @@
 |---|---|---|
 | B6 | **Accepted risk.** Same-UID password exposure stays; the agent already holds the OpenCode session. | Closed. Documented, not mitigated. Task code can read the OpenCode password. |
 | B2 | Provider key comes from server env/secret via `Config.Key`, read per request (rotation without restart). No DB key store. | Closed for v1. |
-| B3 | Per-attempt request count + token ceiling; no pricing table. Reservation is `len(body) + clamped max_tokens`, never refunded. | Closed for v1. Not a dollar cap; over-counts rather than under-counts. |
-| B4 | Plain HTTP on the dedicated sandbox bridge (deviates from spec §5/PROBE-18, which require TLS). | Accepted risk: capability tokens cross the bridge in cleartext. Only safe if B1 keeps the route narrow (sandbox bridge -> gateway only). Upstream (gateway -> provider) is https-only and enforced in `NewHandler`. |
+| B3 | **Changed 2026-10-16 (user): dollar spend cap from an operator price file.** `ATM_GATEWAY_PRICE_FILE` must price every allowed model (fail closed); `ATM_GATEWAY_QUOTA_USD` is required. Each request reserves an upper bound (body bytes bound input tokens, clamped `max_tokens` bounds output), then settles to provider-reported usage and refunds on a non-2xx. | Closed in code (`internal/gateway/pricing.go`, `budget.go`, `usage.go`). Limits: streaming settlement needs the provider to honour `stream_options.include_usage` (the gateway forces it on); a response with no usage stays charged at the reservation bound; prices are operator-maintained and can go stale. |
+| B4 | **Changed 2026-10-16 (user): TLS with a private CA baked into the project image.** The gateway requires `ATM_GATEWAY_TLS_CERT_FILE`/`_KEY_FILE`, validates them, serves TLS 1.3 only and refuses to run without them. `NewRuntimeImageBuilderWithGatewayCA` adds the CA certificate (public only, CERTIFICATE blocks only) to the image with `NODE_EXTRA_CA_CERTS` and a hash label, so the image tag changes with the CA. | Closed in code. Limits: the gateway certificate is for an IP SAN and the operator owns issuance, renewal and rotation; the builder with the CA is not yet constructed in production code (quarantine). Upstream (gateway -> provider) stays https-only. |
 | B1 | Still open: host operator / Gate 0D must allow only `sandbox bridge -> gateway:8082`. ATM must not touch firewall rules. Operator handoff (topology, example rule, 5-point verification, env table): `2026-10-15-gate-0g-operator-firewall-handoff.md`. | **Blocks enabling the gateway and any gate qualification.** The gateway code now ships disabled and refuses to start without the operator's attestation (`internal/gateway/serve.go`). |
 | B5 | Still open: needs a live probe of OpenCode 2.0.26 (custom `baseURL`, SSE, `serve --hostname 0.0.0.0`, tmpfs `CopyToContainer`) in a disposable VM with Docker. | **Blocks Stage 3.** |
 
@@ -55,7 +55,7 @@ Each item is test-first; probes map to spec §10.
 3. Upstream client: no redirects (3xx is terminal), strict TLS, key injected from the store, never logged (PROBE-08/13/15).
 4. Streaming: cancel upstream on client abort; idle timeout (PROBE-14).
 5. Budget: atomic reservation and reconciliation; fail closed when unbounded (PROBE-12).
-6. ~~TLS-only listener (PROBE-18)~~: dropped per B4 decision; the listener is not part of this package.
+6. TLS-only listener (PROBE-18): **built 2026-10-16** after the B4 change (see B4).
 
 Implemented: `token.go` (HMAC capability tokens, revocation), `budget.go` (atomic ledger), `handler.go` (auth via `Authorization: Bearer` or `x-api-key`, path/method/model allowlists, body cap, `max_tokens` clamp, header allowlist, key injection, no-redirect client, sanitized upstream errors, streaming with client-abort cancel and idle timeout). Not implemented: provider-specific request translation, usage reconciliation, a listener, and any wiring. Mutation table (guest copy only, all killed): redirect follow, quota reserve removed, model check removed, caller `Authorization` forwarded, no clamp, upstream error passthrough, idle timer off/never reset, expiry ignored, revocation ignored, signature ignored, quota off-by-one, method check removed, query allowed, http upstream allowed.
 
@@ -97,7 +97,7 @@ The user runs the host, so they are the host operator for B1, and chose not to r
 |---|---|
 | Behaviour | **Implemented.** The gateway starts without `ATM_GATEWAY_FIREWALL_ATTESTATION=sandbox-bridge-to-gateway-only` and logs a `WARNING` at startup (falls back to the standard logger if none is given). With the attestation it starts quietly. The other startup guards (https upstream, no wildcard bind, key/secret/limits) are unchanged. |
 | Opt-out / production | No separate opt-out variable and no production-mode refusal (the user chose warn-and-start). A production refusal could be added later. |
-| Risk accepted | A compromised sandbox may reach other host services and other projects' sandboxes, and capability tokens cross the link in cleartext (B4). Tolerable only where the host holds nothing sensitive. |
+| Risk accepted | A compromised sandbox may reach other host services and other projects' sandboxes. Capability tokens now cross the link inside TLS 1.3 (B4), so a passive observer on the bridge no longer sees them. Tolerable only where the host holds nothing sensitive. |
 | Gate 0G | Stays **BLOCKED / UNQUALIFIED**. The spec requires the restricted route (SEC-0G-03), so running with the opt-out never qualifies the gate. |
 | Quarantine | Phase 1A unchanged. Lifting it needs gates 0C, 0D, 0G, 0F and a separate explicit user decision. |
 | ATM and firewall rules | Unchanged: ATM does not modify firewall rules or receive `NET_ADMIN`. The opt-out removes a startup check only. |
@@ -131,13 +131,13 @@ Ran the spec §10 matrix (0G-PROBE-01..18) on the Gate 0D firewall VM (`atm-fw`,
 | 09 forged/missing token | PASS | 401 for none, forged, garbage. Positive control 200 (Bearer and `x-api-key`). |
 | 10 expired/revoked | PASS | 1s token 401 after expiry; released token 200 then 401. |
 | 11 cross-project | PASS (approximated) | Quotas are per lease: B exhausted at 6 then 429, A unaffected. Requests carry no project field, so "Project A token for Project B context" reduces to lease isolation. |
-| 12 quota | PASS for the B3 design, not the spec | `max_tokens` and `max_completion_tokens` clamped to 100; 413 over body cap; 10 concurrent on a 6-request lease gave exactly 6x200 and 4x429. No dollar cap and no in-flight reconciliation (B3). |
+| 12 quota / spend | PASS (live, TLS) | `max_tokens` and `max_completion_tokens` clamped to 100; 413 over body cap; 10 concurrent on a 6-request lease gave exactly 6x200 and 4x429. Spend cap, live on a gateway with `ATM_GATEWAY_QUOTA_USD=0.0005` and high request quotas: 18 requests with reported usage settled and succeeded, then 429s (the reservation bound alone, about 300 micro-USD, would have stopped after one); a provider response without usage kept the reservation charged, so the sequence was 200, 429, 429; a second lease had its own cap. Unit tests kill 5 mutations (no refund on provider error, no TLS listener, zero cost bound, no settle, TLS 1.2 allowed). |
 | 13 key rotation | PASS | File rewritten, next request carried the new key, no restart. |
 | 14 stream cancel | PASS | Client abort after 2s; upstream saw its request context cancelled after 8 chunks of 40. |
 | 15 error redaction | PASS | Upstream 500 with prompt/key text gave a generic 502 `upstream error`; 429 stayed 429. Gateway log holds status and ids only (zero key or prompt hits). |
 | 16 bad password | PASS | `/api/session`: no auth 401, wrong 401, right 200. Auth is enforced on `/api/*` only (known). |
 | 17 rotation | PASS | New container with new password: old 401, new 200. Released gateway token 401. |
-| 18 plaintext | **FAIL by design (B4)** | The gateway accepts plain HTTP on the sandbox bridge. Not a pass. |
+| 18 plaintext | PASS (live, TLS) | Plain HTTP to the TLS port returns 400 and no token reaches the log; a client without the gateway CA gets a certificate failure (000); TLS 1.2 is refused; connecting by a name that is not in the certificate fails. OpenCode (Bun) honours `NODE_EXTRA_CA_CERTS`: the end-to-end prompt through the TLS gateway succeeded and the printenv task leaked nothing. Negative control, same image without the CA: `UNABLE_TO_VERIFY_LEAF_SIGNATURE`, no request reached the provider. |
 
 Also verified: end to end, OpenCode prompt, gateway, fake upstream returns streamed content with the real key injected and output tokens clamped. A sandbox reaches `172.29.0.2:8082` (401 without a token), and `172.29.0.2:22`, `:9100` (admin), `10.0.2.2:22` and the bridge gateway IP time out.
 
@@ -146,7 +146,7 @@ Also verified: end to end, OpenCode prompt, gateway, fake upstream returns strea
 2. **Task children inherit the OpenCode password and the gateway token (probe 03).** Not fixed: OpenCode needs the password in its own environment, and B6 accepts same-UID exposure. New consequence worth a decision: the `printenv` output goes to the model provider.
 
 ### Status
-Gate 0G stays **UNQUALIFIED**. Open items for the user: 03 (password/token visible to task children and so to the model provider), 18 (plain HTTP, B4), 12 (quota rather than spend cap, B3). Evidence came from a QEMU VM, not a production host. The quarantine is unchanged.
+Gate 0G stays **UNQUALIFIED** until the user explicitly signs it off; this change does not do that. B3 and B4 are now closed in code and re-run live (2026-10-16). Still open: 11 is only approximated (requests carry no project field), streaming usage settlement depends on the provider honouring `include_usage`, and the fixtures set `BASH_ENV` themselves, as the production container draft does. Evidence came from a QEMU VM, not a production host. The quarantine is unchanged.
 
 ### Fix for probe 03 (2026-10-16, user decision: accept B6 and scrub)
 OpenCode runs the shell tool as `/bin/bash` directly under PID 1, so it inherits the OpenCode environment. `SHELL=` is ignored (live-tested, still leaked). Non-interactive bash sources `BASH_ENV`, so the image now carries a root-owned read-only `/usr/local/lib/atm-scrub.sh` (`unset OPENCODE_PASSWORD OPENCODE_SERVER_PASSWORD OPENCODE_CONFIG_CONTENT`) and the container env sets `BASH_ENV` to it. Live, same `printenv` task as before: leaked before, no `OPENCODE_PASSWORD` or `OPENCODE_CONFIG_CONTENT` after (image-baked file, env set as the draft does). Template hash pin recomputed again; `TestProjectContainer_TaskShellScrubsSecrets` fails when `BASH_ENV` is mutated; full `go test ./...` passes in `atm-guest`.

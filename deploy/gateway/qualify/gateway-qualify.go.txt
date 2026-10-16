@@ -2,9 +2,10 @@
 // VM and must never be deployed: it runs the production gateway.ServiceFromEnv wiring next to a fake
 // TLS upstream provider and a loopback-only admin endpoint that mints and revokes capability tokens.
 //
-//	gateway-qualify certs DIR      write ca.pem, upstream.pem, upstream.key for upstream.test
+//	gateway-qualify certs DIR      write ca.pem, upstream.pem, upstream.key for upstream.test, and gw-ca.pem, gateway.pem,
+//	                               gateway.key (separate CA, leaf for IP 172.29.0.2) for the TLS-only gateway listener
 //	gateway-qualify upstream DIR   fake provider on :9443 and a redirect-target listener on :9444
-//	gateway-qualify gateway        the real gateway (ATM_GATEWAY_* env) plus admin on 127.0.0.1:9100
+//	gateway-qualify gateway        the real gateway (ATM_GATEWAY_* env) plus admin on 127.0.0.1:9100 (override with GWQ_ADMIN)
 //
 // The fake upstream picks a behaviour from a MODE:<name> marker in the prompt: stream, redirect, err500,
 // err429, echo (default). Every request is appended to /run/gwq-upstream.log as one JSON line.
@@ -27,6 +28,7 @@ import (
 	"io"
 	"log"
 	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -84,7 +86,26 @@ func writeCerts(dir string) error {
 		return err
 	}
 	keyDER, _ := x509.MarshalECPrivateKey(srvKey)
+
+	// The gateway's own CA is separate from the fake provider's: sandboxes trust only this one.
+	gcaKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	gcaTpl := &x509.Certificate{SerialNumber: big.NewInt(3), Subject: pkix.Name{CommonName: "gwq gateway CA"}, NotBefore: time.Now().Add(-time.Hour),
+		NotAfter: time.Now().Add(48 * time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	gcaDER, err := x509.CreateCertificate(rand.Reader, gcaTpl, gcaTpl, &gcaKey.PublicKey, gcaKey)
+	if err != nil {
+		return err
+	}
+	gcaCert, _ := x509.ParseCertificate(gcaDER)
+	gwKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	gwTpl := &x509.Certificate{SerialNumber: big.NewInt(4), Subject: pkix.Name{CommonName: "gateway"}, IPAddresses: []net.IP{net.ParseIP("172.29.0.2")},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(48 * time.Hour), ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	gwDER, err := x509.CreateCertificate(rand.Reader, gwTpl, gcaCert, &gwKey.PublicKey, gcaKey)
+	if err != nil {
+		return err
+	}
+	gwKeyDER, _ := x509.MarshalECPrivateKey(gwKey)
 	for name, blk := range map[string]*pem.Block{
+		"gw-ca.pem": {Type: "CERTIFICATE", Bytes: gcaDER}, "gateway.pem": {Type: "CERTIFICATE", Bytes: gwDER}, "gateway.key": {Type: "EC PRIVATE KEY", Bytes: gwKeyDER},
 		"ca.pem": {Type: "CERTIFICATE", Bytes: caDER}, "upstream.pem": {Type: "CERTIFICATE", Bytes: srvDER}, "upstream.key": {Type: "EC PRIVATE KEY", Bytes: keyDER}} {
 		if err := os.WriteFile(filepath.Join(dir, name), pem.EncodeToMemory(blk), 0o600); err != nil {
 			return err
@@ -177,6 +198,9 @@ func runUpstream(dir string) error {
 			}
 			fmt.Fprint(w, "data: [DONE]\n\n")
 			record("stream_completed", map[string]any{})
+		case "nousage":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"no usage reported"},"finish_reason":"stop"}]}`)
 		default:
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"hello from fake upstream"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`)
@@ -212,7 +236,7 @@ func runGateway() error {
 	if svc == nil {
 		return errors.New("gateway disabled (ATM_GATEWAY_ENABLED not true)")
 	}
-	broker, err := svc.NewBroker("http://"+svc.Addr+"/v1", time.Hour)
+	broker, err := svc.NewBroker("https://"+svc.Addr+"/v1", time.Hour)
 	if err != nil {
 		return err
 	}
@@ -232,7 +256,11 @@ func runGateway() error {
 	})
 	admin.HandleFunc("/release", func(w http.ResponseWriter, r *http.Request) { broker.Release(r.URL.Query().Get("lease")) })
 	admin.HandleFunc("/revoke", func(w http.ResponseWriter, r *http.Request) { svc.Issuer.Revoke(r.URL.Query().Get("lease")) })
-	go func() { must(http.ListenAndServe("127.0.0.1:9100", admin)) }()
+	adminAddr := os.Getenv("GWQ_ADMIN")
+	if adminAddr == "" {
+		adminAddr = "127.0.0.1:9100"
+	}
+	go func() { must(http.ListenAndServe(adminAddr, admin)) }()
 	ln, err := svc.Listen()
 	if err != nil {
 		return err

@@ -87,3 +87,70 @@ func TestLedger_ForgetFreesAttempt(t *testing.T) {
 		t.Errorf("after Forget: %v", err)
 	}
 }
+
+func TestLedger_SpendCapRejectsAndChargesNothing(t *testing.T) {
+	l := NewLedger(Quota{MaxRequests: 10, MaxTokens: 1000, MaxMicroUSD: 100})
+	if _, err := l.ReserveSpend("a", 10, 60); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.ReserveSpend("a", 10, 41); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("60+41>100 must be rejected, got %v", err)
+	}
+	if got := l.used["a"]; got != (usage{1, 10, 60}) {
+		t.Errorf("a rejected reservation must charge nothing, got %+v", got)
+	}
+	if _, err := l.ReserveSpend("a", 10, 40); err != nil {
+		t.Errorf("exactly reaching the cap must be allowed: %v", err)
+	}
+}
+
+func TestLedger_SettleRefundsUnusedAndChargesOverage(t *testing.T) {
+	l := NewLedger(Quota{MaxRequests: 10, MaxTokens: 1000, MaxMicroUSD: 100})
+	r, _ := l.ReserveSpend("a", 10, 80)
+	r.Settle(30)
+	if got := l.used["a"].micro; got != 30 {
+		t.Errorf("settle must release the unused 50, left %d", got)
+	}
+	r.Settle(0) // second settle is a no-op
+	if got := l.used["a"].micro; got != 30 {
+		t.Errorf("settle must apply once, got %d", got)
+	}
+	over, _ := l.ReserveSpend("a", 10, 10)
+	over.Settle(25) // a provider that exceeded its bound is charged in full
+	if got := l.used["a"].micro; got != 30+25 {
+		t.Errorf("overage must be charged, got %d", got)
+	}
+	// The refund is usable by the next request.
+	if _, err := l.ReserveSpend("a", 10, 45); err != nil {
+		t.Errorf("refunded spend must be reservable: %v", err)
+	}
+}
+
+func TestLedger_SettleAfterForgetDoesNotResurrect(t *testing.T) {
+	l := NewLedger(Quota{MaxRequests: 10, MaxTokens: 1000, MaxMicroUSD: 100})
+	r, _ := l.ReserveSpend("a", 10, 50)
+	l.Forget("a")
+	r.Settle(10)
+	if _, ok := l.used["a"]; ok {
+		t.Error("settling a forgotten attempt must not recreate it")
+	}
+}
+
+func TestLedger_ConcurrentSpendNeverOvershoots(t *testing.T) {
+	l := NewLedger(Quota{MaxRequests: 1000, MaxTokens: 1_000_000, MaxMicroUSD: 1000})
+	var ok atomic.Int64
+	var wg sync.WaitGroup
+	for i := 0; i < 200; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := l.ReserveSpend("a", 1, 10); err == nil {
+				ok.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if ok.Load() != 100 {
+		t.Errorf("exactly 100 reservations of 10 fit a cap of 1000, got %d", ok.Load())
+	}
+}

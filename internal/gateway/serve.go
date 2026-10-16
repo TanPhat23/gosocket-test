@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log"
@@ -13,10 +15,10 @@ import (
 )
 
 // FirewallAttestation is the value ATM_GATEWAY_FIREWALL_ATTESTATION holds when the host operator has
-// restricted the sandbox bridges to reaching this listener and nothing else. The gateway speaks plain
-// HTTP to sandboxes (Gate 0G decision B4), which is only safe with that restriction. ATM never changes
-// firewall rules. Without the attestation the gateway still starts but logs a warning (user decision,
-// 2026-10-15), and Gate 0G stays unqualified.
+// restricted the sandbox bridges to reaching this listener and nothing else. The gateway listens on TLS
+// only, so the capability token no longer crosses the bridge in cleartext, but a sandbox that can reach
+// other host services is still a risk. ATM never changes firewall rules. Without the attestation the
+// gateway still starts but logs a warning (user decision, 2026-10-15).
 const FirewallAttestation = "sandbox-bridge-to-gateway-only"
 
 const (
@@ -35,6 +37,8 @@ type Service struct {
 	// Issuer mints and revokes the per-attempt capability tokens the Handler accepts.
 	Issuer *Issuer
 	Ledger *Ledger
+	// TLS is the listener's TLS configuration. Run refuses to serve without it: plain HTTP is never offered.
+	TLS *tls.Config
 }
 
 // ServiceFromEnv builds the gateway from ATM_GATEWAY_* settings. It returns (nil, nil) when the gateway
@@ -53,7 +57,7 @@ func ServiceFromEnv(getenv func(string) string, readFile func(string) ([]byte, e
 		logf = log.Printf
 	}
 	if getenv("ATM_GATEWAY_FIREWALL_ATTESTATION") != FirewallAttestation {
-		logf("gateway: WARNING: no firewall attestation (ATM_GATEWAY_FIREWALL_ATTESTATION=%s). Starting anyway; sandboxes may reach other host services and capability tokens cross the network in cleartext. Restrict sandbox bridges to the gateway listener to remove this risk.", FirewallAttestation)
+		logf("gateway: WARNING: no firewall attestation (ATM_GATEWAY_FIREWALL_ATTESTATION=%s). Starting anyway; sandboxes may reach other host services. Restrict sandbox bridges to the gateway listener to remove this risk.", FirewallAttestation)
 	}
 	addr, err := listenAddr(getenv("ATM_GATEWAY_LISTEN_ADDR"))
 	if err != nil {
@@ -70,6 +74,22 @@ func ServiceFromEnv(getenv func(string) string, readFile func(string) ([]byte, e
 	issuer, err := NewIssuer([]byte(getenv("ATM_GATEWAY_TOKEN_SECRET")))
 	if err != nil {
 		return nil, errors.New("gateway: ATM_GATEWAY_TOKEN_SECRET must be set to at least 32 bytes")
+	}
+
+	tlsCfg, err := loadTLS(getenv("ATM_GATEWAY_TLS_CERT_FILE"), getenv("ATM_GATEWAY_TLS_KEY_FILE"), readFile, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	pricing, err := loadPricing(getenv("ATM_GATEWAY_PRICE_FILE"), models, readFile)
+	if err != nil {
+		return nil, err
+	}
+	if getenv("ATM_GATEWAY_QUOTA_USD") == "" {
+		return nil, errors.New("gateway: ATM_GATEWAY_QUOTA_USD is required (spend cap per sandbox lease, e.g. 5.00)")
+	}
+	quotaMicro, err := ParseUSD(getenv("ATM_GATEWAY_QUOTA_USD"))
+	if err != nil {
+		return nil, errors.New("gateway: ATM_GATEWAY_QUOTA_USD must be a positive dollar amount with at most 6 decimals")
 	}
 
 	limits := map[string]int64{}
@@ -95,7 +115,7 @@ func ServiceFromEnv(getenv func(string) string, readFile func(string) ([]byte, e
 		keyHeader, keyPrefix = h, getenv("ATM_GATEWAY_KEY_PREFIX")
 	}
 
-	ledger := NewLedger(Quota{MaxRequests: limits["ATM_GATEWAY_QUOTA_REQUESTS"], MaxTokens: limits["ATM_GATEWAY_QUOTA_TOKENS"]})
+	ledger := NewLedger(Quota{MaxRequests: limits["ATM_GATEWAY_QUOTA_REQUESTS"], MaxTokens: limits["ATM_GATEWAY_QUOTA_TOKENS"], MaxMicroUSD: quotaMicro})
 	handler, err := NewHandler(Config{
 		UpstreamBaseURL: getenv("ATM_GATEWAY_UPSTREAM_URL"),
 		KeyHeader:       keyHeader,
@@ -108,12 +128,13 @@ func ServiceFromEnv(getenv func(string) string, readFile func(string) ([]byte, e
 		IdleTimeout:     idle,
 		Issuer:          issuer,
 		Ledger:          ledger,
+		Pricing:         pricing,
 		Logf:            logf,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &Service{Addr: addr, Handler: handler, Issuer: issuer, Ledger: ledger}, nil
+	return &Service{Addr: addr, Handler: handler, Issuer: issuer, Ledger: ledger, TLS: tlsCfg}, nil
 }
 
 // Listen binds the configured address.
@@ -121,6 +142,10 @@ func (s *Service) Listen() (net.Listener, error) { return net.Listen("tcp", s.Ad
 
 // Run serves on ln until ctx is cancelled, then shuts down gracefully. It returns nil on a clean shutdown.
 func (s *Service) Run(ctx context.Context, ln net.Listener) error {
+	if s.TLS == nil {
+		return errors.New("gateway: refusing to serve without TLS")
+	}
+	ln = tls.NewListener(ln, s.TLS)
 	srv := &http.Server{
 		Handler:           s.Handler,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -145,8 +170,44 @@ func (s *Service) Run(ctx context.Context, ln net.Listener) error {
 	return nil
 }
 
+// loadTLS builds the listener's TLS config from a PEM certificate chain and key. TLS 1.3 only. The
+// leaf must be currently valid and the key must match it. Errors never echo file content.
+func loadTLS(certFile, keyFile string, readFile func(string) ([]byte, error), now time.Time) (*tls.Config, error) {
+	if certFile == "" || keyFile == "" {
+		return nil, errors.New("gateway: ATM_GATEWAY_TLS_CERT_FILE and ATM_GATEWAY_TLS_KEY_FILE are required (the gateway never serves plain HTTP)")
+	}
+	certPEM, err := readFile(certFile)
+	if err != nil {
+		return nil, errors.New("gateway: ATM_GATEWAY_TLS_CERT_FILE is unreadable")
+	}
+	keyPEM, err := readFile(keyFile)
+	if err != nil {
+		return nil, errors.New("gateway: ATM_GATEWAY_TLS_KEY_FILE is unreadable")
+	}
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return nil, errors.New("gateway: TLS certificate and key are invalid or do not match")
+	}
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil || now.Before(leaf.NotBefore) || now.After(leaf.NotAfter) {
+		return nil, errors.New("gateway: TLS certificate is not currently valid")
+	}
+	return &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS13}, nil
+}
+
+func loadPricing(path string, models []string, readFile func(string) ([]byte, error)) (Pricing, error) {
+	if path == "" {
+		return nil, errors.New("gateway: ATM_GATEWAY_PRICE_FILE is required (every allowed model needs a price)")
+	}
+	raw, err := readFile(path)
+	if err != nil {
+		return nil, errors.New("gateway: ATM_GATEWAY_PRICE_FILE is unreadable")
+	}
+	return ParsePricing(raw, models)
+}
+
 // listenAddr requires an explicit, non-wildcard host and a real port: a wildcard bind would expose
-// the plain-HTTP listener on every interface, not just the sandbox-facing one.
+// the listener on every interface, not just the sandbox-facing one.
 func listenAddr(v string) (string, error) {
 	host, port, err := net.SplitHostPort(v)
 	if err != nil || host == "" {

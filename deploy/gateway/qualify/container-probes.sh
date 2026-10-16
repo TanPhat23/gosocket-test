@@ -1,4 +1,5 @@
-G=http://172.29.0.2:8082
+G=https://172.29.0.2:8082
+IMG=${IMG:-atm-0g-sandbox-ca}   # the image carrying the gateway CA; run with IMG=atm-0g-sandbox for the negative control
 PW1=$(head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n')
 name=atm-project-p1
 start(){ # $1 password
@@ -7,10 +8,10 @@ start(){ # $1 password
   docker run -d --name $name --network sbA --read-only --cap-drop ALL --security-opt no-new-privileges:true \
     --tmpfs /tmp:rw,noexec,nosuid,size=512m --tmpfs /run/secrets:rw,noexec,nosuid,size=1m,uid=1000,gid=1000,mode=0700 \
     -v atm-p1-data:/workspaces -v atm-p1-state:/var/lib/opencode --pids-limit 256 --memory 4g \
-    -e HOME=/var/lib/opencode -e OPENCODE_SERVER_PORT=4096 -e ATM_LLM_GATEWAY_URL=$G/v1 atm-0g-sandbox >/dev/null
+    -e HOME=/var/lib/opencode -e BASH_ENV=/usr/local/lib/atm-scrub.sh -e OPENCODE_SERVER_PORT=4096 -e ATM_LLM_GATEWAY_URL=$G/v1 $IMG >/dev/null
   CID=$(docker inspect -f '{{.Id}}' $name)
   TOK=$(curl -s "http://127.0.0.1:9100/grant?project=p1&lease=$CID")
-  /tmp/gwq4 config $G/v1 $TOK | docker exec -i -u 1000:1000 $name sh -c 'umask 077 && cat > /run/secrets/opencode-config.tmp && mv /run/secrets/opencode-config.tmp /run/secrets/opencode-config'
+  /tmp/gwq config $G/v1 $TOK | docker exec -i -u 1000:1000 $name sh -c 'umask 077 && cat > /run/secrets/opencode-config.tmp && mv /run/secrets/opencode-config.tmp /run/secrets/opencode-config'
   printf %s "$1" | docker exec -i -u 1000:1000 $name sh -c 'umask 077 && cat > /run/secrets/opencode.tmp && mv /run/secrets/opencode.tmp /run/secrets/opencode'
   IP=$(docker inspect -f '{{(index .NetworkSettings.Networks "sbA").IPAddress}}' $name)
   for i in $(seq 40); do docker exec $name curl -s -m 2 -o /dev/null http://127.0.0.1:4096/ && break; sleep 1; done
@@ -32,7 +33,7 @@ c(){ docker exec $name curl -s -m 5 -o /dev/null -w '%{http_code}' "$@"; }
 oc(){ docker exec $name curl -s -m 90 "$@"; }
 A=http://127.0.0.1:4096/api/session
 echo "no auth -> $(c $A)  wrong -> $(c -u opencode:wrong $A)  right -> $(c -u opencode:$PW1 $A)  (positive control: right must be 200)"
-SID=ses_gwprobe0001
+SID=ses_gwprobe$(date +%s)
 oc -u opencode:$PW1 -X POST -H 'Content-Type: application/json' -d "{\"id\":\"$SID\",\"title\":\"t\",\"location\":{\"directory\":\"/workspaces\"}}" $A -w ' [create %{http_code}]\n' | head -c 300
 echo "== E2E prompt opencode -> gateway -> fake upstream (echo)"
 sudo truncate -s0 /run/gwq-upstream.log
@@ -44,10 +45,10 @@ oc -u opencode:$PW1 -X POST -H 'Content-Type: application/json' -d '{"text":"MOD
 echo "upstream saw (flags = what the tool result sent back to the model contained):"; sudo grep '"kind":"flags"' /run/gwq-upstream.log | cut -c1-500
 echo "== 17 restart/rotate password"
 docker stop $name >/dev/null; curl -s "http://127.0.0.1:9100/release?lease=$CID"
-echo "old token after release -> $(curl -s -m 5 -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $TOK" -d '{"model":"m1","messages":[]}' $G/v1/chat/completions)"
+echo "old token after release -> $(curl -s -m 5 -o /dev/null --cacert /etc/gwq/gw-ca.pem -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $TOK" -d '{"model":"m1","messages":[]}' $G/v1/chat/completions)"
 PW2=$(head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n'); start $PW2
 echo "new container: old pw -> $(c -u opencode:$PW1 http://127.0.0.1:4096/api/session)  new pw -> $(c -u opencode:$PW2 http://127.0.0.1:4096/api/session)"
 echo "== 06 from the real sandbox container: direct egress"
 docker exec $name sh -c 'curl -s -m 4 -o /dev/null -w "%{http_code}\n" https://api.anthropic.com; echo rc=$?'
-docker exec $name sh -c 'curl -s -m 4 -o /dev/null -w "%{http_code} gateway(no token)\n" -X POST http://172.29.0.2:8082/v1/chat/completions'
+docker exec $name sh -c "curl --cacert /usr/local/share/atm/gateway-ca.crt -s -m 4 -o /dev/null -w \"%{http_code} gateway(no token)\\n\" -X POST $G/v1/chat/completions"
 docker rm -f $name >/dev/null
