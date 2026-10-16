@@ -201,7 +201,7 @@ func TestProjectSandboxManager(t *testing.T) {
 	}
 	imageTag := "atm-project-runtime:test"
 	gatewayURL := "http://atm-control-plane:8080/v1/llm"
-	egressPolicy := sandbox.DefaultEgressPolicy("http://atm-egress-proxy:3128")
+	egressPolicy := sandbox.DefaultEgressPolicy("http://172.28.200.10:3128")
 
 	// Migrated: previously asserted a hardened container was created. Provisioning is now refused.
 	t.Run("EnsureProjectContainer creates hardened container with correct configs", func(t *testing.T) {

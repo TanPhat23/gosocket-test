@@ -20,6 +20,13 @@ import (
 	"agent-task-manager/internal/sandbox"
 )
 
+// sandboxDNS is the only upstream the sandbox's embedded Docker resolver may use. It is RFC 5737
+// TEST-NET-1: nothing answers there, so lookups fail and package managers resolve through the proxy's
+// CONNECT instead. It must not be loopback: Docker forwards loopback upstreams from the host's network
+// namespace, which bypasses the sandbox firewall (verified live on Docker 29.1.3, 2026-10-16). A
+// non-loopback upstream is queried from the sandbox's own namespace, where the Gate 0D rules drop it.
+const sandboxDNS = "192.0.2.1"
+
 // opencodeUID is the unprivileged user the project container runs OpenCode as.
 const opencodeUID = 1000
 
@@ -116,6 +123,11 @@ func (m *projectSandboxManager) EnsureProjectContainer(ctx context.Context, proj
 func (m *projectSandboxManager) ensureProjectContainerDisabledDraft(ctx context.Context, project *models.Project, imageTag string) (*ProjectRouteHandle, error) {
 	if project == nil || project.ID == "" {
 		return nil, errors.New("project and project.ID are required")
+	}
+	if m.egressPolicy != nil {
+		if err := sandbox.ValidateForwardProxyURL(m.egressPolicy.ForwardProxyURL); err != nil {
+			return nil, err
+		}
 	}
 	if imageTag == "" {
 		return nil, errors.New("imageTag is required")
@@ -216,6 +228,7 @@ func (m *projectSandboxManager) ensureProjectContainerDisabledDraft(ctx context.
 		PortBindings:    nil,
 		PublishAllPorts: false,
 		NetworkMode:     container.NetworkMode(netName),
+		DNS:             []string{sandboxDNS},
 	}
 
 	netConfig := &network.NetworkingConfig{

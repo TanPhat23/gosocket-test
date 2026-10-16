@@ -103,7 +103,7 @@ func TestEgressFilter(t *testing.T) {
 		allowedCases := []string{
 			"1.1.1.1",
 			"8.8.8.8",
-			"140.82.112.4", // GitHub public IP
+			"140.82.112.4",   // GitHub public IP
 			"151.101.65.140", // npmjs
 		}
 
@@ -150,4 +150,24 @@ func TestEgressFilter(t *testing.T) {
 			t.Errorf("expected NO_PROXY='localhost,127.0.0.1', got %s", envMap["NO_PROXY"])
 		}
 	})
+}
+
+func TestValidateForwardProxyURL(t *testing.T) {
+	for raw, ok := range map[string]bool{
+		"http://172.28.200.10:3128":     true,
+		"http://[fd00::10]:3128":        true,
+		"http://172.28.200.10:3128/":    true,
+		"http://atm-egress-proxy:3128":  false, // hostname: sandboxes have no DNS
+		"http://172.28.200.10":          false, // no port
+		"http://172.28.200.10:0":        false,
+		"https://172.28.200.10:3128":    false,
+		"http://u:p@172.28.200.10:3128": false,
+		"http://172.28.200.10:3128/x":   false,
+		"http://172.28.200.10:3128?a=b": false,
+		"":                              false,
+	} {
+		if err := sandbox.ValidateForwardProxyURL(raw); (err == nil) != ok {
+			t.Errorf("ValidateForwardProxyURL(%q) err=%v, want ok=%v", raw, err, ok)
+		}
+	}
 }

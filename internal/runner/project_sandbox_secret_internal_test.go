@@ -187,3 +187,28 @@ func TestProjectSecret_DeliveredAfterStart(t *testing.T) {
 		t.Errorf("order = %v, want start then exec", cli.order)
 	}
 }
+
+// Gate 0D: the sandbox resolver must point at a dead, non-loopback address. Loopback upstreams are
+// queried from the host's network namespace and would bypass the sandbox firewall.
+func TestProjectSandbox_DNSIsDeadNonLoopbackAddress(t *testing.T) {
+	cli, _ := runSecretDraft(t)
+	dns := cli.CreateCalls[0].HostConfig.DNS
+	if len(dns) != 1 || dns[0] != "192.0.2.1" {
+		t.Fatalf("sandbox DNS = %v; want exactly [192.0.2.1]", dns)
+	}
+	if ip := net.ParseIP(dns[0]); ip == nil || ip.IsLoopback() {
+		t.Fatalf("sandbox DNS %q must be a non-loopback IP", dns[0])
+	}
+}
+
+// Gate 0D: a hostname proxy can never resolve inside the sandbox, so provisioning refuses it before any Docker call.
+func TestProjectSandbox_HostnameProxyRejectedBeforeDocker(t *testing.T) {
+	cli := newSecretClient()
+	mgr := NewProjectSandboxManager(cli, sandbox.DefaultEgressPolicy("http://atm-egress-proxy:3128"), "").(*projectSandboxManager)
+	if _, err := mgr.ensureProjectContainerDisabledDraft(context.Background(), &models.Project{ID: "p1"}, "img"); err == nil {
+		t.Fatal("hostname proxy URL must be rejected")
+	}
+	if len(cli.CreateCalls) != 0 || len(cli.order) != 0 {
+		t.Fatal("no Docker call may precede proxy URL validation")
+	}
+}
