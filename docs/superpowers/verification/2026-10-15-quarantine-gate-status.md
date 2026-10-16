@@ -125,7 +125,9 @@ Two more defects found and fixed:
 | Live 0C-6 LFS (`.gitattributes filter=lfs`; pointer blob without attributes) | PASS: `ErrGitLFSNotSupported` for both |
 | Live 0C-7 planted hooks, `core.hooksPath`, smudge/process filters, `core.fsmonitor`, `core.sshCommand` in the volume repo, then re-ingest a `* filter=evil` branch | PASS: nothing ran. Positive control: plain `git worktree add` with the same config did run them |
 
-Not run live: 0C-8 (identifier validation; pure input checks, unit-tested) and 0C-9 (helper `NetworkMode: none`; asserted on the create call, not probed from inside a helper).
+0C-9 PASS live (2026-10-16, `atm-build`): the volume helper's real HostConfig, with its command swapped for a probe, sees only `lo`, zero routes, and `nc 1.1.1.1:80` fails. The same probe on the default bridge sees `eth0`, two routes and reaches the host (positive control), and a bridge-mode mutant of the helper fails the test.
+
+Not run live: 0C-8 (identifier validation; pure input checks, unit-tested). 0C-9 covers the volume helper only, not the credentialed worker, which needs egress by design.
 
 Findings recorded, not changed (need a decision):
 - **Volume name mismatch:** the transfer helper uses `atm-project-data-<repoID>`; the project sandbox mounts `atm-project-data-<projectID>`. Unless the two IDs are equal, a running sandbox never sees the ingested repository.

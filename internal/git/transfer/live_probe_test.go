@@ -352,3 +352,38 @@ echo PLANTED`, repoID)
 		t.Fatalf("positive control: plain git did not run the planted config, so this probe proves nothing: %s", ctl)
 	}
 }
+
+// probeClient swaps the volume helper's command for a network probe while keeping the helper's real
+// HostConfig, so the result reflects the confinement Docker actually applies to the helper.
+type probeClient struct{ sandbox.DockerClient }
+
+func (p probeClient) ContainerCreate(ctx context.Context, c *container.Config, hc *container.HostConfig, nc *network.NetworkingConfig, pl *ocispec.Platform, name string) (container.CreateResponse, error) {
+	c.Cmd = []string{"/bin/sh", "-c", `{
+echo "IFACES: $(sed 1,2d /proc/net/dev | cut -d: -f1 | tr -d ' ' | tr '\n' ' ')"
+echo "ROUTES: $(sed 1d /proc/net/route | wc -l)"
+if nc -w3 -z 1.1.1.1 80; then echo "EGRESS: REACHED"; else echo "EGRESS: BLOCKED"; fi
+} > /workspaces/NETPROBE`}
+	return p.DockerClient.ContainerCreate(ctx, c, hc, nc, pl, name)
+}
+
+// Live 0C-9: the volume helper has no network beyond loopback and no route, and egress fails.
+func TestLive0C9_HelperHasNoNetwork(t *testing.T) {
+	cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoID := liveID(t, "net")
+	mgr := transfer.NewGitTransferManager(transfer.NewVolumeTransferHelper(probeClient{cli}, liveEnv(t, "ATM_LIVE_IMAGE")), liveWorker(t, liveEnv(t, "ATM_LIVE_IMAGE")))
+	_, _ = ingest(t, mgr, repoID, "t1", "refs/heads/main") // the real ingest fails: the probe replaced the helper script
+	out, err := inVolume(t, repoID, "cat /workspaces/NETPROBE")
+	if err != nil {
+		t.Fatalf("probe output missing (helper did not run the probe?): %v\n%s", err, out)
+	}
+	t.Log(out)
+	if !strings.Contains(out, "IFACES: lo \n") && !strings.Contains(out, "IFACES: lo\n") {
+		t.Errorf("helper has a non-loopback interface:\n%s", out)
+	}
+	if !strings.Contains(out, "ROUTES: 0") || !strings.Contains(out, "EGRESS: BLOCKED") {
+		t.Errorf("helper has routes or reached the internet:\n%s", out)
+	}
+}
