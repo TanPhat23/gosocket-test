@@ -235,4 +235,4 @@ IPv6: the sandbox network has `EnableIPv6=false`, the container has no inet6 add
 
 Established in a QEMU VM: the topology, rules and probe behave as designed, every negative has a demonstrated positive control, the persistence unit works across a reboot, and the ATM-side verifier is no longer fooled by a silent canary. Not established: behaviour on a real multi-NIC production host or LAN, cloud metadata paths (deliberately not probed), IPv6-enabled sandbox networks, Docker upgrades rewriting rule order, rule-order after the sandbox networks are recreated by ATM at runtime, the 0G gateway end to end through this path, and review by someone who owns the production firewall. The packaged apply script differs from the one tested in the VM only by dropping the two fixture dummy interfaces.
 
-Qualification is the operator's and the user's sign-off; this section is the evidence for it.
+Qualification is the operator's and the user's sign-off; this section is the evidence for it. **Signed off by the user on 2026-10-16 as sufficient for Gate 0D** (VM evidence; production-host run still recommended).
