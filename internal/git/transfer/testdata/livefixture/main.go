@@ -43,6 +43,7 @@ func main() {
 	dir := flag.String("dir", "/data", "data directory")
 	token := flag.String("token", "", "required Basic auth password")
 	host := flag.String("host", "github.com", "certificate DNS name")
+	delay := flag.Duration("upload-pack-delay", 0, "delay before answering upload-pack, so a probe can inspect a running worker")
 	flag.Parse()
 	if *token == "" {
 		log.Fatal("-token required")
@@ -88,6 +89,9 @@ func main() {
 			w.Header().Set("WWW-Authenticate", `Basic realm="git"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
+		}
+		if *delay > 0 && r.Method == http.MethodPost {
+			time.Sleep(*delay)
 		}
 		backend.ServeHTTP(w, r)
 	})

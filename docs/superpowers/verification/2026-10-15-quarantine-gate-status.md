@@ -108,7 +108,8 @@ Results after the fixes:
 |---|---|
 | Live 0C-1 fetch → bundle | PASS: bundle verifies, token absent from the stream, fixture saw the token only over TLS |
 | Live 0C-3 push task branch | PASS: `refs/heads/task/<id>` lands on the fixture; a second push of a diverged branch was rejected (no force) |
+| Live 0C-2 running-worker canary scan | PASS: with the fixture holding upload-pack open, the token is absent from `docker inspect`, every process's argv and environment, and every file under `/tmp`. Positive control: a mutant that put the token in the worker env failed this probe (and the mock 0C-2) |
 | Live 0C-4 untrusted certificate | PASS: fails, no bundle, fixture logged a TLS handshake error and no HTTP request |
 | Unit/mock suite `internal/git/transfer` | PASS (test binary run in `atm-build`) |
 
-Not run live: 0C-2 (`/proc` and volume canary scan of a running worker), 0C-5..0C-9 (submodule, LFS, filter, traversal, helper network isolation) and the volume helper path. Known limitation: credentials are approved for `host=github.com` only, so any other host (GitHub Enterprise, a mirror) gets no credentials. Gate 0C stays **UNQUALIFIED**; the quarantine is unchanged.
+Not run live: the volume half of 0C-2 (no volume helper run yet), 0C-5..0C-9 (submodule, LFS, filter, traversal, helper network isolation) and the volume helper path. Known limitation: credentials are approved for `host=github.com` only, so any other host (GitHub Enterprise, a mirror) gets no credentials. Gate 0C stays **UNQUALIFIED**; the quarantine is unchanged.

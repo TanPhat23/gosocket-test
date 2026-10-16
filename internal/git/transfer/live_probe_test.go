@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,12 +37,17 @@ const liveRemote = "https://github.com/org/repo.git"
 
 type hostsClient struct {
 	sandbox.DockerClient
-	ip string
+	ip      string
+	created chan string // optional: receives each created container ID
 }
 
 func (h hostsClient) ContainerCreate(ctx context.Context, c *container.Config, hc *container.HostConfig, nc *network.NetworkingConfig, p *ocispec.Platform, name string) (container.CreateResponse, error) {
 	hc.ExtraHosts = append(hc.ExtraHosts, "github.com:"+h.ip)
-	return h.DockerClient.ContainerCreate(ctx, c, hc, nc, p, name)
+	resp, err := h.DockerClient.ContainerCreate(ctx, c, hc, nc, p, name)
+	if err == nil && h.created != nil {
+		h.created <- resp.ID
+	}
+	return resp, err
 }
 
 func liveEnv(t *testing.T, k string) string {
@@ -59,7 +65,7 @@ func liveWorker(t *testing.T, image string) transfer.CredentialedWorker {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return transfer.NewCredentialedGitWorker(hostsClient{cli, liveEnv(t, "ATM_LIVE_FIXTURE_IP")}, image)
+	return transfer.NewCredentialedGitWorker(hostsClient{DockerClient: cli, ip: liveEnv(t, "ATM_LIVE_FIXTURE_IP")}, image)
 }
 
 func TestLive0C1_FetchBundleRoundTripAndNoTokenInBundle(t *testing.T) {
@@ -159,5 +165,58 @@ func TestLive0C3_PushTaskBranch(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "refs/heads/task/"+taskID) || !strings.Contains(string(out), "refs/heads/main") {
 		t.Fatalf("fixture refs: %s", out)
+	}
+}
+
+// Live 0C-2: while a worker is mid-fetch (the slow fixture holds upload-pack), the token must not appear
+// in docker inspect (Env, Cmd, Labels), in any process's argv or environment, or in any file under the
+// writable tmpfs. The credential-cache daemon holds it in memory only; that is the accepted design.
+// Needs ATM_LIVE_SLOW_FIXTURE_IP: a second fixture started with -upload-pack-delay.
+func TestLive0C2_RunningWorkerCanaryScan(t *testing.T) {
+	token := liveEnv(t, "ATM_LIVE_TOKEN")
+	image := liveEnv(t, "ATM_LIVE_IMAGE")
+	cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := make(chan string, 1)
+	w := transfer.NewCredentialedGitWorker(hostsClient{DockerClient: cli, ip: liveEnv(t, "ATM_LIVE_SLOW_FIXTURE_IP"), created: created}, image)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- w.FetchRemoteRefToBundle(ctx, liveRemote, "refs/heads/main", token, io.Discard) }()
+
+	id := <-created
+	// Wait until git is actually talking to the fixture (its remote-https helper is running).
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		out, _ := exec.Command("docker", "exec", id, "sh", "-c", "cat /proc/[0-9]*/cmdline 2>/dev/null | tr '\\0' ' '").Output()
+		if strings.Contains(string(out), "remote-https") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("worker never reached the fetch; processes: %s", out)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	scans := map[string][]string{
+		"docker inspect":     {"docker", "inspect", id},
+		"argv of every proc": {"docker", "exec", id, "sh", "-c", "cat /proc/[0-9]*/cmdline 2>/dev/null"},
+		"env of every proc":  {"docker", "exec", id, "sh", "-c", "cat /proc/[0-9]*/environ 2>/dev/null"},
+		"files under /tmp":   {"docker", "exec", id, "sh", "-c", "find /tmp -type f -exec cat {} + 2>/dev/null"},
+	}
+	for name, argv := range scans {
+		out, _ := exec.Command(argv[0], argv[1:]...).CombinedOutput()
+		if len(out) == 0 {
+			t.Errorf("%s: empty output, scan proved nothing", name)
+		}
+		if bytes.Contains(out, []byte(token)) {
+			t.Errorf("token found in %s", name)
+		}
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("fetch: %v", err)
 	}
 }
