@@ -1,7 +1,7 @@
 # Specification: Gate 0C Credential-Safe Git Transfer Architecture & Qualification Design
 
-**Status:** PROPOSED / Pending User Review and Checkpoint A
-**Gate Status:** UNQUALIFIED (Blocks implementation of `WorkspaceManager` and dependent tasks)
+**Status:** APPROVED for Gate 0C at Checkpoint A by the user, 2026-10-16 ("I approve this"); see `verification/2026-10-15-quarantine-gate-status.md`
+**Gate Status:** QUALIFIED 2026-10-16 on VM evidence by explicit user sign-off. Does not lift the quarantine.
 **Author:** Documentation Implementation Specialist
 **Date:** 2026-10-11
 **Target Platform:** Single-Host Linux (`linux/amd64`), Docker Compose, Native Docker Engine
