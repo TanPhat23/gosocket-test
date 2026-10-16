@@ -33,6 +33,12 @@ import (
 // RunnerOption configures optional dependencies for AgentTaskRunner.
 type RunnerOption func(*AgentTaskRunner)
 
+// WithRunnerTaskRepoTransfer stores the Gate 0C git transfer adapter. RunTask does not use it while the
+// runtime is quarantined.
+func WithRunnerTaskRepoTransfer(t *TaskRepoTransfer) RunnerOption {
+	return func(r *AgentTaskRunner) { r.repoTransfer = t }
+}
+
 // WithRunnerGitHubIntegration sets the integration repo, cred repo, cipher, and github provider for auto-PR creation.
 func WithRunnerGitHubIntegration(
 	integRepo repository.IntegrationRepository,
@@ -70,6 +76,7 @@ func WithRunnerWorkspaceManager(mgr WorkspaceManager) RunnerOption {
 }
 
 type AgentTaskRunner struct {
+	repoTransfer      *TaskRepoTransfer
 	cfg               *config.Config
 	projectRepo       repository.ProjectRepository
 	taskRepo          repository.TaskRepository
