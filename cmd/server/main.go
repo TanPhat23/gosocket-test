@@ -178,8 +178,7 @@ func main() {
 		log.Fatalf("%v", err)
 	}
 	// Gate 0G: the credential gateway is off unless ATM_GATEWAY_ENABLED=true. It only serves; no sandbox
-	// receives a token until the project sandbox manager is built with a broker, which the runtime
-	// quarantine still prevents.
+	// receives a token until the project sandbox manager is built with a broker.
 	gatewaySvc, err := gateway.ServiceFromEnv(os.Getenv, os.ReadFile, log.Printf)
 	if err != nil {
 		log.Fatalf("%v", err)
@@ -225,18 +224,17 @@ func main() {
 	}
 
 	// Gate 0C: the git transfer adapter is built only when ATM_GIT_TRANSFER_ENABLED=true. The runner holds
-	// it but RunTask still refuses while the runtime is quarantined.
+	// it and RunTask uses it (quarantine lifted 2026-10-16).
 	repoTransfer, err := runner.TaskRepoTransferFromEnv(os.Getenv, dockerCli)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
 	if repoTransfer != nil {
-		log.Printf("git transfer adapter enabled (image %s); runtime stays quarantined", os.Getenv("ATM_GIT_TRANSFER_IMAGE"))
+		log.Printf("git transfer adapter enabled (image %s)", os.Getenv("ATM_GIT_TRANSFER_IMAGE"))
 	}
 
 	// Gates 0D/0G: the project runtime (sandbox manager with gateway tokens and firewall proof, image builder
-	// with the gateway CA) is assembled only when ATM_PROJECT_RUNTIME_ENABLED=true. Every entry point still
-	// refuses while the runtime is quarantined, so this changes configuration validation, not behaviour.
+	// with the gateway CA) is assembled only when ATM_PROJECT_RUNTIME_ENABLED=true and is used by RunTask.
 	runtimeCatalog := runner.NewDefaultRuntimeCatalog()
 	projectRuntime, err := runner.ProjectRuntimeFromEnv(os.Getenv, os.ReadFile, dockerCli, runtimeCatalog, gatewaySvc)
 	if err != nil {
@@ -251,7 +249,7 @@ func main() {
 			runner.WithRunnerProjectSandboxManager(projectRuntime.Manager),
 			runner.WithRunnerRuntimeImage(runner.NewRuntimeResolver(runtimeCatalog), projectRuntime.Builder),
 		)
-		log.Printf("project runtime configured (gateway CA baked into images, firewall proof before sandbox start); runtime stays quarantined")
+		log.Printf("project runtime configured (gateway CA baked into images, firewall proof before sandbox start)")
 	}
 
 	// Concrete Agent Task Runner (orchestrating worktrees, OpenCode, and diff snapshots)
@@ -270,7 +268,7 @@ func main() {
 	// Concurrency-bounded Asynq Worker Server
 	var taskRunner queue.TaskRunner = agentRunner
 	if fakeRuntime {
-		log.Printf("WARNING: ATM_DEV_FAKE_RUNTIME is on: tasks are simulated. The real runtime stays quarantined.")
+		log.Printf("WARNING: ATM_DEV_FAKE_RUNTIME is on: tasks are simulated. Set it to false (docker-compose.runtime.yml) for real runs.")
 		taskRunner = devruntime.NewRunner(logRepo, hub, 700*time.Millisecond)
 	}
 	workerServer := queue.NewWorkerServer(cfg, taskService, taskRunner)
