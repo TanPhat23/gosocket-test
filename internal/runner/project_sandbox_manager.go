@@ -15,6 +15,7 @@ import (
 	"github.com/docker/docker/api/types/volume"
 
 	"agent-task-manager/internal/common"
+	"agent-task-manager/internal/gateway"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/sandbox"
 )
@@ -38,6 +39,22 @@ type ProjectRouteHandle struct {
 	Generation   int64  `json:"generation"`
 }
 
+// GatewayBroker mints and revokes the capability tokens sandboxes use to reach the LLM gateway.
+// *gateway.Broker satisfies it.
+type GatewayBroker interface {
+	Grant(projectID, leaseID string) (gateway.Grant, error)
+	Release(leaseID string)
+}
+
+// GatewayAccess is the optional Gate 0G wiring: when set, each project container gets a lease-scoped
+// token and an OpenCode config that points only at the gateway, delivered over exec stdin.
+type GatewayAccess struct {
+	Broker        GatewayBroker
+	Models        []string
+	ContextTokens int
+	OutputTokens  int
+}
+
 // ProjectSandboxManager manages project sandbox container lifecycle, isolation, and routing.
 type ProjectSandboxManager interface {
 	EnsureProjectContainer(ctx context.Context, project *models.Project, imageTag string) (*ProjectRouteHandle, error)
@@ -49,6 +66,7 @@ type projectSandboxManager struct {
 	dockerCli    sandbox.DockerClient
 	egressPolicy *sandbox.EgressPolicy
 	gatewayURL   string
+	gw           *GatewayAccess
 
 	mu     sync.RWMutex
 	routes map[string]*ProjectRouteHandle
@@ -64,6 +82,23 @@ func NewProjectSandboxManager(
 		dockerCli:    dockerCli,
 		egressPolicy: egressPolicy,
 		gatewayURL:   gatewayURL,
+		routes:       make(map[string]*ProjectRouteHandle),
+	}
+}
+
+// NewProjectSandboxManagerWithGateway is NewProjectSandboxManager plus lease-scoped gateway credentials.
+// A nil gw behaves exactly like NewProjectSandboxManager.
+func NewProjectSandboxManagerWithGateway(
+	dockerCli sandbox.DockerClient,
+	egressPolicy *sandbox.EgressPolicy,
+	gatewayURL string,
+	gw *GatewayAccess,
+) ProjectSandboxManager {
+	return &projectSandboxManager{
+		dockerCli:    dockerCli,
+		egressPolicy: egressPolicy,
+		gatewayURL:   gatewayURL,
+		gw:           gw,
 		routes:       make(map[string]*ProjectRouteHandle),
 	}
 }
@@ -200,6 +235,7 @@ func (m *projectSandboxManager) ensureProjectContainerDisabledDraft(ctx context.
 	rollback := func(cause error) (*ProjectRouteHandle, error) {
 		_ = m.dockerCli.ContainerStop(ctx, containerID, container.StopOptions{})
 		_ = m.dockerCli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
+		m.releaseGateway(containerID)
 		delete(m.routes, project.ID)
 		return nil, cause
 	}
@@ -207,6 +243,11 @@ func (m *projectSandboxManager) ensureProjectContainerDisabledDraft(ctx context.
 	// 7. Start container
 	if err := m.dockerCli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
 		return rollback(fmt.Errorf("failed to start project container: %w", err))
+	}
+
+	// 7b. Gateway config goes first: the entrypoint treats the password file as the ready signal.
+	if err := m.deliverGatewayConfig(ctx, project.ID, containerID); err != nil {
+		return rollback(err)
 	}
 
 	// 8. Deliver OPENCODE_PASSWORD over exec stdin into the running container's tmpfs.
@@ -266,6 +307,7 @@ func (m *projectSandboxManager) StopProjectContainer(ctx context.Context, projec
 	}
 
 	err := m.dockerCli.ContainerStop(ctx, route.ContainerID, stopOpts)
+	m.releaseGateway(route.ContainerID)
 	delete(m.routes, projectID)
 	return err
 }
@@ -289,7 +331,48 @@ func (m *projectSandboxManager) GetProjectRoute(ctx context.Context, projectID s
 // owner-only by the container user and published with an atomic rename, so the entrypoint never
 // observes a partial secret. Errors deliberately carry no exec output.
 func (m *projectSandboxManager) deliverSecret(ctx context.Context, containerID, password string) error {
-	const script = "umask 077 && cat > /run/secrets/opencode.tmp && mv /run/secrets/opencode.tmp /run/secrets/opencode"
+	return m.deliverSecretFile(ctx, containerID, "opencode", password)
+}
+
+// releaseGateway revokes the container's gateway lease. It is a no-op when the gateway is not wired.
+func (m *projectSandboxManager) releaseGateway(leaseID string) {
+	if m.gw != nil && m.gw.Broker != nil {
+		m.gw.Broker.Release(leaseID)
+	}
+}
+
+// deliverGatewayConfig mints a lease-scoped token (lease = container ID) and writes the OpenCode config
+// that embeds it to /run/secrets/opencode-config. The token never appears in env, argv or docker inspect.
+// On any failure the lease is released. Errors carry no token or config content.
+func (m *projectSandboxManager) deliverGatewayConfig(ctx context.Context, projectID, containerID string) error {
+	if m.gw == nil || m.gw.Broker == nil {
+		return nil
+	}
+	grant, err := m.gw.Broker.Grant(projectID, containerID)
+	if err != nil {
+		return fmt.Errorf("failed to mint gateway token: %w", err)
+	}
+	cfg, err := gateway.OpenCodeConfig(gateway.OpenCodeConfigParams{
+		BaseURL:       grant.BaseURL,
+		Token:         grant.Token,
+		Models:        m.gw.Models,
+		ContextTokens: m.gw.ContextTokens,
+		OutputTokens:  m.gw.OutputTokens,
+	})
+	if err != nil {
+		m.gw.Broker.Release(containerID)
+		return fmt.Errorf("failed to render gateway config: %w", err)
+	}
+	if err := m.deliverSecretFile(ctx, containerID, "opencode-config", cfg); err != nil {
+		m.gw.Broker.Release(containerID)
+		return err
+	}
+	return nil
+}
+
+// deliverSecretFile is the shared stdin-to-tmpfs delivery. name is a fixed internal constant, never user input.
+func (m *projectSandboxManager) deliverSecretFile(ctx context.Context, containerID, name, password string) error {
+	script := "umask 077 && cat > /run/secrets/" + name + ".tmp && mv /run/secrets/" + name + ".tmp /run/secrets/" + name
 	created, err := m.dockerCli.ContainerExecCreate(ctx, containerID, container.ExecOptions{
 		User:         fmt.Sprintf("%d:%d", opencodeUID, opencodeUID),
 		Cmd:          []string{"sh", "-c", script},

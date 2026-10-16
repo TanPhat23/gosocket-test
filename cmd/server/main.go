@@ -18,6 +18,7 @@ import (
 	"agent-task-manager/internal/crypto"
 	"agent-task-manager/internal/devruntime"
 	"agent-task-manager/internal/db"
+	"agent-task-manager/internal/gateway"
 	"agent-task-manager/internal/git"
 	"agent-task-manager/internal/integrations"
 	"agent-task-manager/internal/integrations/github"
@@ -175,6 +176,27 @@ func main() {
 	fakeRuntime, err := devruntime.EnabledFromEnv(os.Getenv)
 	if err != nil {
 		log.Fatalf("%v", err)
+	}
+	// Gate 0G: the credential gateway is off unless ATM_GATEWAY_ENABLED=true. It only serves; no sandbox
+	// receives a token until the project sandbox manager is built with a broker, which the runtime
+	// quarantine still prevents.
+	gatewaySvc, err := gateway.ServiceFromEnv(os.Getenv, os.ReadFile, log.Printf)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	if gatewaySvc != nil {
+		gwLn, err := gatewaySvc.Listen()
+		if err != nil {
+			log.Fatalf("gateway: listen: %v", err)
+		}
+		gwCtx, gwCancel := context.WithCancel(context.Background())
+		defer gwCancel()
+		go func() {
+			if err := gatewaySvc.Run(gwCtx, gwLn); err != nil {
+				log.Printf("gateway: stopped: %v", err)
+			}
+		}()
+		log.Printf("LLM gateway listening on %s", gwLn.Addr())
 	}
 	openCodeClient := runner.NewOpenCodeClient(cfg.OpenCodeServerURL, cfg.OpenCodePassword, nil)
 	taskService := service.NewTaskService(

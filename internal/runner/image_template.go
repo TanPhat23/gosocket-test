@@ -27,7 +27,7 @@ const ExpectedTemplateSHA256 = "4e27c911727315d0e5fedd81730d0894d079163b66ab1eea
 
 // ExpectedEntrypointSHA256 is the pinned SHA-256 of templates/atm-entrypoint.sh, which is copied into
 // the image build context. Update it in the same reviewed change as any edit to the script.
-const ExpectedEntrypointSHA256 = "caf3a098b914ab73339e3b7e3186535fe1222bad4745374aafbaeb87c669b191"
+const ExpectedEntrypointSHA256 = "87f8f33f44f76cfe1e1087d4671149a2e80d060309b661635e72c008c9dae4fe"
 
 // loadVerifiedTemplate returns raw only if it hashes to expectedSHA. It never parses raw.
 func loadVerifiedTemplate(raw []byte, expectedSHA string) ([]byte, error) {
