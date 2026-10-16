@@ -387,3 +387,35 @@ func TestLive0C9_HelperHasNoNetwork(t *testing.T) {
 		t.Errorf("helper has routes or reached the internet:\n%s", out)
 	}
 }
+
+// Live 0C-8: hostile identifiers and refs are refused by the real manager before any container or
+// volume is created, so nothing can reach a shell or escape /workspaces.
+func TestLive0C8_HostileInputsCreateNothing(t *testing.T) {
+	mgr := liveManager(t)
+	count := func() string {
+		out, err := exec.Command("sh", "-c", "docker ps -aq | wc -l; docker volume ls -q | wc -l").CombinedOutput()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(out)
+	}
+	before := count()
+	cases := []struct{ repo, task, ref string }{
+		{"../escape", "t1", "refs/heads/main"},
+		{"repo/sub", "t1", "refs/heads/main"},
+		{"repo1", "../../etc", "refs/heads/main"},
+		{"repo1", "t1", "refs/heads/main; touch /workspaces/PWNED"},
+		{"repo1", "t1", "--upload-pack=touch /workspaces/PWNED"},
+		{"repo1", "t1", "refs/heads/$(id)"},
+		{"repo1", "t1\n", "refs/heads/main"},
+	}
+	for _, c := range cases {
+		_, err := ingest(t, mgr, c.repo, c.task, c.ref)
+		if !errors.Is(err, transfer.ErrInvalidIdentifier) && !errors.Is(err, transfer.ErrInvalidRefName) {
+			t.Errorf("(%q,%q,%q): want ErrInvalidIdentifier or ErrInvalidRefName, got %v", c.repo, c.task, c.ref, err)
+		}
+	}
+	if after := count(); after != before {
+		t.Errorf("hostile input created containers or volumes: before %q after %q", before, after)
+	}
+}

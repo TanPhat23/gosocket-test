@@ -127,7 +127,9 @@ Two more defects found and fixed:
 
 0C-9 PASS live (2026-10-16, `atm-build`): the volume helper's real HostConfig, with its command swapped for a probe, sees only `lo`, zero routes, and `nc 1.1.1.1:80` fails. The same probe on the default bridge sees `eth0`, two routes and reaches the host (positive control), and a bridge-mode mutant of the helper fails the test.
 
-Not run live: 0C-8 (identifier validation; pure input checks, unit-tested). 0C-9 covers the volume helper only, not the credentialed worker, which needs egress by design.
+0C-8 PASS live: traversal IDs, `;`-injection, `--upload-pack=` and `$(id)` refs are refused with `ErrInvalidIdentifier` or `ErrInvalidRefName`, and no container or volume is created. 0C-9 covers the volume helper only, not the credentialed worker, which needs egress by design.
+
+**Full live suite against the shipped image (2026-10-16):** all of 0C-1..0C-9 pass in `atm-build` using `deploy/git-transfer/Dockerfile` (digest-pinned Alpine, git, CA bundle, `/workspaces` 1000:1000) as the helper and worker, with only the fixture CA layered on top. Evidence for Checkpoint A is complete; what remains for 0C is your review, the `github.com`-only credential limit, and a caller that passes the project ID as `RepoID`.
 
 Findings recorded, not changed (need a decision):
 - **Volume name mismatch:** the transfer helper uses `atm-project-data-<repoID>`; the project sandbox mounts `atm-project-data-<projectID>`. Unless the two IDs are equal, a running sandbox never sees the ingested repository.
