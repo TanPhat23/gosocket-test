@@ -1,0 +1,50 @@
+# Opt-in override: run REAL project-container tasks instead of the simulated dev runtime.
+#
+#   scripts/runtime-dev-setup.sh          # once: certs, pinned helper image, DMZ network, data/runtime/runtime.env
+#   docker compose -f docker-compose.yml -f docker-compose.runtime.yml up -d
+#
+# Read docs/runtime-local-dev.md first. This needs the host egress firewall (deploy/egress-firewall) and the
+# Docker pool/DMZ settings described there; without them the firewall proof fails and no task starts.
+# NOT security-qualified: Gate 0F is open and this topology was not run on a real host by the author.
+
+services:
+  control-plane:
+    environment:
+      ATM_DEV_FAKE_RUNTIME: "false"
+    env_file:
+      - data/runtime/runtime.env
+    volumes:
+      - "./data/runtime:/etc/atm:ro"
+    networks:
+      # Fixed IP: the sandbox firewall allows exactly this address and port (GATEWAY_IP in atm.nft), and the
+      # gateway certificate carries it as its only SAN. This network also gives the gateway a route to the LLM
+      # provider, because agent_backend is internal.
+      atm_gateway:
+        ipv4_address: 172.29.0.2
+
+  # Dev-only forward proxy for package registries. Sketch from the Gate 0D handoff (section 5): it does not do
+  # SNI validation or private-address rejection, so do not treat it as qualified.
+  egress-proxy:
+    image: ${ATM_SQUID_IMAGE:-ubuntu/squid:latest}
+    container_name: atm-egress-proxy
+    restart: unless-stopped
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, CHOWN, DAC_OVERRIDE]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - "./deploy/egress-proxy/squid.conf:/etc/squid/squid.conf:ro"
+    networks:
+      atm_egress_dmz:
+        ipv4_address: 172.28.200.10
+
+networks:
+  atm_gateway:
+    name: atm_gateway
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.29.0.0/24
+  # Created by scripts/runtime-dev-setup.sh (fixed interface name atm-egress-dmz, as atm.nft expects).
+  atm_egress_dmz:
+    name: atm_egress_dmz
+    external: true
