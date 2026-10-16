@@ -103,3 +103,7 @@ func BuildProxyEnv(policy *EgressPolicy) []string {
 		"NO_PROXY=localhost,127.0.0.1",
 	}
 }
+
+// SandboxDeadDNS is the resolver address given to sandboxes: a TEST-NET-1 address that nothing
+// answers on, so sandboxes cannot resolve names and must reach the egress proxy by IP.
+const SandboxDeadDNS = "192.0.2.1"
