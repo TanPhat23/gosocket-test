@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -166,6 +167,19 @@ func TestProjectContainer_NoSecretsInConfig(t *testing.T) {
 		if strings.Contains(b, "/.config/opencode") || strings.Contains(b, "/.local/share/opencode") {
 			t.Errorf("host opencode profile bind-mounted: %q", b)
 		}
+	}
+}
+
+// The root filesystem is read-only, so OpenCode must be told to keep its data under the state volume;
+// otherwise it exits at startup (found live in the Gate 0G run).
+func TestProjectContainer_HomeOnWritableStateVolume(t *testing.T) {
+	cli, _ := runSecretDraft(t)
+	call := cli.CreateCalls[0]
+	if !slices.Contains(call.Config.Env, "HOME="+opencodeStateDir) {
+		t.Errorf("HOME must point at %s, env=%v", opencodeStateDir, call.Config.Env)
+	}
+	if !slices.ContainsFunc(call.HostConfig.Binds, func(b string) bool { return strings.HasSuffix(b, ":"+opencodeStateDir+":rw") }) {
+		t.Errorf("state volume must be mounted rw at %s, binds=%v", opencodeStateDir, call.HostConfig.Binds)
 	}
 }
 

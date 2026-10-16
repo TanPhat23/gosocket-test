@@ -30,6 +30,9 @@ const sandboxDNS = sandbox.SandboxDeadDNS
 // opencodeUID is the unprivileged user the project container runs OpenCode as.
 const opencodeUID = 1000
 
+// opencodeStateDir is the writable state volume mount and OpenCode's HOME (the root filesystem is read-only).
+const opencodeStateDir = "/var/lib/opencode"
+
 // ErrQuarantineActive is returned by EnsureProjectContainer while project container
 // provisioning is disabled. It wraps common.ErrRuntimeQuarantined.
 var ErrQuarantineActive = fmt.Errorf("%w", common.ErrRuntimeQuarantined)
@@ -199,7 +202,9 @@ func (m *projectSandboxManager) ensureProjectContainerDisabledDraft(ctx context.
 	if m.gatewayURL != "" {
 		env = append(env, "ATM_LLM_GATEWAY_URL="+m.gatewayURL)
 	}
-	env = append(env, "OPENCODE_SERVER_PORT=4096")
+	// The root filesystem is read-only: OpenCode's data, config, cache and logs (XDG dirs under $HOME) must
+	// land on the state volume, otherwise it exits at startup with a FileSystem.makeDirectory error.
+	env = append(env, "OPENCODE_SERVER_PORT=4096", "HOME="+opencodeStateDir)
 
 	// 5. Container & Host Configuration
 	containerCfg := &container.Config{
@@ -214,7 +219,7 @@ func (m *projectSandboxManager) ensureProjectContainerDisabledDraft(ctx context.
 		SecurityOpt:    []string{"no-new-privileges:true"},
 		Binds: []string{
 			fmt.Sprintf("%s:/workspaces:rw", dataVolume),
-			fmt.Sprintf("%s:/var/lib/opencode:rw", stateVolume),
+			fmt.Sprintf("%s:%s:rw", stateVolume, opencodeStateDir),
 		},
 		Tmpfs: map[string]string{
 			"/tmp":         "rw,noexec,nosuid,size=512m",

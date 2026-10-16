@@ -113,3 +113,37 @@ Verified in `atm-guest` (offline, vendored): `go test ./internal/runner ./intern
 Live probe in `atm-build` (Docker 29.1.3, OpenCode 2.0.26, read-only rootfs, cap-drop ALL, tmpfs secrets): delivery order config then password works; both files are consumed and unlinked; `OPENCODE_CONFIG_CONTENT` and `OPENCODE_PASSWORD` are set in PID 1 environ (accepted B6 risk); token and password absent from `docker inspect` and `docker logs`; without a config file no `OPENCODE_CONFIG_CONTENT` is set.
 
 Not done: no caller builds the sandbox manager with a broker (quarantine), sandbox-facing gateway URL setting, full end-to-end through a real gateway. Gate 0G stays **BLOCKED / UNQUALIFIED**: SEC-0G-03 needs the restricted route (B1) and the quarantine is unchanged.
+
+## Live qualification run (2026-10-16, QEMU VM evidence)
+
+Ran the spec §10 matrix (0G-PROBE-01..18) on the Gate 0D firewall VM (`atm-fw`, ruleset on, sandbox bridge `sbA` 172.30.1.0/24). The gateway was the real `gateway.ServiceFromEnv` + `Service.Run` wiring, listening on `172.29.0.2:8082` with `ATM_GATEWAY_FIREWALL_ATTESTATION=sandbox-bridge-to-gateway-only`, in front of a fake TLS provider (`upstream.test`, private CA in the VM trust store, no `InsecureSkipVerify`). Sandbox-side probes ran from containers on `sbA`. Container probes used the OpenCode 2.0.26 image built from the project template and a container created like the quarantined `ensureProjectContainerDisabledDraft` (read-only rootfs, cap-drop ALL, no-new-privileges, tmpfs `/run/secrets`, config then password over exec stdin). The quarantine was not bypassed: no repo code path provisions containers. Fixtures: `deploy/gateway/qualify/`.
+
+| Probe | Result | Evidence |
+|---|---|---|
+| 01 env | PASS | `docker exec env` shows no key, token or password. |
+| 02 `/proc/*/environ` | PASS for provider key; password and gateway token present in PID 1 only | 4 pids scanned, zero provider-key or `sk-` hits. `OPENCODE_PASSWORD` and `OPENCODE_CONFIG_CONTENT` (capability token) are in PID 1 environ (accepted B6). |
+| 03 task child env | **FAIL** (password, token); PASS (provider key) | A model-requested `shell` tool call ran `printenv`; the output (and so the model provider's request body) contained `OPENCODE_PASSWORD=` and `OPENCODE_CONFIG_CONTENT=` with the capability token. No provider key. This is a consequence of B6: OpenCode passes its own environment to tool children. |
+| 04 inspect | PASS | No password, token or key; only `OPENCODE_SERVER_PORT`. |
+| 05 logs | PASS | 40 bytes (`server listening`), no secrets; secret files consumed and unlinked. |
+| 06 direct provider egress | PASS | `api.anthropic.com`, `api.openai.com` time out from `sbA` and from the real sandbox container. |
+| 07 SSRF | PASS | Query strings, other paths, `GET`, URL-valued or unlisted model all 403/404/405; zero upstream requests. |
+| 08 redirect | PASS | Upstream 302 gave 502 to the client; zero hits on the redirect target; key not forwarded. |
+| 09 forged/missing token | PASS | 401 for none, forged, garbage. Positive control 200 (Bearer and `x-api-key`). |
+| 10 expired/revoked | PASS | 1s token 401 after expiry; released token 200 then 401. |
+| 11 cross-project | PASS (approximated) | Quotas are per lease: B exhausted at 6 then 429, A unaffected. Requests carry no project field, so "Project A token for Project B context" reduces to lease isolation. |
+| 12 quota | PASS for the B3 design, not the spec | `max_tokens` and `max_completion_tokens` clamped to 100; 413 over body cap; 10 concurrent on a 6-request lease gave exactly 6x200 and 4x429. No dollar cap and no in-flight reconciliation (B3). |
+| 13 key rotation | PASS | File rewritten, next request carried the new key, no restart. |
+| 14 stream cancel | PASS | Client abort after 2s; upstream saw its request context cancelled after 8 chunks of 40. |
+| 15 error redaction | PASS | Upstream 500 with prompt/key text gave a generic 502 `upstream error`; 429 stayed 429. Gateway log holds status and ids only (zero key or prompt hits). |
+| 16 bad password | PASS | `/api/session`: no auth 401, wrong 401, right 200. Auth is enforced on `/api/*` only (known). |
+| 17 rotation | PASS | New container with new password: old 401, new 200. Released gateway token 401. |
+| 18 plaintext | **FAIL by design (B4)** | The gateway accepts plain HTTP on the sandbox bridge. Not a pass. |
+
+Also verified: end to end, OpenCode prompt, gateway, fake upstream returns streamed content with the real key injected and output tokens clamped. A sandbox reaches `172.29.0.2:8082` (401 without a token), and `172.29.0.2:22`, `:9100` (admin), `10.0.2.2:22` and the bridge gateway IP time out.
+
+### Defects found
+1. **Project container could not start on the read-only rootfs.** OpenCode exited with `FileSystem.makeDirectory (/home/opencode/.local/share/opencode/log)`: nothing pointed its `HOME` at the state volume, and the image did not create `/var/lib/opencode` for the opencode user. Fixed in the draft (`HOME=/var/lib/opencode`) and in `Dockerfile.project.template` (`mkdir` and `chown` `/var/lib/opencode`); verified live. The template is hash-pinned, so `ExpectedTemplateSHA256` (and its golden test) were recomputed locally from the edited file in the same change. New regression test `TestProjectContainer_HomeOnWritableStateVolume`; mutating `HOME=` makes it fail. Full `go test ./...` passes in `atm-guest`.
+2. **Task children inherit the OpenCode password and the gateway token (probe 03).** Not fixed: OpenCode needs the password in its own environment, and B6 accepts same-UID exposure. New consequence worth a decision: the `printenv` output goes to the model provider.
+
+### Status
+Gate 0G stays **UNQUALIFIED**. Open items for the user: 03 (password/token visible to task children and so to the model provider), 18 (plain HTTP, B4), 12 (quota rather than spend cap, B3). Evidence came from a QEMU VM, not a production host. The quarantine is unchanged.
