@@ -1,7 +1,8 @@
-G=http://172.29.0.2:8082/v1/chat/completions
+G=https://172.29.0.2:8082/v1/chat/completions
 adm(){ curl -s "http://127.0.0.1:9100/$1"; }
-sb(){ docker run --rm --network sbA atm-fw-probe2 "$@" 2>&1; }
-code(){ sb curl -s -m 8 -o /dev/null -w '%{http_code}' "$@"; }
+CA=/etc/gwq/gw-ca.pem
+sb(){ docker run --rm --network sbA -v $CA:/gw-ca.pem:ro atm-fw-probe2 "$@" 2>&1; }
+code(){ sb curl --cacert /gw-ca.pem -s -m 8 -o /dev/null -w '%{http_code}' "$@"; }
 body(){ printf '{"model":"m1","max_tokens":10,"messages":[{"role":"user","content":"%s"}]}' "$1"; }
 sudo truncate -s0 /run/gwq-upstream.log
 TA=$(adm "grant?project=A&lease=la1"); TB=$(adm "grant?project=B&lease=lb1")
@@ -15,7 +16,7 @@ echo "== POS echo with valid token (expect 200)"; code -X POST -H "$H" -H "Autho
 echo "== upstream saw:"; sudo tail -1 /run/gwq-upstream.log
 echo "== 07 SSRF: other paths/urls/queries/methods (expect 4xx, no upstream hit)"
 sudo truncate -s0 /run/gwq-upstream.log
-for u in "/v1/chat/completions?url=http://169.254.169.254/" "/v1/embeddings" "/http://169.254.169.254/" "/v1/chat/completions/../../x"; do echo "POST $u -> $(code --path-as-is -X POST -H "$H" -H "Authorization: Bearer $TA" -d "$(body hi)" "http://172.29.0.2:8082$u")"; done
+for u in "/v1/chat/completions?url=http://169.254.169.254/" "/v1/embeddings" "/http://169.254.169.254/" "/v1/chat/completions/../../x"; do echo "POST $u -> $(code --path-as-is -X POST -H "$H" -H "Authorization: Bearer $TA" -d "$(body hi)" "https://172.29.0.2:8082$u")"; done
 echo "GET -> $(code -H "Authorization: Bearer $TA" $G)"
 echo "absolute-form via Host/URL body: model url -> $(code -X POST -H "$H" -H "Authorization: Bearer $TA" -d '{"model":"http://169.254.169.254","messages":[]}' $G)"
 echo "bad model -> $(code -X POST -H "$H" -H "Authorization: Bearer $TA" -d '{"model":"evil","messages":[]}' $G)"
@@ -33,24 +34,30 @@ for i in 1 2 3 4 5 6 7; do echo -n "$(code -X POST -H "$H" -H "Authorization: Be
 echo "A still ok -> $(code -X POST -H "$H" -H "Authorization: Bearer $TA" -d "$(body hi)" $G)"
 echo "== 12 quota / clamp"
 TQ=$(adm "grant?project=Q&lease=lq"); sudo truncate -s0 /run/gwq-upstream.log
-sb curl -s -m 8 -o /dev/null -X POST -H "$H" -H "Authorization: Bearer $TQ" -d '{"model":"m1","max_tokens":999999,"max_completion_tokens":999999,"messages":[{"role":"user","content":"x"}]}' $G
+sb curl --cacert /gw-ca.pem -s -m 8 -o /dev/null -X POST -H "$H" -H "Authorization: Bearer $TQ" -d '{"model":"m1","max_tokens":999999,"max_completion_tokens":999999,"messages":[{"role":"user","content":"x"}]}' $G
 sudo tail -1 /run/gwq-upstream.log
 echo "oversize body -> $(code -X POST -H "$H" -H "Authorization: Bearer $TQ" -d "$(body $(head -c 6000 /dev/zero | tr '\0' a))" $G)"
 echo "concurrent 10 on fresh lease (quota 6):"; TC=$(adm "grant?project=C&lease=lc")
-for i in $(seq 10); do (docker run --rm --network sbA atm-fw-probe2 curl -s -m 8 -o /dev/null -w '%{http_code}\n' -X POST -H "$H" -H "Authorization: Bearer $TC" -d "$(body hi)" $G &) ; done; sleep 12
+for i in $(seq 10); do (docker run --rm --network sbA -v $CA:/gw-ca.pem:ro atm-fw-probe2 curl --cacert /gw-ca.pem -s -m 8 -o /dev/null -w '%{http_code}\n' -X POST -H "$H" -H "Authorization: Bearer $TC" -d "$(body hi)" $G &) ; done; sleep 12
 echo "== 08 redirect"
 TD=$(adm "grant?project=D&lease=ld"); sudo truncate -s0 /run/gwq-upstream.log
 echo "redirect -> $(code -X POST -H "$H" -H "Authorization: Bearer $TD" -d "$(body MODE:redirect)" $G)"; sudo cat /run/gwq-upstream.log
 echo "== 15 error redaction"
-sb curl -s -m 8 -i -X POST -H "$H" -H "Authorization: Bearer $TD" -d "$(body MODE:err500)" $G | head -20; echo
+sb curl --cacert /gw-ca.pem -s -m 8 -i -X POST -H "$H" -H "Authorization: Bearer $TD" -d "$(body MODE:err500)" $G | head -20; echo
 echo "429 -> $(code -X POST -H "$H" -H "Authorization: Bearer $TD" -d "$(body MODE:err429)" $G)"
 echo "gateway log:"; tail -15 /tmp/gwq-gw.log; echo "provider key in gw log: $(grep -c PROVIDER-SECRET /tmp/gwq-gw.log)  prompt in gw log: $(grep -c SECRET-PROMPT /tmp/gwq-gw.log)"
 echo "== 14 stream cancel"
 TS=$(adm "grant?project=S&lease=ls"); sudo truncate -s0 /run/gwq-upstream.log
-sb timeout 2 curl -s -N -X POST -H "$H" -H "Authorization: Bearer $TS" -d "$(body MODE:stream)" $G | head -c 120; echo
+sb timeout 2 curl --cacert /gw-ca.pem -s -N -X POST -H "$H" -H "Authorization: Bearer $TS" -d "$(body MODE:stream)" $G | head -c 120; echo
 sleep 4; sudo cat /run/gwq-upstream.log | cut -c1-150 | tail -4
 echo "== 13 rotation"
 sudo truncate -s0 /run/gwq-upstream.log
 echo -n 'sk-ROTATED-KEY-9999' | sudo tee /etc/gwq/provider.key >/dev/null
 echo "after rotate -> $(code -X POST -H "$H" -H "Authorization: Bearer $TS" -d "$(body hi)" $G)"; sudo tail -1 /run/gwq-upstream.log | cut -c1-200
-echo "== 18 plaintext"; echo "plaintext http accepted -> $(code -X POST -H "$H" -H "Authorization: Bearer $TS" -d "$(body hi)" $G)  (EXPECTED FAIL by decision B4)"
+echo "== 18 plaintext"
+P=http://172.29.0.2:8082/v1/chat/completions
+echo "plaintext http -> $(sb curl -s -m 5 -o /dev/null -w '%{http_code}' -X POST -H "$H" -H "Authorization: Bearer $TS" -d "$(body hi)" $P) (expect 400/000, never 200/401/429)"
+echo "token in gateway log after plaintext attempt: $(grep -c "$TS" /tmp/gwq-gw.log)"
+echo "untrusted CA (system roots only) -> $(sb curl -s -m 5 -o /dev/null -w '%{http_code}' -X POST -H "$H" -H "Authorization: Bearer $TS" -d "$(body hi)" $G) (expect 000)"
+echo "TLS 1.2 -> $(sb curl --cacert /gw-ca.pem --tls-max 1.2 -s -m 5 -o /dev/null -w '%{http_code}' -X POST -H "$H" -H "Authorization: Bearer $TS" -d "$(body hi)" $G) (expect 000)"
+echo "wrong server name (resolve gateway.test -> ip) -> $(sb curl --cacert /gw-ca.pem --resolve gateway.test:8082:172.29.0.2 -s -m 5 -o /dev/null -w '%{http_code}' -X POST -H "$H" -H "Authorization: Bearer $TS" -d "$(body hi)" https://gateway.test:8082/v1/chat/completions) (expect 000: cert is for the IP)"
