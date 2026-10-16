@@ -122,15 +122,16 @@ func NewProjectSandboxManagerWithGateway(
 
 // EnsureProjectContainer ensures a hardened project container is running for the given project.
 //
-// Container provisioning is disabled pending Phase 1B and Gates 0C/0D/0G. The refusal is
-// unconditional and is the first statement: no validation, lock, route cache, or Docker call precedes it.
+// The Phase 1A quarantine was lifted on the operator's explicit instruction (2026-10-16) with Gate 0F not
+// qualified; see the gate status doc. Provisioning still fails closed: the egress firewall proof, the gateway
+// lease and the password delivery must all succeed before a route is returned.
 func (m *projectSandboxManager) EnsureProjectContainer(ctx context.Context, project *models.Project, imageTag string) (*ProjectRouteHandle, error) {
-	return nil, ErrQuarantineActive
+	return m.ensureProjectContainer(ctx, project, imageTag)
 }
 
-// ensureProjectContainerDisabledDraft is the original provisioning draft, intentionally unreferenced.
-// It is disabled pending Phase 1B/Gates 0C/0D/0G.
-func (m *projectSandboxManager) ensureProjectContainerDisabledDraft(ctx context.Context, project *models.Project, imageTag string) (*ProjectRouteHandle, error) {
+// ensureProjectContainer provisions the hardened project container, delivers the gateway config and password,
+// and records the route.
+func (m *projectSandboxManager) ensureProjectContainer(ctx context.Context, project *models.Project, imageTag string) (*ProjectRouteHandle, error) {
 	if project == nil || project.ID == "" {
 		return nil, errors.New("project and project.ID are required")
 	}

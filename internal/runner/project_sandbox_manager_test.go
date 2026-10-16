@@ -2,8 +2,6 @@ package runner_test
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -16,7 +14,6 @@ import (
 	"github.com/docker/docker/api/types/volume"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
-	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/runner"
 	"agent-task-manager/internal/sandbox"
@@ -178,22 +175,6 @@ func assertNoSandboxDockerCalls(t *testing.T, m *mockDockerClientForSandboxManag
 	}
 }
 
-func assertQuarantineRefusal(t *testing.T, route *runner.ProjectRouteHandle, err error) {
-	t.Helper()
-	if route != nil {
-		t.Errorf("expected nil route handle, got %+v", route)
-	}
-	if !errors.Is(err, runner.ErrQuarantineActive) {
-		t.Fatalf("expected ErrQuarantineActive, got: %v", err)
-	}
-	if !errors.Is(err, common.ErrRuntimeQuarantined) {
-		t.Errorf("expected error to wrap common.ErrRuntimeQuarantined, got: %v", err)
-	}
-	if strings.Contains(strings.ToLower(err.Error()), "gate") {
-		t.Errorf("refusal message must not mention internal gate names: %q", err.Error())
-	}
-}
-
 func TestProjectSandboxManager(t *testing.T) {
 	project := &models.Project{
 		ID:   "p-12345",
@@ -203,38 +184,25 @@ func TestProjectSandboxManager(t *testing.T) {
 	gatewayURL := "http://atm-control-plane:8080/v1/llm"
 	egressPolicy := sandbox.DefaultEgressPolicy("http://172.28.200.10:3128")
 
-	// Migrated: previously asserted a hardened container was created. Provisioning is now refused.
-	t.Run("EnsureProjectContainer creates hardened container with correct configs", func(t *testing.T) {
-		mockCli := &mockDockerClientForSandboxManager{
-			createResp: container.CreateResponse{ID: "cnt-p-12345"},
+	// The quarantine was lifted. Full provisioning is covered by project_sandbox_gateway_internal_test.go and
+	// project_sandbox_secret_internal_test.go; here the public method must reject bad input before any Docker call.
+	t.Run("EnsureProjectContainer rejects invalid input before touching Docker", func(t *testing.T) {
+		for name, tc := range map[string]struct {
+			project *models.Project
+			image   string
+		}{
+			"nil project":    {nil, imageTag},
+			"empty image":    {project, ""},
+			"empty id":       {&models.Project{}, imageTag},
+		} {
+			mockCli := &mockDockerClientForSandboxManager{}
+			mgr := runner.NewProjectSandboxManager(mockCli, egressPolicy, gatewayURL)
+			route, err := mgr.EnsureProjectContainer(context.Background(), tc.project, tc.image)
+			if route != nil || err == nil {
+				t.Errorf("%s: expected an error and no route, got %+v, %v", name, route, err)
+			}
+			assertNoSandboxDockerCalls(t, mockCli)
 		}
-		mgr := runner.NewProjectSandboxManager(mockCli, egressPolicy, gatewayURL)
-		route, err := mgr.EnsureProjectContainer(context.Background(), project, imageTag)
-		assertQuarantineRefusal(t, route, err)
-		assertNoSandboxDockerCalls(t, mockCli)
-
-		if _, ok, _ := mgr.GetProjectRoute(context.Background(), project.ID); ok {
-			t.Errorf("no route may be cached after a refused EnsureProjectContainer")
-		}
-	})
-
-	// Migrated: previously asserted a cached route was returned for a running container.
-	t.Run("EnsureProjectContainer returns cached route handle when container is already running", func(t *testing.T) {
-		mockCli := &mockDockerClientForSandboxManager{
-			createResp: container.CreateResponse{ID: "cnt-p-12345"},
-			inspectContainerJSON: types.ContainerJSON{
-				ContainerJSONBase: &types.ContainerJSONBase{
-					ID:    "cnt-p-12345",
-					State: &types.ContainerState{Running: true},
-				},
-			},
-		}
-		mgr := runner.NewProjectSandboxManager(mockCli, egressPolicy, gatewayURL)
-		for i := 0; i < 2; i++ {
-			route, err := mgr.EnsureProjectContainer(context.Background(), project, imageTag)
-			assertQuarantineRefusal(t, route, err)
-		}
-		assertNoSandboxDockerCalls(t, mockCli)
 	})
 
 	// StopProjectContainer is unchanged. With no cached route it is a no-op and must not touch Docker.
@@ -254,20 +222,6 @@ func TestProjectSandboxManager(t *testing.T) {
 		}
 	})
 
-	// Migrated: previously asserted fail-closed cleanup when CopyToContainer failed.
-	t.Run("Fail-closed cleanup when CopyToContainer fails", func(t *testing.T) {
-		mockCli := &mockDockerClientForSandboxManager{
-			createResp: container.CreateResponse{ID: "cnt-fail-copy"},
-			copyErr:    fmt.Errorf("disk full or permission denied"),
-		}
-		mgr := runner.NewProjectSandboxManager(mockCli, egressPolicy, gatewayURL)
-		route, err := mgr.EnsureProjectContainer(context.Background(), project, imageTag)
-		assertQuarantineRefusal(t, route, err)
-		if err != nil && strings.Contains(err.Error(), "disk full") {
-			t.Errorf("CopyToContainer must never be reached")
-		}
-		assertNoSandboxDockerCalls(t, mockCli)
-	})
 }
 
 func (m *mockDockerClientForSandboxManager) ContainerExecCreate(ctx context.Context, containerID string, options container.ExecOptions) (types.IDResponse, error) {

@@ -80,7 +80,7 @@ func newSecretClient() *secretRecordingClient {
 func runSecretDraftWith(t *testing.T, cli *secretRecordingClient) (*ProjectRouteHandle, error) {
 	t.Helper()
 	mgr := NewProjectSandboxManager(cli, nil, "https://gateway.invalid").(*projectSandboxManager)
-	return mgr.ensureProjectContainerDisabledDraft(context.Background(), &models.Project{ID: "p1"}, "atm-runtime:test")
+	return mgr.ensureProjectContainer(context.Background(), &models.Project{ID: "p1"}, "atm-runtime:test")
 }
 
 func runSecretDraft(t *testing.T) (*secretRecordingClient, *ProjectRouteHandle) {
@@ -233,7 +233,7 @@ func TestProjectSandbox_DNSIsDeadNonLoopbackAddress(t *testing.T) {
 func TestProjectSandbox_HostnameProxyRejectedBeforeDocker(t *testing.T) {
 	cli := newSecretClient()
 	mgr := NewProjectSandboxManager(cli, sandbox.DefaultEgressPolicy("http://atm-egress-proxy:3128"), "").(*projectSandboxManager)
-	if _, err := mgr.ensureProjectContainerDisabledDraft(context.Background(), &models.Project{ID: "p1"}, "img"); err == nil {
+	if _, err := mgr.ensureProjectContainer(context.Background(), &models.Project{ID: "p1"}, "img"); err == nil {
 		t.Fatal("hostname proxy URL must be rejected")
 	}
 	if len(cli.CreateCalls) != 0 || len(cli.order) != 0 {

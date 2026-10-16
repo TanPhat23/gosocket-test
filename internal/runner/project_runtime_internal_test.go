@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/gateway"
 	"agent-task-manager/internal/models"
 )
@@ -140,8 +139,8 @@ func TestProjectRuntimeFromEnv_FailsClosed(t *testing.T) {
 	}
 }
 
-// Assembling the runtime must not lift the quarantine.
-func TestProjectRuntimeFromEnv_BuildsAndStaysQuarantined(t *testing.T) {
+// The quarantine was lifted: the assembled manager's public method provisions (firewall proof first).
+func TestProjectRuntimeFromEnv_BuildsAndProvisions(t *testing.T) {
 	r := newRuntimeEnv(t)
 	cli := newGWClient()
 	rt, err := r.build(cli)
@@ -149,11 +148,11 @@ func TestProjectRuntimeFromEnv_BuildsAndStaysQuarantined(t *testing.T) {
 		t.Fatalf("want a runtime, got %v, %v", rt, err)
 	}
 	_, err = rt.Manager.EnsureProjectContainer(context.Background(), &models.Project{ID: "p1"}, "img")
-	if !errors.Is(err, common.ErrRuntimeQuarantined) {
-		t.Fatalf("want quarantine, got %v", err)
+	if err != nil {
+		t.Fatalf("want provisioning to succeed, got %v", err)
 	}
-	if len(cli.CreateCalls) != 0 {
-		t.Error("the quarantined manager must not touch Docker")
+	if len(cli.CreateCalls) != 2 {
+		t.Errorf("want probe + project container, got %d creates", len(cli.CreateCalls))
 	}
 }
 
@@ -167,7 +166,7 @@ func TestProjectRuntimeFromEnv_DraftProvisionsOnlyAfterFirewallProof(t *testing.
 		t.Fatal(err)
 	}
 	m := rt.Manager.(*projectSandboxManager)
-	if _, err := m.ensureProjectContainerDisabledDraft(context.Background(), &models.Project{ID: "p1"}, "img"); err != nil {
+	if _, err := m.ensureProjectContainer(context.Background(), &models.Project{ID: "p1"}, "img"); err != nil {
 		t.Fatal(err)
 	}
 	// Create calls: the egress probe first (joins atm-net-p1), then the project container.
@@ -197,7 +196,7 @@ func TestProjectSandbox_FirewallProofFailureCreatesNothing(t *testing.T) {
 	boom := errors.New("egress open")
 	var gotNet string
 	m.egressVerify = func(_ context.Context, network string) error { gotNet = network; return boom }
-	_, err := m.ensureProjectContainerDisabledDraft(context.Background(), &models.Project{ID: "p1"}, "img")
+	_, err := m.ensureProjectContainer(context.Background(), &models.Project{ID: "p1"}, "img")
 	if !errors.Is(err, boom) {
 		t.Fatalf("want the verification error, got %v", err)
 	}

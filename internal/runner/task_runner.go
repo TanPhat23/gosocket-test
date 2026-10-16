@@ -429,7 +429,7 @@ func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attemp
 		}
 	}()
 
-	return ErrRuntimeExecutionUnavailable
+	return r.runTaskInProjectContainer(ctx, task, attempt)
 }
 
 // runTaskDisabledDraft is the original RunTask implementation, intentionally unreferenced.

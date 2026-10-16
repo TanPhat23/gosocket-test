@@ -19,7 +19,7 @@ import (
 	"agent-task-manager/internal/models"
 )
 
-// Live probe for the container-based task run. It drives runTaskInProjectContainerDisabledDraft against a real
+// Live probe for the container-based task run. It drives runTaskInProjectContainer against a real
 // project container running real OpenCode behind the Gate 0G gateway (deploy/gateway/qualify). The sandbox network is
 // not reachable from the VM host, so the OpenCode API is reached with `docker exec ... curl`.
 //
@@ -86,7 +86,7 @@ func TestLiveProjectTaskRun_RealOpenCodeCommitsAChange(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
-	err = f.r.runTaskInProjectContainerDisabledDraft(ctx, f.task, f.atmpt)
+	err = f.r.runTaskInProjectContainer(ctx, f.task, f.atmpt)
 	if wantErr {
 		if err == nil {
 			t.Fatal("a failing verification command must fail the run")

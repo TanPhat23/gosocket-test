@@ -35,12 +35,10 @@ var guardedSymbols = map[string]bool{
 	"RemoveWorktree":                       true,
 	"CleanupTaskScratch":                   true,
 	"InterruptSessionTree":                 true,
-	"GetSessionMessages":                   true,
 	"listModelsViaHostBinaryDisabledDraft": true,
 
 	// Draft-only helpers found in the call graph: each is called only from a *DisabledDraft
 	// function or from another guarded function, so guarding them keeps the allowlist sound.
-	"watchChildSubagents":  true, // runTaskDisabledDraft
 	"inspectForSubmodules": true, // ensureTaskWorktreeDisabledDraft
 	"inspectForGitLFS":     true, // ensureTaskWorktreeDisabledDraft
 	"resolveBaseRef":       true, // WorktreeManager.CreateWorktree
@@ -61,7 +59,6 @@ var allowedCallers = map[string]string{
 	"internal/runner/task_runner.go:RunPreFlightVerification":                 "guarded implementation (verify exec)",
 	"internal/runner/task_runner.go:SyncRepoWithRemote":                       "guarded implementation (git exec)",
 	"internal/runner/task_runner.go:AgentTaskRunner.maybeAutoCreatePR":        "guarded; calls PushBranch, git exec",
-	"internal/runner/task_runner.go:AgentTaskRunner.watchChildSubagents":      "guarded; calls GetSessionMessages",
 	"internal/runner/workspace_manager.go:inspectForSubmodules":               "helper of ensureTaskWorktreeDisabledDraft (git exec)",
 	"internal/runner/workspace_manager.go:inspectForGitLFS":                   "helper of ensureTaskWorktreeDisabledDraft (git exec)",
 	"internal/service/task_service.go:taskService.watchSteeringTurn":          "guarded; calls GetSessionMessages, finalizeSteeringTurn",

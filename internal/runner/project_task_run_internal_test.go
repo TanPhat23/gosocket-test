@@ -260,7 +260,7 @@ func (f *ptrFixture) run(t *testing.T) error {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return f.r.runTaskInProjectContainerDisabledDraft(ctx, f.task, f.atmpt)
+	return f.r.runTaskInProjectContainer(ctx, f.task, f.atmpt)
 }
 
 func TestProjectTaskRun_HappyPathCommitsPushesAndOpensPR(t *testing.T) {
@@ -344,7 +344,7 @@ func TestProjectTaskRun_StaleTerminalOutcomeIsNotMistakenForCompletion(t *testin
 	f.r.projectClientFor = func(string, string) (OpenCodeClient, error) { return stale, nil }
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
-	err := f.r.runTaskInProjectContainerDisabledDraft(ctx, f.task, f.atmpt)
+	err := f.r.runTaskInProjectContainer(ctx, f.task, f.atmpt)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("want deadline exceeded, got %v", err)
 	}

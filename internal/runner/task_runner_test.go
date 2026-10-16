@@ -848,14 +848,17 @@ func newRefusalFixture(t *testing.T, id string, withManagers bool) *refusalFixtu
 
 func assertRuntimeRefused(t *testing.T, err error) {
 	t.Helper()
+	// The quarantine was lifted (see the gate status doc), so RunTask runs the project-container flow. These
+	// fixtures have no container runtime configured, which must fail closed before any repository, Docker,
+	// OpenCode or host access, and must not be reported as a quarantine.
 	if err == nil {
-		t.Fatalf("expected RunTask to be refused, got nil")
+		t.Fatalf("expected RunTask to fail closed, got nil")
 	}
-	if !errors.Is(err, runner.ErrRuntimeExecutionUnavailable) {
-		t.Fatalf("expected ErrRuntimeExecutionUnavailable, got: %v", err)
+	if !strings.Contains(err.Error(), "project container runtime is not configured") {
+		t.Fatalf("expected the not-configured error, got: %v", err)
 	}
-	if !errors.Is(err, common.ErrRuntimeQuarantined) {
-		t.Fatalf("expected error to wrap common.ErrRuntimeQuarantined, got: %v", err)
+	if errors.Is(err, common.ErrRuntimeQuarantined) {
+		t.Fatalf("RunTask must no longer report the quarantine, got: %v", err)
 	}
 	if strings.Contains(strings.ToLower(err.Error()), "gate") {
 		t.Errorf("refusal message must not mention internal gate names: %q", err.Error())

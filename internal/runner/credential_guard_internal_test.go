@@ -60,7 +60,7 @@ func TestProjectPassword_UniqueAndDiscardedOnStop(t *testing.T) {
 	ctx := context.Background()
 	pw := map[string]bool{}
 	for _, id := range []string{"a", "b"} {
-		r, err := mgr.ensureProjectContainerDisabledDraft(ctx, &models.Project{ID: id}, "img")
+		r, err := mgr.ensureProjectContainer(ctx, &models.Project{ID: id}, "img")
 		if err != nil || len(r.AuthPassword) != 64 {
 			t.Fatalf("draft %s: %v len=%d", id, err, len(r.AuthPassword))
 		}
@@ -72,7 +72,7 @@ func TestProjectPassword_UniqueAndDiscardedOnStop(t *testing.T) {
 	if _, ok, _ := mgr.GetProjectRoute(ctx, "a"); ok {
 		t.Error("route (and its password) must be discarded on stop")
 	}
-	r, err := mgr.ensureProjectContainerDisabledDraft(ctx, &models.Project{ID: "a"}, "img")
+	r, err := mgr.ensureProjectContainer(ctx, &models.Project{ID: "a"}, "img")
 	if err != nil {
 		t.Fatal(err)
 	}
