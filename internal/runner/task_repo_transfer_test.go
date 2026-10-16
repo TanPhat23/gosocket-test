@@ -14,12 +14,17 @@ type fakeTransferMgr struct {
 	ingest *transfer.IngestRequest
 	push   *transfer.PushRequest
 	err    error
+	// worktree overrides the returned task worktree path (live probes).
+	worktree string
 }
 
 func (f *fakeTransferMgr) IngestRemoteBranch(_ context.Context, r transfer.IngestRequest) (*transfer.TransferResult, error) {
 	f.ingest = &r
 	if f.err != nil {
 		return nil, f.err
+	}
+	if f.worktree != "" {
+		return &transfer.TransferResult{TaskWorktreePath: f.worktree}, nil
 	}
 	return &transfer.TransferResult{TaskWorktreePath: "/workspaces/" + r.RepoID + "/tasks/" + r.TaskID}, nil
 }
