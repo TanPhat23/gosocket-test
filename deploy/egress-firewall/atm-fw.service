@@ -1,0 +1,12 @@
+[Unit]
+Description=ATM egress confinement (operator-owned)
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/atm-fw-apply.sh
+
+[Install]
+WantedBy=multi-user.target
