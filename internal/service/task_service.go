@@ -42,6 +42,7 @@ type TaskService interface {
 	GetTaskSession(ctx context.Context, taskID, userID string) (*dto.TaskSessionResponseDTO, error)
 	PromptTaskSession(ctx context.Context, taskID, userID string, req *dto.TaskSessionPromptRequest) error
 	CompactTaskSession(ctx context.Context, taskID, userID string) error
+	InterruptTaskSession(ctx context.Context, taskID, userID string) error
 	GetTaskDiff(ctx context.Context, taskID, userID string) (string, error)
 	SyncTaskPRStatus(ctx context.Context, taskID, userID string) (*models.Task, error)
 	ReconcileActivePRs(ctx context.Context) error
@@ -59,6 +60,7 @@ type taskService struct {
 	projectRepo     repository.ProjectRepository
 	teamRepo        repository.TeamRepository
 	openCodeClient  runner.OpenCodeClient
+	sessionClients  SessionClientResolver
 	logRepo         repository.LogRepository
 	simulated       bool
 
@@ -73,6 +75,15 @@ type TaskServiceOption func(*taskService)
 // session reads report a simulated run instead of failing as unavailable.
 func WithTaskSimulatedRuntime(simulated bool) TaskServiceOption {
 	return func(s *taskService) { s.simulated = simulated }
+}
+
+// SessionClientResolver returns an OpenCode client bound to the running sandbox of a project. It must fail
+// when the project has no running container; the control plane never talks to a host OpenCode.
+type SessionClientResolver func(ctx context.Context, projectID string) (runner.OpenCodeClient, error)
+
+// WithTaskSessionClientResolver wires the per-project OpenCode client used by the session tunnel.
+func WithTaskSessionClientResolver(resolve SessionClientResolver) TaskServiceOption {
+	return func(s *taskService) { s.sessionClients = resolve }
 }
 
 // WithTaskLogRepository configures the log repository for task log persistence.
@@ -722,7 +733,68 @@ func (s *taskService) GetTaskSession(ctx context.Context, taskID, userID string)
 		return &dto.TaskSessionResponseDTO{TaskID: taskID, Simulated: true, Messages: []dto.OpenCodeMessageDTO{}}, nil
 	}
 
-	return nil, runner.ErrRuntimeExecutionUnavailable
+	oc, sessionID, task, err := s.projectSession(ctx, taskID, userID, models.RoleViewer)
+	if err != nil {
+		return nil, err
+	}
+	sessDTO, err := oc.GetSession(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	messages, err := oc.GetSessionMessages(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return &dto.TaskSessionResponseDTO{
+		SessionID: sessionID,
+		TaskID:    task.ID,
+		Status:    sessDTO.Status,
+		Model:     sessDTO.Model,
+		Cost:      sessDTO.Cost,
+		Tokens:    sessDTO.Tokens,
+		Title:     sessDTO.Title,
+		Directory: sessDTO.Directory,
+		CreatedAt: sessDTO.CreatedAt,
+		UpdatedAt: sessDTO.UpdatedAt,
+		Messages:  messages,
+	}, nil
+}
+
+// projectSession authorizes the caller for the task and returns the OpenCode client of the task's project
+// sandbox plus the task's session ID. It is the only way the session tunnel reaches OpenCode, so every call
+// is authorized per task and goes to that project's own container.
+func (s *taskService) projectSession(ctx context.Context, taskID, userID string, role models.TeamRole) (runner.OpenCodeClient, string, *models.Task, error) {
+	task, err := s.authorizeUserForTask(ctx, taskID, userID, role)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	if s.sessionClients == nil {
+		return nil, "", nil, runner.ErrRuntimeExecutionUnavailable
+	}
+	if task.SessionID == nil || *task.SessionID == "" {
+		return nil, "", nil, errors.New("task has no associated session")
+	}
+	oc, err := s.sessionClients(ctx, task.ProjectID)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	return oc, *task.SessionID, task, nil
+}
+
+// InterruptTaskSession stops the task's running OpenCode turn (the session and its subagents) without
+// cancelling the task. Requires RoleMember or higher.
+func (s *taskService) InterruptTaskSession(ctx context.Context, taskID, userID string) error {
+	if s.simulated {
+		if _, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleMember); err != nil {
+			return err
+		}
+		return nil
+	}
+	oc, sessionID, _, err := s.projectSession(ctx, taskID, userID, models.RoleMember)
+	if err != nil {
+		return err
+	}
+	return oc.InterruptSessionTree(ctx, sessionID)
 }
 
 // getTaskSessionDisabledDraft is the original implementation, intentionally unreferenced.
@@ -785,18 +857,22 @@ func (s *taskService) broadcastTaskLog(ctx context.Context, taskID, chunk string
 // PromptTaskSession sends a targeted prompt into the task's existing OpenCode session.
 // AC-SEC-02: Requires RoleMember or higher.
 //
-// Disabled pending Phase 1B/Gates 0C/0D/0G: after input validation and the read-only authorization
-// check, it refuses before any OpenCode call, status update, broadcast, or goroutine start.
+// The prompt goes to the task's own project sandbox. It only delivers the prompt: it does not change the
+// task status or start a completion watcher.
 func (s *taskService) PromptTaskSession(ctx context.Context, taskID, userID string, req *dto.TaskSessionPromptRequest) error {
 	if req == nil || strings.TrimSpace(req.Prompt) == "" {
 		return errors.New("prompt cannot be empty")
 	}
 
-	if _, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleMember); err != nil {
+	oc, sessionID, task, err := s.projectSession(ctx, taskID, userID, models.RoleMember)
+	if err != nil {
 		return err
 	}
-
-	return runner.ErrRuntimeExecutionUnavailable
+	if err := oc.PromptSession(ctx, sessionID, req.Prompt); err != nil {
+		return err
+	}
+	s.broadcastTaskLog(ctx, task.ID, fmt.Sprintf("\r\n\x1b[36m➜ [User Steer Prompt]\x1b[0m %s\r\n", req.Prompt))
+	return nil
 }
 
 // promptTaskSessionDisabledDraft is the original implementation, intentionally unreferenced.
@@ -1220,11 +1296,11 @@ func (s *taskService) maybePushBranchForSteering(ctx context.Context, task *mode
 // CompactTaskSession triggers context compaction on the task's OpenCode session.
 // AC-SEC-02: Requires RoleMember or higher.
 func (s *taskService) CompactTaskSession(ctx context.Context, taskID, userID string) error {
-	if _, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleMember); err != nil {
+	oc, sessionID, _, err := s.projectSession(ctx, taskID, userID, models.RoleMember)
+	if err != nil {
 		return err
 	}
-
-	return runner.ErrRuntimeExecutionUnavailable
+	return oc.CompactSession(ctx, sessionID)
 }
 
 // compactTaskSessionDisabledDraft is the original implementation, intentionally unreferenced.

@@ -34,7 +34,6 @@ var guardedSymbols = map[string]bool{
 	"CreateWorktree":                       true,
 	"RemoveWorktree":                       true,
 	"CleanupTaskScratch":                   true,
-	"InterruptSessionTree":                 true,
 	"listModelsViaHostBinaryDisabledDraft": true,
 
 	// Draft-only helpers found in the call graph: each is called only from a *DisabledDraft

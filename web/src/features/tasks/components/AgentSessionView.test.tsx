@@ -279,6 +279,44 @@ describe('AgentSessionView Split Two-Pane Inspector', () => {
     });
   });
 
+  it('sends an interrupt for the task session without cancelling the task', async () => {
+    vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue(mockSessionData);
+    const interrupt = vi.spyOn(taskApi, 'interruptTaskSession').mockResolvedValue(undefined);
+    const cancel = vi.spyOn(taskApi, 'cancelTask');
+
+    render(<AgentSessionView taskId={mockTaskId} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('session-transcript-container')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('interrupt-session-btn'));
+
+    await waitFor(() => {
+      expect(interrupt).toHaveBeenCalledWith(mockTaskId);
+    });
+    expect(cancel).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(screen.getByText('Interrupt sent. The current turn is stopping.')).toBeInTheDocument();
+    });
+  });
+
+  it('shows the error when the interrupt fails', async () => {
+    vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue(mockSessionData);
+    vi.spyOn(taskApi, 'interruptTaskSession').mockRejectedValue(new Error('sandbox is not running'));
+
+    render(<AgentSessionView taskId={mockTaskId} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('session-transcript-container')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId('interrupt-session-btn'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Interrupt failed: sandbox is not running')).toBeInTheDocument();
+    });
+  });
+
   it('allows clicking another tool call card to inspect its output in the inspector', async () => {
     vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue(mockSessionData);
 

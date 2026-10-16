@@ -81,6 +81,7 @@ export class ApiClient {
   getTaskSession = taskApi.getTaskSession;
   promptTaskSession = taskApi.promptTaskSession;
   compactTaskSession = taskApi.compactTaskSession;
+  interruptTaskSession = taskApi.interruptTaskSession;
 
   // Integrations
   listProjectIntegrations = integrationApi.listProjectIntegrations;

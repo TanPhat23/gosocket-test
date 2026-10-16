@@ -198,6 +198,22 @@ func main() {
 		log.Printf("LLM gateway listening on %s", gwLn.Addr())
 	}
 	openCodeClient := runner.NewOpenCodeClient(cfg.OpenCodeServerURL, cfg.OpenCodePassword, nil)
+	// The session tunnel talks only to the project's own sandbox. The manager is assigned once the project
+	// runtime is built below, before the HTTP server starts; with no runtime the tunnel reports unavailable.
+	var sessionSandboxMgr runner.ProjectSandboxManager
+	sessionClients := func(ctx context.Context, projectID string) (runner.OpenCodeClient, error) {
+		if sessionSandboxMgr == nil {
+			return nil, runner.ErrRuntimeExecutionUnavailable
+		}
+		route, ok, err := sessionSandboxMgr.GetProjectRoute(ctx, projectID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok || route == nil {
+			return nil, common.ErrServiceUnavailable
+		}
+		return runner.NewProjectOpenCodeClient(route.EndpointURL, route.AuthPassword, nil)
+	}
 	taskService := service.NewTaskService(
 		taskRepo,
 		attemptRepo,
@@ -207,6 +223,7 @@ func main() {
 		service.WithTaskSessionDependencies(openCodeClient, projectRepo, teamRepo),
 		service.WithTaskLogRepository(logRepo),
 		service.WithTaskSimulatedRuntime(fakeRuntime),
+		service.WithTaskSessionClientResolver(sessionClients),
 	)
 	logService := service.NewLogService(logRepo, hub)
 	integrationService := service.NewIntegrationService(integrationRepo, projectRepo, credRepo)
@@ -245,6 +262,7 @@ func main() {
 		runner.WithRunnerTaskRepoTransfer(repoTransfer),
 	}
 	if projectRuntime != nil {
+		sessionSandboxMgr = projectRuntime.Manager
 		runnerOpts = append(runnerOpts,
 			runner.WithRunnerProjectSandboxManager(projectRuntime.Manager),
 			runner.WithRunnerRuntimeImage(runner.NewRuntimeResolver(runtimeCatalog), projectRuntime.Builder),
