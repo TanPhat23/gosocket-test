@@ -20,7 +20,7 @@ var (
 var (
 	sha256HexRe      = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	extractPathRe    = regexp.MustCompile(`^/usr/local/[a-z]+$`)
-	baseImageRefRe   = regexp.MustCompile(`^[a-z0-9][a-z0-9./_-]*(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$`)
+	baseImageRefRe   = regexp.MustCompile(`^[a-z0-9][a-z0-9./_-]*(:[0-9]{1,5}/[a-z0-9./_-]+)?(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$`)
 	openCodeDigestRe = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	toolchainTokenRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
 )

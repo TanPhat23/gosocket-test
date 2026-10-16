@@ -51,9 +51,11 @@ json.dump({"models": {m: price for m in models}}, open(sys.argv[1], "w"), indent
 EOF
 
 # 3. Local registry + digest-pinned helper/probe image (ATM requires name@sha256:digest and never pulls at run time).
-docker inspect atm-dev-registry >/dev/null 2>&1 || docker run -d --restart unless-stopped --name atm-dev-registry -p "127.0.0.1:${REGISTRY_PORT}:5000" registry:2 >/dev/null
+docker inspect atm-dev-registry >/dev/null 2>&1 || docker run -d --restart unless-stopped --name atm-dev-registry --network host -e REGISTRY_HTTP_ADDR="127.0.0.1:${REGISTRY_PORT}" registry:2 >/dev/null # host network: the sandbox firewall drops default-bridge traffic to the host
+for _ in $(seq 1 30); do curl -fs "http://127.0.0.1:${REGISTRY_PORT}/v2/" >/dev/null 2>&1 && break; sleep 1; done
+curl -fs "http://127.0.0.1:${REGISTRY_PORT}/v2/" >/dev/null || { echo "ERROR: local registry did not come up on port ${REGISTRY_PORT}." >&2; exit 1; }
 REF="localhost:${REGISTRY_PORT}/atm-git-transfer:dev"
-docker build -q -t "$REF" deploy/git-transfer >/dev/null
+docker build -q --network host -t "$REF" deploy/git-transfer >/dev/null
 docker push -q "$REF" >/dev/null
 PINNED="$(docker inspect --format '{{index .RepoDigests 0}}' "$REF")"
 case "$PINNED" in *@sha256:*) ;; *) echo "ERROR: could not resolve a digest for $REF" >&2; exit 1;; esac

@@ -3,10 +3,18 @@
 Default `docker compose up` keeps the simulated runtime (`ATM_DEV_FAKE_RUNTIME=true`). This opt-in override runs
 tasks in real, firewalled project containers with real OpenCode and the LLM gateway.
 
-**Status: untested as a whole on a real host.** The pieces were qualified separately in VMs (0C git transfer, 0D
-firewall, 0G gateway) and the container run was live-tested against a scripted fake LLM. Gate 0F is NOT qualified. The
-files here (compose override, script, proxy config) were written without running them against a host Docker daemon.
-Expect to debug. Use a disposable or dedicated machine.
+**Status:** the topology below was run in the `atm-fw` VM (2026-10-16): compose stack with the override, container
+gateway at 172.29.0.2, dev proxy, nft firewall plus the extra rules in section 1. Confirmed from a sandbox-style container
+(read-only, no caps, `--dns 192.0.2.1`): the gateway answers over TLS only with the generated CA (rejected without it),
+the proxy reaches `registry.npmjs.org` and refuses `github.com`, and direct WAN and the control-plane port 8080 are
+blocked. Confirmed with the real `EnsureProjectContainer` (live test `internal/runner/project_runtime_live_test.go`):
+the firewall proof passes and a hardened container is created on its own network, and a canary the firewall lets
+through (the proxy) makes it refuse to provision and leave no container. Not a laptop test: the VM is not your machine,
+Gate 0F is NOT qualified, and the proxy and rules are dev-grade.
+
+Things the VM run found, now handled: image builds and the local registry on the default Docker bridge are dropped by
+the sandbox firewall (the pool is blocked from the host), so the setup script builds with `--network host` and runs the
+registry on the host network; digest-pinned refs now accept a registry port (`localhost:5000/...@sha256:...`).
 
 ## Not yet exercised live
 PR creation, the firewall proof inside the server, the image builder, skills/MCP injection, a real LLM, verification
