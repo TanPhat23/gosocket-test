@@ -59,8 +59,10 @@ unset INGESTED_TOKEN
 
 mkdir -p /tmp/bare.git
 git init -q --bare /tmp/bare.git
-git -C /tmp/bare.git -c core.hooksPath=/dev/null fetch --depth=1 "%s" "%s:%s"
+git -C /tmp/bare.git -c core.hooksPath=/dev/null fetch "%s" "%s:%s"
 
+# Full history of the branch: a bundle cut from a shallow clone omits the parents without declaring
+# them as prerequisites, so it cannot be cloned (verified live, 2026-10-16).
 # Generate bundle to stdout
 git -C /tmp/bare.git -c core.hooksPath=/dev/null bundle create - "%s"
 

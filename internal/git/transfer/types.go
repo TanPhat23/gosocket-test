@@ -11,6 +11,7 @@ var (
 	ErrInvalidRefName        = errors.New("invalid ref name: ref contains illegal git characters or flags")
 	ErrSubmodulesNotSupported = errors.New("repository contains submodules, which are not supported in v1")
 	ErrGitLFSNotSupported     = errors.New("repository contains Git LFS pointers, which are not supported in v1")
+	ErrVolumeNotWritable      = errors.New("project volume is not writable by the helper (image must ship /workspaces owned by 1000:1000)")
 	ErrGitTransferFailed      = errors.New("git transfer operation failed")
 	ErrCanaryLeakDetected     = errors.New("security violation: canary credential leak detected")
 	ErrPushRejected           = errors.New("upstream git push was rejected")

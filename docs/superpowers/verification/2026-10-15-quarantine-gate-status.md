@@ -112,4 +112,22 @@ Results after the fixes:
 | Live 0C-4 untrusted certificate | PASS: fails, no bundle, fixture logged a TLS handshake error and no HTTP request |
 | Unit/mock suite `internal/git/transfer` | PASS (test binary run in `atm-build`) |
 
-Not run live: the volume half of 0C-2 (no volume helper run yet), 0C-5..0C-9 (submodule, LFS, filter, traversal, helper network isolation) and the volume helper path. Known limitation: credentials are approved for `host=github.com` only, so any other host (GitHub Enterprise, a mirror) gets no credentials. Gate 0C stays **UNQUALIFIED**; the quarantine is unchanged.
+### Second live run (same day): volume helper and the full manager path
+
+Two more defects found and fixed:
+4. The worker fetched `--depth=1`. A bundle cut from a shallow repo omits the parents without declaring them, so cloning it fails ("Failed to traverse parents") for any branch with more than one commit. The first run passed only because the fixture repo had one commit. Fixed: full-history fetch of the branch.
+5. A new named volume is `root:root 0755`, so the helper (UID 1000, no capabilities) could not write. Docker copies the image's `/workspaces` ownership into an empty volume on first mount, so this is an **image contract**: the helper image must ship `/workspaces` owned by `1000:1000` (the project runtime image already does). The helper now fails fast with `ErrVolumeNotWritable` (exit 103) instead of a bare exit 1; verified live with a non-conforming image.
+
+| Probe | Result |
+|---|---|
+| Live 0C-1 full path (worker → helper → volume repo + task worktree → export → push) | PASS; the token is absent from every file in the project volume (volume half of 0C-2) |
+| Live 0C-5 submodule (`.gitmodules` + gitlink) | PASS: `ErrSubmodulesNotSupported` |
+| Live 0C-6 LFS (`.gitattributes filter=lfs`; pointer blob without attributes) | PASS: `ErrGitLFSNotSupported` for both |
+| Live 0C-7 planted hooks, `core.hooksPath`, smudge/process filters, `core.fsmonitor`, `core.sshCommand` in the volume repo, then re-ingest a `* filter=evil` branch | PASS: nothing ran. Positive control: plain `git worktree add` with the same config did run them |
+
+Not run live: 0C-8 (identifier validation; pure input checks, unit-tested) and 0C-9 (helper `NetworkMode: none`; asserted on the create call, not probed from inside a helper).
+
+Findings recorded, not changed (need a decision):
+- **Volume name mismatch:** the transfer helper uses `atm-project-data-<repoID>`; the project sandbox mounts `atm-project-data-<projectID>`. Unless the two IDs are equal, a running sandbox never sees the ingested repository.
+- **No helper/worker image is defined in the repo** (`atm-helper:latest`/`atm-worker:latest` are placeholders). It needs git, CA certificates, and `/workspaces` owned by `1000:1000`; it should be pinned like the Phase 1B images.
+- Credentials are approved for `host=github.com` only (from the first run). Known limitation: credentials are approved for `host=github.com` only, so any other host (GitHub Enterprise, a mirror) gets no credentials. Gate 0C stays **UNQUALIFIED**; the quarantine is unchanged.

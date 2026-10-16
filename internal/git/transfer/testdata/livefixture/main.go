@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -37,6 +38,14 @@ func run(dir string, args ...string) {
 	if err != nil {
 		log.Fatalf("git %v: %v\n%s", args, err, out)
 	}
+}
+
+func out(dir string, args ...string) []byte {
+	c := exec.Command("git", args...)
+	c.Dir = dir
+	b, err := c.Output()
+	must(err)
+	return b
 }
 
 func main() {
@@ -59,6 +68,28 @@ func main() {
 	run(work, "add", ".")
 	run(work, "commit", "-m", "seed")
 	run(work, "push", "origin", "HEAD:refs/heads/main")
+	seed := strings.TrimSpace(string(out(work, "rev-parse", "HEAD")))
+
+	// Probe branches, each one commit on top of the seed.
+	branch := func(name string, files map[string]string, extra func()) {
+		run(work, "checkout", "-q", "-B", name, seed)
+		for f, body := range files {
+			must(os.WriteFile(filepath.Join(work, f), []byte(body), 0o644))
+		}
+		if extra != nil {
+			extra()
+		}
+		run(work, "add", "-A")
+		run(work, "commit", "-q", "-m", name)
+		run(work, "push", "-q", "origin", "HEAD:refs/heads/"+name)
+	}
+	branch("withsub", map[string]string{".gitmodules": "[submodule \"s\"]\n\tpath = s\n\turl = https://example.invalid/s.git\n"},
+		func() { run(work, "update-index", "--add", "--cacheinfo", "160000,"+seed+",s") })
+	branch("withlfs", map[string]string{".gitattributes": "*.bin filter=lfs diff=lfs merge=lfs -text\n"}, nil)
+	branch("lfsptr", map[string]string{"big.bin": "version https://git-lfs.github.com/spec/v1\noid sha256:0000000000000000000000000000000000000000000000000000000000000000\nsize 1\n"}, nil)
+	branch("evil", map[string]string{".gitattributes": "* filter=evil\n"}, nil)
+	// A second commit on main, so a depth-1 fetch really is shallow.
+	branch("main", map[string]string{"SECOND": "second\n"}, nil)
 
 	caKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	caTmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "atm-live-ca"},

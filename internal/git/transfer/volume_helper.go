@@ -18,6 +18,10 @@ import (
 const (
 	ExitCodeSubmoduleDetected = 101
 	ExitCodeLFSDetected       = 102
+	// ExitCodeVolumeNotWritable means /workspaces is not writable by UID 1000. Docker copies the image's
+	// /workspaces ownership into an empty named volume on first mount, so the helper image must ship
+	// /workspaces owned by 1000:1000 (the project runtime image does).
+	ExitCodeVolumeNotWritable = 103
 )
 
 type volumeTransferHelper struct {
@@ -60,6 +64,7 @@ REPO_DIR="/workspaces/%s/repository.git"
 TASK_DIR="/workspaces/%s/tasks/%s"
 TMP_BUNDLE="/tmp/scratch.bundle"
 
+[ -w /workspaces ] || { echo "/workspaces is not writable by the helper user" >&2; exit %d; }
 cat > "$TMP_BUNDLE"
 
 if [ ! -d "$REPO_DIR" ]; then
@@ -93,7 +98,7 @@ fi
 # Provision task worktree with --no-checkout
 mkdir -p "$(dirname "$TASK_DIR")"
 git -C "$REPO_DIR" -c core.hooksPath=/dev/null -c core.fsmonitor=false worktree add --no-checkout -b "task/%s" "$TASK_DIR" "%s"
-`, repoID, repoID, taskID, refName, refName, branchName, ExitCodeSubmoduleDetected, branchName, ExitCodeSubmoduleDetected, branchName, ExitCodeLFSDetected, branchName, ExitCodeLFSDetected, taskID, branchName)
+`, repoID, repoID, taskID, ExitCodeVolumeNotWritable, refName, refName, branchName, ExitCodeSubmoduleDetected, branchName, ExitCodeSubmoduleDetected, branchName, ExitCodeLFSDetected, branchName, ExitCodeLFSDetected, taskID, branchName)
 
 	containerCfg := &container.Config{
 		Image:        h.imageTag,
@@ -188,6 +193,9 @@ git -C "$REPO_DIR" -c core.hooksPath=/dev/null -c core.fsmonitor=false worktree 
 		}
 		if status.StatusCode == ExitCodeLFSDetected {
 			return "", ErrGitLFSNotSupported
+		}
+		if status.StatusCode == ExitCodeVolumeNotWritable {
+			return "", ErrVolumeNotWritable
 		}
 		if status.StatusCode != 0 {
 			return "", fmt.Errorf("%w: helper exited with code %d", ErrGitTransferFailed, status.StatusCode)

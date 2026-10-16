@@ -5,6 +5,7 @@ package transfer_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -27,7 +28,7 @@ import (
 // HTTPS smart-HTTP git fixture (internal/git/transfer/testdata/livefixture). Run only on a disposable host via
 // the script in the Gate 0C plan; they need ATM_LIVE_* variables and are excluded from normal builds.
 //
-//	ATM_LIVE_IMAGE      worker image that trusts the fixture CA
+//	ATM_LIVE_IMAGE      worker/helper image that trusts the fixture CA and ships /workspaces owned by 1000:1000
 //	ATM_LIVE_IMAGE_NOCA same image without the fixture CA (TLS must fail closed)
 //	ATM_LIVE_FIXTURE_IP the fixture container's IP, mapped to github.com for the worker
 //	ATM_LIVE_TOKEN      the fixture's auth token (a runtime canary)
@@ -218,5 +219,136 @@ func TestLive0C2_RunningWorkerCanaryScan(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatalf("fetch: %v", err)
+	}
+}
+
+// liveManager wires the real volume helper and worker to the daemon. Both use ATM_LIVE_IMAGE.
+func liveManager(t *testing.T) transfer.GitTransferManager {
+	t.Helper()
+	cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
+	if err != nil {
+		t.Fatal(err)
+	}
+	image := liveEnv(t, "ATM_LIVE_IMAGE")
+	hc := hostsClient{DockerClient: cli, ip: liveEnv(t, "ATM_LIVE_FIXTURE_IP")}
+	return transfer.NewGitTransferManager(transfer.NewVolumeTransferHelper(cli, image), transfer.NewCredentialedGitWorker(hc, image))
+}
+
+// liveID returns a fresh identifier and removes the repo's data volume when the test ends.
+func liveID(t *testing.T, prefix string) string {
+	t.Helper()
+	id := fmt.Sprintf("%s%d", prefix, time.Now().UnixNano())
+	t.Cleanup(func() { _ = exec.Command("docker", "volume", "rm", "-f", "atm-project-data-"+id).Run() })
+	return id
+}
+
+// inVolume runs a shell command as 1000:1000 with the repo's data volume at /workspaces.
+func inVolume(t *testing.T, repoID, script string) (string, error) {
+	t.Helper()
+	out, err := exec.Command("docker", "run", "--rm", "--user", "1000:1000", "--network", "none",
+		"-v", "atm-project-data-"+repoID+":/workspaces", os.Getenv("ATM_LIVE_IMAGE"), "sh", "-c", script).CombinedOutput()
+	return string(out), err
+}
+
+func ingest(t *testing.T, mgr transfer.GitTransferManager, repoID, taskID, ref string) (*transfer.TransferResult, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	return mgr.IngestRemoteBranch(ctx, transfer.IngestRequest{
+		ProjectID: "p", RepoID: repoID, TaskID: taskID, RemoteURL: liveRemote, BaseRef: ref,
+		AuthToken: liveEnv(t, "ATM_LIVE_TOKEN"),
+	})
+}
+
+// Live 0C-1 (full path): remote -> worker bundle -> helper -> volume repo and task worktree, then
+// export the task branch and push it back. Also scans the volume for the token (the volume half of 0C-2).
+func TestLive0C1_IngestAndPushThroughVolume(t *testing.T) {
+	mgr := liveManager(t)
+	repoID, taskID := liveID(t, "repo"), fmt.Sprintf("t%d", time.Now().UnixNano())
+	res, err := ingest(t, mgr, repoID, taskID, "refs/heads/main")
+	if err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	if want := "/workspaces/" + repoID + "/tasks/" + taskID; res.TaskWorktreePath != want {
+		t.Fatalf("worktree path %q, want %q", res.TaskWorktreePath, want)
+	}
+	out, err := inVolume(t, repoID, fmt.Sprintf(
+		`git -C /workspaces/%[1]s/repository.git rev-parse --verify refs/heads/task/%[2]s && test -f /workspaces/%[1]s/tasks/%[2]s/.git && echo WORKTREE_OK`, repoID, taskID))
+	if err != nil || !strings.Contains(out, "WORKTREE_OK") {
+		t.Fatalf("volume state: %v\n%s", err, out)
+	}
+	if out, _ := inVolume(t, repoID, "grep -rl -- \""+liveEnv(t, "ATM_LIVE_TOKEN")+"\" /workspaces; echo SCANNED"); !strings.Contains(out, "SCANNED") || strings.Contains(out, "/workspaces/") {
+		t.Fatalf("token found in the project volume (or scan failed): %s", out)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if _, err := mgr.ExportAndPushTask(ctx, transfer.PushRequest{
+		ProjectID: "p", RepoID: repoID, TaskID: taskID, RemoteURL: liveRemote, AuthToken: liveEnv(t, "ATM_LIVE_TOKEN"),
+	}); err != nil {
+		t.Fatalf("export and push: %v", err)
+	}
+	refs, err := exec.Command("docker", "exec", liveEnv(t, "ATM_LIVE_FIXTURE"), "git", "-C", "/data/org/repo.git", "for-each-ref", "--format=%(refname)").CombinedOutput()
+	if err != nil || !strings.Contains(string(refs), "refs/heads/task/"+taskID) {
+		t.Fatalf("pushed task branch missing on fixture: %v\n%s", err, refs)
+	}
+}
+
+func TestLive0C5_SubmoduleRejected(t *testing.T) {
+	if _, err := ingest(t, liveManager(t), liveID(t, "sub"), "t1", "refs/heads/withsub"); !errors.Is(err, transfer.ErrSubmodulesNotSupported) {
+		t.Fatalf("want ErrSubmodulesNotSupported, got %v", err)
+	}
+}
+
+func TestLive0C6_LFSRejected(t *testing.T) {
+	for _, ref := range []string{"refs/heads/withlfs", "refs/heads/lfsptr"} {
+		if _, err := ingest(t, liveManager(t), liveID(t, "lfs"), "t1", ref); !errors.Is(err, transfer.ErrGitLFSNotSupported) {
+			t.Errorf("%s: want ErrGitLFSNotSupported, got %v", ref, err)
+		}
+	}
+}
+
+// Live 0C-7: a sandbox controls the project volume, so it can plant hooks, a smudge filter, an
+// fsmonitor command and a hooksPath in repository.git. The next ingest (the fetch path) and worktree
+// creation must run none of them.
+func TestLive0C7_PlantedRepoConfigNotExecuted(t *testing.T) {
+	mgr := liveManager(t)
+	repoID := liveID(t, "evil")
+	if _, err := ingest(t, mgr, repoID, "t1", "refs/heads/main"); err != nil {
+		t.Fatalf("first ingest: %v", err)
+	}
+	plant := fmt.Sprintf(`set -e
+R=/workspaces/%s/repository.git
+mkdir -p $R/hooks /workspaces/evilhooks
+for h in reference-transaction post-checkout post-merge pre-auto-gc post-index-change; do
+  printf '#!/bin/sh\ntouch /workspaces/PWNED_hook_%%s\n' $h > $R/hooks/$h; chmod +x $R/hooks/$h
+  cp $R/hooks/$h /workspaces/evilhooks/$h
+done
+git -C $R config core.hooksPath /workspaces/evilhooks
+git -C $R config filter.evil.smudge 'touch /workspaces/PWNED_smudge; cat'
+git -C $R config filter.evil.process 'touch /workspaces/PWNED_process'
+git -C $R config core.fsmonitor 'touch /workspaces/PWNED_fsmonitor'
+git -C $R config core.sshCommand 'touch /workspaces/PWNED_ssh'
+echo PLANTED`, repoID)
+	if out, err := inVolume(t, repoID, plant); err != nil || !strings.Contains(out, "PLANTED") {
+		t.Fatalf("plant: %v\n%s", err, out)
+	}
+	// The evil branch carries ".gitattributes: * filter=evil"; fetching it and adding a worktree must not run anything.
+	if _, err := ingest(t, mgr, repoID, "t2", "refs/heads/evil"); err != nil {
+		t.Logf("second ingest failed (acceptable: fail closed): %v", err)
+	}
+	out, _ := inVolume(t, repoID, "ls /workspaces; echo LISTED")
+	if !strings.Contains(out, "LISTED") {
+		t.Fatalf("could not list volume: %s", out)
+	}
+	if strings.Contains(out, "PWNED") {
+		t.Fatalf("planted repository config was executed: %s", out)
+	}
+
+	// Positive control: an ordinary checkout of the same branch with the planted config does run it,
+	// so the absence above is the helper's doing, not inert plants.
+	ctl, _ := inVolume(t, repoID, fmt.Sprintf(`git -C /workspaces/%s/repository.git fetch -q /dev/null 2>/dev/null; git -C /workspaces/%s/repository.git worktree add -q /workspaces/ctl evil >/dev/null 2>&1; ls /workspaces`, repoID, repoID))
+	if !strings.Contains(ctl, "PWNED") {
+		t.Fatalf("positive control: plain git did not run the planted config, so this probe proves nothing: %s", ctl)
 	}
 }
