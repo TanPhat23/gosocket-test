@@ -93,6 +93,11 @@ type AgentTaskRunner struct {
 	projectSandboxMgr ProjectSandboxManager
 	workspaceMgr      WorkspaceManager
 
+	// Project-container run settings (see project_task_run.go). Unused while the runtime is quarantined.
+	projectImage     string
+	projectClientFor func(endpointURL, password string) (OpenCodeClient, error)
+	sessionPoll      time.Duration
+
 	mu        sync.RWMutex
 	doneChans map[string][]chan error
 	running   map[string]bool
@@ -820,12 +825,6 @@ func (r *AgentTaskRunner) maybeAutoCreatePR(
 	}
 	r.broadcastLog(ctx, task.ID, attempt.ID, "\x1b[32m✔ Branch pushed successfully to remote.\x1b[0m\r\n")
 
-	// Construct PR title & body
-	prTitle := task.Title
-	if prTitle == "" {
-		prTitle = fmt.Sprintf("Task #%s", task.ID)
-	}
-
 	filesChanged := 0
 	additions := 0
 	deletions := 0
@@ -833,6 +832,25 @@ func (r *AgentTaskRunner) maybeAutoCreatePR(
 		filesChanged = len(diffRes.Files)
 		additions = diffRes.TotalAdditions
 		deletions = diffRes.TotalDeletions
+	}
+
+	r.openTaskPullRequest(ctx, task, attempt, ghInteg, token, branchName, filesChanged, additions, deletions)
+}
+
+// openTaskPullRequest creates the pull request for an already-pushed task branch and syncs the linked issue.
+// It runs no git and no container code, so it is shared by the host draft and the project-container run.
+func (r *AgentTaskRunner) openTaskPullRequest(
+	ctx context.Context,
+	task *models.Task,
+	attempt *models.TaskAttempt,
+	ghInteg *models.ProjectIntegration,
+	token, branchName string,
+	filesChanged, additions, deletions int,
+) {
+	// Construct PR title & body
+	prTitle := task.Title
+	if prTitle == "" {
+		prTitle = fmt.Sprintf("Task #%s", task.ID)
 	}
 
 	var prBody strings.Builder
