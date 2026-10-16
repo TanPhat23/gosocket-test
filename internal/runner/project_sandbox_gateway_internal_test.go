@@ -31,8 +31,10 @@ func (b *fakeBroker) Release(leaseID string) { b.released = append(b.released, l
 // gwClient records every exec command and stdin body, in order.
 type gwClient struct {
 	*secretRecordingClient
-	cmds   []string
-	bodies []string
+	cmds []string
+	// failExecN makes the Nth exec (1-based) exit non-zero.
+	failExecN int
+	bodies    []string
 }
 
 func newGWClient() *gwClient { return &gwClient{secretRecordingClient: newSecretClient()} }
@@ -42,6 +44,9 @@ func (c *gwClient) ContainerExecInspect(ctx context.Context, id string) (contain
 		c.bodies = append(c.bodies, c.conn.written.String())
 	}
 	c.cmds = append(c.cmds, strings.Join(c.execOpts.Cmd, " "))
+	if c.failExecN > 0 && len(c.cmds) == c.failExecN {
+		return container.ExecInspect{ExitCode: 1}, nil
+	}
 	return c.secretRecordingClient.ContainerExecInspect(ctx, id)
 }
 
@@ -105,5 +110,17 @@ func TestProjectGateway_GrantFailureFailsClosed(t *testing.T) {
 	}
 	if cli.removeCalls == 0 {
 		t.Error("container must be removed on grant failure")
+	}
+}
+
+// The config was already delivered when the password step fails, so rollback must revoke the lease.
+func TestProjectGateway_PasswordDeliveryFailureAfterConfigReleasesLease(t *testing.T) {
+	cli, b := newGWClient(), &fakeBroker{}
+	cli.failExecN = 2
+	if _, err := gwManager(cli, b).ensureProjectContainerDisabledDraft(context.Background(), &models.Project{ID: "p1"}, "img"); err == nil {
+		t.Fatal("expected failure")
+	}
+	if len(b.grants) != 1 || len(b.released) == 0 {
+		t.Errorf("grants=%v released=%v; rollback must release the lease", b.grants, b.released)
 	}
 }
