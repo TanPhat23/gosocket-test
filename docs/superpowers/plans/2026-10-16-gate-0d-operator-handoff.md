@@ -14,7 +14,7 @@ Source of truth for the design: `specs/2026-10-11-gate-0d-egress-confinement-des
 | D4 (fixed in draft, see 7a) | The draft set no container DNS, so sandboxes get Docker's embedded resolver `127.0.0.11`, which forwards to the host's resolvers. | DNS tunnelling to an attacker domain works even with every TCP/UDP rule in place (probe NEG-0D-12 would fail). | **ATM code change:** set `HostConfig.DNS` to `127.0.0.1` (spec candidate, needs probing) or an inert resolver. Not done: the manager is quarantined. |
 | D5 (fixed in draft, see 7a) | `sandbox.DefaultEgressPolicy` was documented with `http://atm-egress-proxy:3128`, a **hostname**. Sandboxes are not on the DMZ and (with D4 fixed) have no working DNS. | The proxy URL must be an IP, e.g. `http://172.28.200.10:3128`. | Operator supplies the IP; ATM passes it as the policy's `ForwardProxyURL`. |
 | D6 | No proxy container, config, or compose service exists in the repo. | Nothing to run yet. | Section 5 has a sketch. |
-| D7 | The spec's fail-closed contract (how ATM verifies the firewall without root) is an open blocker. | ATM can start a sandbox with no firewall today. | User and operator choose Contract 1 (canary probe) or 2 (readiness file) before the quarantine can lift. |
+| D7 | The spec's fail-closed contract (how ATM verifies the firewall without root) is an open blocker. | ATM can start a sandbox with no firewall today. | Decided: Contract 1 (canary probe), implemented as `sandbox.VerifyEgressFirewall` but not yet called; see section 8. |
 | D8 | Nothing in ATM calls `NewProjectSandboxManager`/`...WithGateway` yet (quarantine), so `NetworkCreate` runs with `Internal: false` and no subnet. | Subnets come from Docker's pool, which is why the pool must be dedicated (section 2). | Operator. |
 
 ## 2. Docker daemon settings
@@ -147,12 +147,19 @@ Record outputs next to the commit that turns the gateway or runtime on.
 - **D4 done in the draft:** sandbox containers get `DNS: [192.0.2.1]` (RFC 5737 TEST-NET-1). Live check on Docker 29.1.3 in `atm-build`: default config resolves public names through `127.0.0.11`; with `--dns 127.0.0.1` or `--dns 192.0.2.1` lookups fail. **`127.0.0.1` was rejected** because Docker forwards loopback upstreams from the host's network namespace: on a host with a resolver on `127.0.0.1:53` (dnsmasq, etc.) lookups would succeed and bypass the sandbox firewall. With a non-loopback upstream the query leaves from the sandbox namespace, where `ip saddr $SANDBOX_POOL drop` stops it. The operator must therefore keep that forward drop; probe NEG-0D-12 should capture on the WAN that no query to 192.0.2.1 leaves.
 - **D5 done in the draft:** `sandbox.ValidateForwardProxyURL` requires `http://<ip>:<port>`; the draft refuses a hostname proxy before any Docker call.
 - Tests: `TestProjectSandbox_DNSIsDeadNonLoopbackAddress`, `TestProjectSandbox_HostnameProxyRejectedBeforeDocker`, `TestValidateForwardProxyURL`; both production lines mutation-checked (killed). Full `go test ./...` passes in `atm-guest`.
-- Not done: bridge name (option B, awaiting decision), fail-closed firewall verification (D7, awaiting decision).
+- Decided 2026-10-16: option A (source pool), so no bridge-name change. Fail-closed verification (D7) is implemented as `sandbox.VerifyEgressFirewall` (section 8) and still needs to be called before sandbox start.
 
-## 8. Decisions needed
+## 8. Decisions
 
-1. Match sandbox traffic by source pool (A) or by bridge name (B, needs a code change).
-2. Proxy implementation (Squid or Envoy) and who builds and runs it.
-3. Fail-closed verification contract (canary probe or readiness file).
-4. Whether the gateway stays on the host dummy IP or moves into a container.
-5. Which disposable host runs the qualification probes (this machine's `atm-build` VM has Docker but no nftables ruleset or WAN canary set up).
+Decided by the owner on 2026-10-16, taking the recommendations:
+
+1. **Match by source pool (A).** The operator writes rules against the sandbox pool CIDR (`172.28.200.0/24`-style, see D2). No bridge-name code change.
+2. **Squid, built and run by the host operator,** as an IP-only forward proxy on a fixed address (`http://<ip>:<port>`, validated by `sandbox.ValidateForwardProxyURL`).
+3. **Fail-closed contract 1, canary probe.** Implemented ATM-side as `sandbox.VerifyEgressFirewall` (`internal/sandbox/egress_verify.go`). It runs a throwaway container with sandbox-grade hardening on the sandbox network and passes only if the control (the proxy `ip:port`) is reachable and every canary `ip:port` is not. Exit mapping: 0 pass, 10 `ErrEgressOpen`, 3 `ErrEgressControlUnreachable`, anything else (no `nc`, Docker failure, timeout, bad config) is an error. The operator supplies the canaries: listeners on host and LAN addresses that must not be reachable from sandboxes (never `169.254.169.254` or public IPs). IPv4 only. The function is **not called** anywhere yet; calling it before every sandbox start is part of lifting the quarantine.
+4. **Gateway stays on the host dummy IP.** The ruleset must accept sandbox traffic to the gateway listener before the drop rules (D3).
+
+Still open:
+
+5. Which disposable host runs the qualification probes. It needs root, Docker, nftables and an outside canary; `atm-build` has no sudo, so the operator either provides such a host or runs the probes and returns the output.
+
+Verification of decision 3: unit tests in `atm-guest` (exit-code mapping, hardening, positional arguments, config rejected before any Docker call) and a live test in `atm-build` (`TestLiveVerifyEgressFirewall`) covering pass, reachable canary and unreachable control against real listeners. That checks the probe, not an nftables ruleset.

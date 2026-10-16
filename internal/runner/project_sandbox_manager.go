@@ -25,7 +25,7 @@ import (
 // CONNECT instead. It must not be loopback: Docker forwards loopback upstreams from the host's network
 // namespace, which bypasses the sandbox firewall (verified live on Docker 29.1.3, 2026-10-16). A
 // non-loopback upstream is queried from the sandbox's own namespace, where the Gate 0D rules drop it.
-const sandboxDNS = "192.0.2.1"
+const sandboxDNS = sandbox.SandboxDeadDNS
 
 // opencodeUID is the unprivileged user the project container runs OpenCode as.
 const opencodeUID = 1000
