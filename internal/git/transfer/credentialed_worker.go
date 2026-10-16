@@ -58,14 +58,14 @@ printf "protocol=https\nhost=github.com\nusername=x-access-token\npassword=%%s\n
 unset INGESTED_TOKEN
 
 mkdir -p /tmp/bare.git
-git init --bare /tmp/bare.git
+git init -q --bare /tmp/bare.git
 git -C /tmp/bare.git -c core.hooksPath=/dev/null fetch --depth=1 "%s" "%s:%s"
 
 # Generate bundle to stdout
 git -C /tmp/bare.git -c core.hooksPath=/dev/null bundle create - "%s"
 
 # Clean up credentials
-printf "protocol=https\nhost=github.com\nusername=x-access-token\n\n" | git credential erase
+printf "protocol=https\nhost=github.com\nusername=x-access-token\n\n" | git credential reject
 `, remoteURL, refName, refName, branchName)
 
 	containerCfg := &container.Config{
@@ -76,7 +76,10 @@ printf "protocol=https\nhost=github.com\nusername=x-access-token\n\n" | git cred
 		AttachStderr: true,
 		OpenStdin:    true,
 		StdinOnce:    true,
-		Cmd:          []string{"/bin/sh", "-c", workerScript},
+		// UID 1000 has no passwd entry in minimal images, so HOME would be "/" on a read-only rootfs and
+		// `git config --global` would fail. /tmp is the writable tmpfs mount.
+		Env: []string{"HOME=/tmp", "GIT_TERMINAL_PROMPT=0"},
+		Cmd: []string{"/bin/sh", "-c", workerScript},
 	}
 
 	hostCfg := &container.HostConfig{
@@ -189,14 +192,14 @@ unset INGESTED_TOKEN
 cat > /tmp/task.bundle
 
 mkdir -p /tmp/staging.git
-git init --bare /tmp/staging.git
+git init -q --bare /tmp/staging.git
 git -C /tmp/staging.git -c core.hooksPath=/dev/null fetch /tmp/task.bundle "%s:%s"
 rm -f /tmp/task.bundle
 
 # Push to remote GitHub
 git -C /tmp/staging.git -c core.hooksPath=/dev/null push --porcelain --atomic "%s" "%s:%s"
 
-printf "protocol=https\nhost=github.com\nusername=x-access-token\n\n" | git credential erase
+printf "protocol=https\nhost=github.com\nusername=x-access-token\n\n" | git credential reject
 `, branchRef, branchRef, remoteURL, branchRef, branchRef)
 
 	containerCfg := &container.Config{
@@ -207,7 +210,10 @@ printf "protocol=https\nhost=github.com\nusername=x-access-token\n\n" | git cred
 		AttachStderr: true,
 		OpenStdin:    true,
 		StdinOnce:    true,
-		Cmd:          []string{"/bin/sh", "-c", pushScript},
+		// UID 1000 has no passwd entry in minimal images, so HOME would be "/" on a read-only rootfs and
+		// `git config --global` would fail. /tmp is the writable tmpfs mount.
+		Env: []string{"HOME=/tmp", "GIT_TERMINAL_PROMPT=0"},
+		Cmd: []string{"/bin/sh", "-c", pushScript},
 	}
 
 	hostCfg := &container.HostConfig{

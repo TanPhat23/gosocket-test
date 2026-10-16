@@ -93,3 +93,22 @@ Not a re-audit. It records what changed since `45ebc19`; the sections above are 
 - **UI:** failed tasks show the latest attempt's failure reason (`78e0e74`), and the 503 session banner says execution is disabled (`a1d3f5e`, `a4cab49`).
 
 This addendum is not a readiness claim, a security sign-off, or a recommendation to lift the quarantine.
+
+## Gate 0C live probe run (2026-10-16, disposable VM `atm-build`, Docker 29.1.3)
+
+Harness: `internal/git/transfer/live_probe_test.go` (build tag `live`) drives the real `CredentialedWorker` against a real daemon and `internal/git/transfer/livefixture` (HTTPS smart-HTTP git server, own CA, Basic auth with a runtime canary token). Worker image: `alpine:3.20` + `git`, run as `1000:1000`, read-only rootfs, `cap-drop ALL`. The harness maps `github.com` to the fixture with `ExtraHosts`; nothing else about the worker is changed.
+
+Defects the live run found (the mock-based probes 0C-1..9 all passed with them present):
+1. `HOME` was `/` on a read-only rootfs, so `git config --global` failed and every transfer exited 255. Fixed: worker containers set `HOME=/tmp` (the tmpfs) and `GIT_TERMINAL_PROMPT=0`.
+2. Scripts ended with `git credential erase`, which is not a git subcommand (exit 129), so every transfer failed after doing its work. Fixed: `git credential reject`.
+3. `git init --bare` printed to stdout, which is the bundle stream. Fixed: `git init -q`.
+
+Results after the fixes:
+| Probe | Result |
+|---|---|
+| Live 0C-1 fetch → bundle | PASS: bundle verifies, token absent from the stream, fixture saw the token only over TLS |
+| Live 0C-3 push task branch | PASS: `refs/heads/task/<id>` lands on the fixture; a second push of a diverged branch was rejected (no force) |
+| Live 0C-4 untrusted certificate | PASS: fails, no bundle, fixture logged a TLS handshake error and no HTTP request |
+| Unit/mock suite `internal/git/transfer` | PASS (test binary run in `atm-build`) |
+
+Not run live: 0C-2 (`/proc` and volume canary scan of a running worker), 0C-5..0C-9 (submodule, LFS, filter, traversal, helper network isolation) and the volume helper path. Known limitation: credentials are approved for `host=github.com` only, so any other host (GitHub Enterprise, a mirror) gets no credentials. Gate 0C stays **UNQUALIFIED**; the quarantine is unchanged.
