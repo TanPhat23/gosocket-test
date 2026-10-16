@@ -90,6 +90,14 @@ export interface SessionMessage {
   created_at?: number | string | null;
 }
 
+export interface SessionChild {
+  id: string;
+  title?: string;
+  status?: string;
+  cost?: number;
+  updated_at?: string | null;
+}
+
 export interface TaskSessionResponse {
   task_id: string;
   session_id: string;
@@ -100,6 +108,7 @@ export interface TaskSessionResponse {
   tokens?: SessionTokens;
   cost?: number;
   messages: SessionMessage[];
+  children?: SessionChild[];
   simulated?: boolean;
   created_at?: string | null;
   updated_at?: string | null;

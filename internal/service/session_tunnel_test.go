@@ -18,9 +18,13 @@ type tunnelClient struct {
 	mockOpenCodeClient
 	prompts, compacts, interrupts []string
 	promptText                    string
+	failPrompt                    bool
 }
 
 func (c *tunnelClient) PromptSession(_ context.Context, sessionID, prompt string) error {
+	if c.failPrompt {
+		return errors.New("sandbox down")
+	}
 	c.prompts = append(c.prompts, sessionID)
 	c.promptText = prompt
 	return nil

@@ -201,6 +201,7 @@ func main() {
 	// The session tunnel talks only to the project's own sandbox. The manager is assigned once the project
 	// runtime is built below, before the HTTP server starts; with no runtime the tunnel reports unavailable.
 	var sessionSandboxMgr runner.ProjectSandboxManager
+	var steerRunner *runner.AgentTaskRunner // bound after the runner is built
 	sessionClients := func(ctx context.Context, projectID string) (runner.OpenCodeClient, error) {
 		if sessionSandboxMgr == nil {
 			return nil, runner.ErrRuntimeExecutionUnavailable
@@ -224,6 +225,13 @@ func main() {
 		service.WithTaskLogRepository(logRepo),
 		service.WithTaskSimulatedRuntime(fakeRuntime),
 		service.WithTaskSessionClientResolver(sessionClients),
+		service.WithTaskSteerFinalizer(func(ctx context.Context, task *models.Task, before *time.Time, logf func(string)) error {
+			if steerRunner == nil {
+				return errors.New("agent runner is not initialized")
+			}
+			_, err := steerRunner.FinalizeSteeredTurn(ctx, task, before, logf)
+			return err
+		}),
 	)
 	logService := service.NewLogService(logRepo, hub)
 	integrationService := service.NewIntegrationService(integrationRepo, projectRepo, credRepo)
@@ -282,6 +290,7 @@ func main() {
 		hub,
 		runnerOpts...,
 	)
+	steerRunner = agentRunner
 
 	// Concurrency-bounded Asynq Worker Server
 	var taskRunner queue.TaskRunner = agentRunner

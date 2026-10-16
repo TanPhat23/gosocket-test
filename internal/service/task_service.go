@@ -61,6 +61,7 @@ type taskService struct {
 	teamRepo        repository.TeamRepository
 	openCodeClient  runner.OpenCodeClient
 	sessionClients  SessionClientResolver
+	steerFinalizer  SteerFinalizer
 	logRepo         repository.LogRepository
 	simulated       bool
 
@@ -85,6 +86,18 @@ type SessionClientResolver func(ctx context.Context, projectID string) (runner.O
 func WithTaskSessionClientResolver(resolve SessionClientResolver) TaskServiceOption {
 	return func(s *taskService) { s.sessionClients = resolve }
 }
+
+// SteerFinalizer finishes a steered turn: it waits for the turn that started after `before`, commits and
+// pushes the result. logf receives terminal-formatted progress lines. It must not change the task status.
+type SteerFinalizer func(ctx context.Context, task *models.Task, before *time.Time, logf func(string)) error
+
+// WithTaskSteerFinalizer wires the post-turn work for steering. Without it a steer only delivers the prompt.
+func WithTaskSteerFinalizer(fin SteerFinalizer) TaskServiceOption {
+	return func(s *taskService) { s.steerFinalizer = fin }
+}
+
+// steerTimeout bounds one steered turn including its commit and push.
+const steerTimeout = 30 * time.Minute
 
 // WithTaskLogRepository configures the log repository for task log persistence.
 func WithTaskLogRepository(logRepo repository.LogRepository) TaskServiceOption {
@@ -357,8 +370,17 @@ func (s *taskService) CancelTask(ctx context.Context, taskID, userID string) err
 		return err
 	}
 
-	// 2. The OpenCode session-tree interrupt is disabled pending Phase 1B/Gates 0C/0D/0G; see
-	// interruptSessionTreeDisabledDraft. Cancellation still stops work via steps 1 and 3.
+	// 2. Interrupt the OpenCode session tree in the task's own sandbox (best effort, outside completionMu),
+	// so a cancelled task stops spending model budget instead of only being forgotten.
+	if s.sessionClients != nil && task.SessionID != nil && *task.SessionID != "" && !s.simulated {
+		if oc, cerr := s.sessionClients(ctx, task.ProjectID); cerr == nil {
+			intCtx, intCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if intErr := oc.InterruptSessionTree(intCtx, *task.SessionID); intErr != nil {
+				log.Printf("warning: error interrupting OpenCode session tree for task %s: %v", taskID, intErr)
+			}
+			intCancel()
+		}
+	}
 
 	// 3. Cancel Asynq queue job if queued (outside completionMu)
 	if s.queueClient != nil && task.AsynqTaskID != nil && *task.AsynqTaskID != "" {
@@ -745,7 +767,15 @@ func (s *taskService) GetTaskSession(ctx context.Context, taskID, userID string)
 	if err != nil {
 		return nil, err
 	}
+	// Subagent sessions are best effort: the transcript is still useful without them.
+	var children []dto.SessionChildDTO
+	if kids, kerr := oc.ListChildSessions(ctx, sessionID); kerr == nil {
+		for _, k := range kids {
+			children = append(children, dto.SessionChildDTO{ID: k.ID, Title: k.Title, Status: k.Status, Cost: k.Cost, UpdatedAt: k.UpdatedAt})
+		}
+	}
 	return &dto.TaskSessionResponseDTO{
+		Children:  children,
 		SessionID: sessionID,
 		TaskID:    task.ID,
 		Status:    sessDTO.Status,
@@ -868,10 +898,58 @@ func (s *taskService) PromptTaskSession(ctx context.Context, taskID, userID stri
 	if err != nil {
 		return err
 	}
+	if task.Status == models.TaskStatusCancelled {
+		return &common.AppError{Code: 409, Message: "task is cancelled"}
+	}
+
+	// A steer takes the task's single active-work slot, so it cannot overlap a run or another steer, and
+	// CancelTask cancels it like a run.
+	var steerCtx context.Context
+	var steerCancel context.CancelFunc
+	if s.steerFinalizer != nil {
+		steerCtx, steerCancel = context.WithTimeout(context.Background(), steerTimeout)
+		if _, busy := s.activeCancels.LoadOrStore(task.ID, context.CancelFunc(steerCancel)); busy {
+			steerCancel()
+			return &common.AppError{Code: 409, Message: "the task is already running a turn"}
+		}
+	}
+	release := func() {
+		if steerCancel != nil {
+			steerCancel()
+			s.activeCancels.Delete(task.ID)
+		}
+	}
+
+	var before *time.Time
+	if sess, err := oc.GetSession(ctx, sessionID); err == nil {
+		before = sess.UpdatedAt
+	}
 	if err := oc.PromptSession(ctx, sessionID, req.Prompt); err != nil {
+		release()
 		return err
 	}
 	s.broadcastTaskLog(ctx, task.ID, fmt.Sprintf("\r\n\x1b[36m➜ [User Steer Prompt]\x1b[0m %s\r\n", req.Prompt))
+	if s.steerFinalizer == nil {
+		return nil
+	}
+
+	_ = s.UpdateStatus(ctx, task.ID, models.TaskStatusInProgress)
+	go func() {
+		defer release()
+		logf := func(chunk string) { s.broadcastTaskLog(context.Background(), task.ID, chunk) }
+		err := s.steerFinalizer(steerCtx, task, before, logf)
+		// A cancelled task stays cancelled; any other ending returns the task to review so the user can
+		// inspect the result or steer again.
+		if cur, getErr := s.taskRepo.GetByID(context.Background(), task.ID); getErr == nil && cur.Status == models.TaskStatusCancelled {
+			return
+		}
+		if err != nil {
+			logf(fmt.Sprintf("\r\n\x1b[31m[Agent Control Plane] Steering turn did not complete: %v\x1b[0m\r\n", err))
+		} else {
+			logf("\x1b[32m✔ Steering turn finished. Ready for review.\x1b[0m\r\n")
+		}
+		_ = s.UpdateStatus(context.Background(), task.ID, models.TaskStatusReview)
+	}()
 	return nil
 }
 

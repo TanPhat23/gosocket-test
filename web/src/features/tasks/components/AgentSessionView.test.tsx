@@ -317,6 +317,55 @@ describe('AgentSessionView Split Two-Pane Inspector', () => {
     });
   });
 
+  it('lists subagent sessions from the session response', async () => {
+    vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue({
+      ...mockSessionData,
+      children: [{ id: 'ses_child1', title: 'explore', status: 'running' }],
+    });
+
+    render(<AgentSessionView taskId={mockTaskId} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('session-children')).toHaveTextContent('explore · running');
+    });
+  });
+
+  it('applies snapshots pushed over the session stream', async () => {
+    vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue(mockSessionData);
+    const sockets: Array<{ url: string; onmessage?: (e: { data: string }) => void; close: () => void }> = [];
+    class FakeSocket {
+      url: string;
+      onmessage?: (e: { data: string }) => void;
+      onclose?: () => void;
+      onerror?: () => void;
+      constructor(url: string) {
+        this.url = url;
+        sockets.push(this);
+      }
+      close() {}
+    }
+    vi.stubGlobal('WebSocket', FakeSocket);
+    try {
+      render(<AgentSessionView taskId={mockTaskId} />);
+      await waitFor(() => {
+        expect(screen.getByTestId('session-transcript-container')).toBeInTheDocument();
+      });
+      const stream = sockets.find((s) => s.url.includes('/ws/session/'));
+      expect(stream).toBeDefined();
+      stream!.onmessage?.({
+        data: JSON.stringify({
+          type: 'session',
+          session: { ...mockSessionData, children: [{ id: 'c2', title: 'reviewer' }] },
+        }),
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId('session-children')).toHaveTextContent('reviewer');
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('allows clicking another tool call card to inspect its output in the inspector', async () => {
     vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue(mockSessionData);
 

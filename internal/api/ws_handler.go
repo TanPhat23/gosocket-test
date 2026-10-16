@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"bytes"
 	"errors"
 	"strings"
 	"sync"
@@ -118,6 +119,7 @@ type WSHandler struct {
 	taskSvc            service.TaskService
 	logSvc             service.LogService
 	revalidateInterval time.Duration
+	sessionPoll        time.Duration
 	upgrader           websocket.FastHTTPUpgrader
 
 	// Set by NewServer: the services RequireAuth uses, for re-validating open sockets, and the
@@ -129,7 +131,7 @@ type WSHandler struct {
 
 // NewWSHandler creates a new WSHandler.
 func NewWSHandler(hub *ws.Hub, opts ...func(*WSHandler)) *WSHandler {
-	h := &WSHandler{hub: hub, revalidateInterval: defaultRevalidateInterval}
+	h := &WSHandler{hub: hub, revalidateInterval: defaultRevalidateInterval, sessionPoll: defaultSessionPoll}
 	h.upgrader = websocket.FastHTTPUpgrader{CheckOrigin: h.originAllowed}
 	for _, opt := range opts {
 		opt(h)
@@ -142,6 +144,18 @@ func WithWSServices(taskSvc service.TaskService, logSvc service.LogService) func
 	return func(h *WSHandler) {
 		h.taskSvc = taskSvc
 		h.logSvc = logSvc
+	}
+}
+
+// defaultSessionPoll is how often the session relay re-reads the project's OpenCode session.
+const defaultSessionPoll = 1500 * time.Millisecond
+
+// WithWSSessionPoll sets the session relay's poll interval. Non-positive values keep the default.
+func WithWSSessionPoll(d time.Duration) func(*WSHandler) {
+	return func(h *WSHandler) {
+		if d > 0 {
+			h.sessionPoll = d
+		}
 	}
 }
 
@@ -323,6 +337,95 @@ func (h *WSHandler) HandleTerminalWS(c fiber.Ctx) error {
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
 				break
+			}
+		}
+	})
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "websocket upgrade failed"})
+	}
+	return nil
+}
+
+// HandleSessionWS relays a task's OpenCode session (transcript, status, subagents) to the browser. It is a
+// server-side poll of the same authorized read as GET /tasks/:id/session, pushed over the socket only when the
+// snapshot changed; it is not a native OpenCode event stream. Authorization is the service's per-task Viewer
+// check on every read (so it is re-checked each tick), plus the periodic credential revalidation.
+func (h *WSHandler) HandleSessionWS(c fiber.Ctx) error {
+	user := CurrentUser(c)
+	if user == nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
+	}
+	taskID := c.Params("task_id")
+	if taskID == "" || strings.Contains(taskID, "/") {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "task_id is required"})
+	}
+	if h.taskSvc == nil || h.authService == nil {
+		return CentralErrorHandler(c, common.ErrServiceUnavailable)
+	}
+	if !h.originAllowed(c.RequestCtx()) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "websocket origin not allowed"})
+	}
+	if _, err := h.taskSvc.GetTask(c.Context(), taskID, user.ID); err != nil {
+		return CentralErrorHandler(c, err)
+	}
+
+	taskID = strings.Clone(taskID)
+	userID := user.ID
+	token := CurrentAPIToken(c)
+	creds := credentialsFrom(c)
+	poll := h.sessionPoll
+	err := h.upgrader.Upgrade(c.RequestCtx(), func(conn *websocket.Conn) {
+		done := make(chan struct{})
+		defer close(done)
+		go h.closeOnRevocation(conn, done, func(ctx context.Context) error {
+			scoped, err := h.reauthorize(ctx, creds, userID, token)
+			if err != nil {
+				return err
+			}
+			_, err = h.taskSvc.GetTask(scoped, taskID, userID)
+			return err
+		})
+
+		closed := make(chan struct{})
+		go func() {
+			defer close(closed)
+			for {
+				if _, _, err := conn.ReadMessage(); err != nil {
+					return
+				}
+			}
+		}()
+
+		var last []byte
+		ticker := time.NewTicker(poll)
+		defer ticker.Stop()
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), eventAuthzTimeout)
+			sess, err := h.taskSvc.GetTaskSession(ctx, taskID, userID)
+			cancel()
+			var out []byte
+			if err != nil {
+				if errors.Is(err, common.ErrForbidden) || errors.Is(err, common.ErrNotFound) {
+					msg := websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "access revoked")
+					_ = conn.WriteControl(websocket.CloseMessage, msg, time.Now().Add(time.Second))
+					_ = conn.Close()
+					return
+				}
+				out, _ = common.Marshal(map[string]any{"type": "error", "error": err.Error()})
+			} else {
+				out, _ = common.Marshal(map[string]any{"type": "session", "session": sess})
+			}
+			if out != nil && !bytes.Equal(out, last) {
+				_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+				if werr := conn.WriteMessage(websocket.TextMessage, out); werr != nil {
+					return
+				}
+				last = out
+			}
+			select {
+			case <-closed:
+				return
+			case <-ticker.C:
 			}
 		}
 	})

@@ -64,9 +64,19 @@ In the task's session view a Member can steer (prompt), compact and interrupt th
 read the transcript. The browser only talks to the control plane (`/api/v1/tasks/:id/session[/prompt|/compact|/interrupt]`);
 the control plane holds the OpenCode password and forwards each allowlisted call to that task's own project sandbox.
 There is deliberately no raw proxy to OpenCode, so nothing outside these calls is reachable. Interrupt stops the turn,
-not the task. Steer only delivers the prompt: it does not move the task status or push the result. If the project
-container is not running the calls fail with "service unavailable". Not yet built: subagent (child session) listing and a
-live event stream (the view still polls).
+not the task.
+
+Steer is a full turn: the task moves to `in_progress`, the control plane waits for the turn to finish, commits what the
+agent changed in the task worktree (`<title> (steered)`), pushes the task branch when the GitHub integration auto-pushes
+(which also updates an open pull request), and returns the task to `review`. It does not re-run verification or open a
+new PR. A steer cannot overlap a run or another steer (409), is rejected on a cancelled task, and Cancel now also
+interrupts the session in the project's sandbox. Subagent (child) sessions appear as a strip above the transcript.
+
+The view receives updates over `GET /api/v1/ws/session/:task_id` (same-origin, per-task Viewer check on every read,
+credentials revalidated periodically) and falls back to polling if the socket drops. This is the control plane polling
+OpenCode every ~1.5 s and pushing only changed snapshots; it is not a native OpenCode event stream (that endpoint is
+unverified). If the project container is not running the calls fail with "service unavailable". None of this has been run
+against a real OpenCode yet.
 
 ## Back to the simulated runtime
 `docker compose up -d` without the override. Known limits: the model comes from the gateway config (no per-task

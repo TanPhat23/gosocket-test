@@ -140,6 +140,7 @@ type ptrSandbox struct {
 	ProjectSandboxManager
 	called  int
 	imgSeen string
+	noRoute bool
 }
 
 func (s *ptrSandbox) EnsureProjectContainer(_ context.Context, p *models.Project, img string) (*ProjectRouteHandle, error) {
