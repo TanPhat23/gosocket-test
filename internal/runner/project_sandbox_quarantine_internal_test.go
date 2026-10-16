@@ -124,34 +124,9 @@ func newQuarantineTestManager(t *testing.T, cli *failingDockerClient) *projectSa
 	return mgr
 }
 
-func TestEnsureProjectContainer_QuarantineBypassesCachedRoute(t *testing.T) {
-	cli := &failingDockerClient{t: t}
-	mgr := newQuarantineTestManager(t, cli)
-
-	project := &models.Project{ID: "p-cached"}
-	mgr.routes[project.ID] = &ProjectRouteHandle{
-		ProjectID:    project.ID,
-		ContainerID:  "cnt-cached",
-		EndpointURL:  "http://127.0.0.1:4096",
-		AuthPassword: "cached-secret",
-	}
-
-	handle, err := mgr.EnsureProjectContainer(context.Background(), project, "atm-project-runtime:test")
-	if handle != nil {
-		t.Errorf("expected nil handle, got %+v", handle)
-	}
-	if !errors.Is(err, ErrQuarantineActive) {
-		t.Fatalf("expected ErrQuarantineActive, got %v", err)
-	}
-	if !errors.Is(err, common.ErrRuntimeQuarantined) {
-		t.Errorf("expected error to wrap common.ErrRuntimeQuarantined, got %v", err)
-	}
-	if n := cli.calls.Load(); n != 0 {
-		t.Errorf("expected zero Docker calls, got %d", n)
-	}
-}
-
-func TestEnsureProjectContainer_QuarantineIsFirstEffect(t *testing.T) {
+// The quarantine was lifted; invalid input must still be rejected before any lock or Docker call, and no longer
+// reports ErrQuarantineActive.
+func TestEnsureProjectContainer_RejectsInvalidInputFirst(t *testing.T) {
 	cases := []struct {
 		name     string
 		project  *models.Project
@@ -160,15 +135,13 @@ func TestEnsureProjectContainer_QuarantineIsFirstEffect(t *testing.T) {
 		{"nil project", nil, "atm-project-runtime:test"},
 		{"empty project id", &models.Project{}, "atm-project-runtime:test"},
 		{"empty image tag", &models.Project{ID: "p-1"}, ""},
-		{"valid arguments", &models.Project{ID: "p-1"}, "atm-project-runtime:test"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cli := &failingDockerClient{t: t}
 			mgr := newQuarantineTestManager(t, cli)
 
-			// Hold the write lock: if the refusal were not the first statement, a lock
-			// acquisition would deadlock and the call would time out.
+			// Hold the write lock: validation must come before any lock acquisition.
 			mgr.mu.Lock()
 			type result struct {
 				handle *ProjectRouteHandle
@@ -184,11 +157,11 @@ func TestEnsureProjectContainer_QuarantineIsFirstEffect(t *testing.T) {
 				if r.handle != nil {
 					t.Errorf("expected nil handle, got %+v", r.handle)
 				}
-				if !errors.Is(r.err, ErrQuarantineActive) {
-					t.Errorf("expected ErrQuarantineActive, got %v", r.err)
+				if r.err == nil || errors.Is(r.err, common.ErrRuntimeQuarantined) {
+					t.Errorf("expected a validation error, got %v", r.err)
 				}
 			case <-time.After(2 * time.Second):
-				t.Errorf("EnsureProjectContainer blocked on the lock; refusal is not the first statement")
+				t.Errorf("EnsureProjectContainer blocked on the lock before validating input")
 			}
 			mgr.mu.Unlock()
 

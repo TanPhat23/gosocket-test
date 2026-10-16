@@ -305,11 +305,11 @@ func (r *AgentTaskRunner) injectTaskConfigInContainer(ctx context.Context, conta
 	return nil
 }
 
-// runTaskInProjectContainerDisabledDraft runs one task end to end in the project container. It does not do the
+// runTaskInProjectContainer runs one task end to end in the project container. It does not do the
 // run bookkeeping (running/completed/done channels) that RunTask owns.
 //
 // Disabled pending Gate 0F and the explicit go-ahead to lift the quarantine; it is intentionally unreferenced.
-func (r *AgentTaskRunner) runTaskInProjectContainerDisabledDraft(ctx context.Context, task *models.Task, attempt *models.TaskAttempt) error {
+func (r *AgentTaskRunner) runTaskInProjectContainer(ctx context.Context, task *models.Task, attempt *models.TaskAttempt) error {
 	if task == nil || attempt == nil {
 		return errors.New("task and attempt are required")
 	}

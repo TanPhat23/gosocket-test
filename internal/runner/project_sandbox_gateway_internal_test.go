@@ -59,7 +59,7 @@ func gwManager(cli *gwClient, b GatewayBroker) *projectSandboxManager {
 // Config first, password second: the entrypoint treats the password file as the ready signal.
 func TestProjectGateway_ConfigDeliveredBeforePasswordViaStdinOnly(t *testing.T) {
 	cli, b := newGWClient(), &fakeBroker{}
-	route, err := gwManager(cli, b).ensureProjectContainerDisabledDraft(context.Background(), &models.Project{ID: "p1"}, "img")
+	route, err := gwManager(cli, b).ensureProjectContainer(context.Background(), &models.Project{ID: "p1"}, "img")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestProjectGateway_ConfigDeliveredBeforePasswordViaStdinOnly(t *testing.T) 
 func TestProjectGateway_ReleasedOnStopAndOnDeliveryFailure(t *testing.T) {
 	cli, b := newGWClient(), &fakeBroker{}
 	m := gwManager(cli, b)
-	route, err := m.ensureProjectContainerDisabledDraft(context.Background(), &models.Project{ID: "p1"}, "img")
+	route, err := m.ensureProjectContainer(context.Background(), &models.Project{ID: "p1"}, "img")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestProjectGateway_ReleasedOnStopAndOnDeliveryFailure(t *testing.T) {
 
 	cli2, b2 := newGWClient(), &fakeBroker{}
 	cli2.execErr = errors.New("boom")
-	if _, err := gwManager(cli2, b2).ensureProjectContainerDisabledDraft(context.Background(), &models.Project{ID: "p2"}, "img"); err == nil {
+	if _, err := gwManager(cli2, b2).ensureProjectContainer(context.Background(), &models.Project{ID: "p2"}, "img"); err == nil {
 		t.Fatal("expected failure")
 	}
 	if len(b2.released) == 0 {
@@ -105,7 +105,7 @@ func TestProjectGateway_ReleasedOnStopAndOnDeliveryFailure(t *testing.T) {
 
 func TestProjectGateway_GrantFailureFailsClosed(t *testing.T) {
 	cli, b := newGWClient(), &fakeBroker{grantErr: errors.New("nope")}
-	if _, err := gwManager(cli, b).ensureProjectContainerDisabledDraft(context.Background(), &models.Project{ID: "p1"}, "img"); err == nil {
+	if _, err := gwManager(cli, b).ensureProjectContainer(context.Background(), &models.Project{ID: "p1"}, "img"); err == nil {
 		t.Fatal("grant failure must abort provisioning")
 	}
 	if cli.removeCalls == 0 {
@@ -117,7 +117,7 @@ func TestProjectGateway_GrantFailureFailsClosed(t *testing.T) {
 func TestProjectGateway_PasswordDeliveryFailureAfterConfigReleasesLease(t *testing.T) {
 	cli, b := newGWClient(), &fakeBroker{}
 	cli.failExecN = 2
-	if _, err := gwManager(cli, b).ensureProjectContainerDisabledDraft(context.Background(), &models.Project{ID: "p1"}, "img"); err == nil {
+	if _, err := gwManager(cli, b).ensureProjectContainer(context.Background(), &models.Project{ID: "p1"}, "img"); err == nil {
 		t.Fatal("expected failure")
 	}
 	if len(b.grants) != 1 || len(b.released) == 0 {
