@@ -183,6 +183,20 @@ func TestProjectContainer_HomeOnWritableStateVolume(t *testing.T) {
 	}
 }
 
+// Gate 0G probe 03: OpenCode's task shells inherit its environment, so bash must be told to scrub it.
+func TestProjectContainer_TaskShellScrubsSecrets(t *testing.T) {
+	cli, _ := runSecretDraft(t)
+	if !slices.Contains(cli.CreateCalls[0].Config.Env, "BASH_ENV="+taskShellScrubFile) {
+		t.Errorf("BASH_ENV must point at %s, env=%v", taskShellScrubFile, cli.CreateCalls[0].Config.Env)
+	}
+	tpl := string(embeddedTemplate)
+	for _, want := range []string{taskShellScrubFile, "OPENCODE_PASSWORD", "OPENCODE_CONFIG_CONTENT"} {
+		if !strings.Contains(tpl, want) {
+			t.Errorf("template does not create the scrub file: missing %q", want)
+		}
+	}
+}
+
 func TestProjectSecret_TmpfsOwnedByContainerUser(t *testing.T) {
 	cli, _ := runSecretDraft(t)
 	opts := cli.CreateCalls[0].HostConfig.Tmpfs["/run/secrets"]

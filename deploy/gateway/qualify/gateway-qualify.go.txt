@@ -137,7 +137,15 @@ func runUpstream(dir string) error {
 		if (mode == "tool" && !strings.Contains(sbody, `"role":"tool"`)) || ((mode == "echo" || mode == "tool") && stream) {
 			w.Header().Set("Content-Type", "text/event-stream")
 			if mode == "tool" && !strings.Contains(sbody, `"role":"tool"`) {
-				fmt.Fprint(w, `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"printenv\",\"description\":\"env\"}"}}]},"finish_reason":null}]}`+"\n\n")
+				cmd := "printenv"
+				if a := strings.Index(sbody, "CMD["); a >= 0 {
+					if b := strings.Index(sbody[a:], "]"); b > 0 {
+						cmd = sbody[a+4 : a+b]
+					}
+				}
+				args, _ := json.Marshal(map[string]string{"command": cmd, "description": "x"})
+				chunk, _ := json.Marshal(map[string]any{"id": "c1", "object": "chat.completion.chunk", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{"index": 0, "id": "call_1", "type": "function", "function": map[string]any{"name": "shell", "arguments": string(args)}}}}, "finish_reason": nil}}})
+				fmt.Fprint(w, "data: "+string(chunk)+"\n\n")
 				fmt.Fprint(w, `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`+"\n\n")
 			} else {
 				fmt.Fprint(w, `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"hello from fake upstream"},"finish_reason":null}]}`+"\n\n")

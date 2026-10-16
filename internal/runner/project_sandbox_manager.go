@@ -33,6 +33,10 @@ const opencodeUID = 1000
 // opencodeStateDir is the writable state volume mount and OpenCode's HOME (the root filesystem is read-only).
 const opencodeStateDir = "/var/lib/opencode"
 
+// taskShellScrubFile is baked into the image (Dockerfile.project.template). Bash sources it in every non-interactive
+// task shell and unsets the OpenCode password and gateway token, which OpenCode itself needs in its own environment.
+const taskShellScrubFile = "/usr/local/lib/atm-scrub.sh"
+
 // ErrQuarantineActive is returned by EnsureProjectContainer while project container
 // provisioning is disabled. It wraps common.ErrRuntimeQuarantined.
 var ErrQuarantineActive = fmt.Errorf("%w", common.ErrRuntimeQuarantined)
@@ -204,7 +208,7 @@ func (m *projectSandboxManager) ensureProjectContainerDisabledDraft(ctx context.
 	}
 	// The root filesystem is read-only: OpenCode's data, config, cache and logs (XDG dirs under $HOME) must
 	// land on the state volume, otherwise it exits at startup with a FileSystem.makeDirectory error.
-	env = append(env, "OPENCODE_SERVER_PORT=4096", "HOME="+opencodeStateDir)
+	env = append(env, "OPENCODE_SERVER_PORT=4096", "HOME="+opencodeStateDir, "BASH_ENV="+taskShellScrubFile)
 
 	// 5. Container & Host Configuration
 	containerCfg := &container.Config{
