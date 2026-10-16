@@ -185,6 +185,24 @@ describe('TaskInspectorModal Agent Session Tab and Steering', () => {
     });
   });
 
+  it('shows a simulated-run state and disables steering for dev runtime sessions', async () => {
+    vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue({
+      task_id: 'task-1',
+      session_id: '',
+      simulated: true,
+      messages: [],
+    });
+
+    render(<TaskInspectorModal />);
+
+    fireEvent.click(screen.getByTestId('tab-agent-session'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('simulated-session')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('retry-session-btn')).not.toBeInTheDocument();
+  });
+
   it('supports controlled taskId and onClose callback props', () => {
     useTaskStore.setState({
       tasks: {

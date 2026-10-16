@@ -138,5 +138,6 @@ type TaskSessionResponseDTO struct {
 	Directory string               `json:"directory,omitempty"`
 	CreatedAt *time.Time           `json:"created_at,omitempty"`
 	UpdatedAt *time.Time           `json:"updated_at,omitempty"`
+	Simulated bool                 `json:"simulated,omitempty"`
 	Messages  []OpenCodeMessageDTO `json:"messages"`
 }

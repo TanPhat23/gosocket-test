@@ -168,6 +168,10 @@ func main() {
 		service.WithWebhookHub(hub),
 		service.WithWebhookSyncProvider(ghProvider),
 	)
+	fakeRuntime, err := devruntime.EnabledFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
 	openCodeClient := runner.NewOpenCodeClient(cfg.OpenCodeServerURL, cfg.OpenCodePassword, nil)
 	taskService := service.NewTaskService(
 		taskRepo,
@@ -177,6 +181,7 @@ func main() {
 		service.WithTaskGitHubIntegration(integrationRepo, credRepo, cipher, ghProvider),
 		service.WithTaskSessionDependencies(openCodeClient, projectRepo, teamRepo),
 		service.WithTaskLogRepository(logRepo),
+		service.WithTaskSimulatedRuntime(fakeRuntime),
 	)
 	logService := service.NewLogService(logRepo, hub)
 	integrationService := service.NewIntegrationService(integrationRepo, projectRepo, credRepo)
@@ -208,9 +213,7 @@ func main() {
 
 	// Concurrency-bounded Asynq Worker Server
 	var taskRunner queue.TaskRunner = agentRunner
-	if fake, err := devruntime.EnabledFromEnv(os.Getenv); err != nil {
-		log.Fatalf("%v", err)
-	} else if fake {
+	if fakeRuntime {
 		log.Printf("WARNING: ATM_DEV_FAKE_RUNTIME is on: tasks are simulated. The real runtime stays quarantined.")
 		taskRunner = devruntime.NewRunner(logRepo, hub, 700*time.Millisecond)
 	}

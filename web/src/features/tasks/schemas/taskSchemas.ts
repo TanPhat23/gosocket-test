@@ -100,6 +100,7 @@ export interface TaskSessionResponse {
   tokens?: SessionTokens;
   cost?: number;
   messages: SessionMessage[];
+  simulated?: boolean;
   created_at?: string | null;
   updated_at?: string | null;
 }

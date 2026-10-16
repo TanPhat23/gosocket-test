@@ -30,6 +30,7 @@ import {
   X,
   CornerDownLeft,
   ArrowDown,
+  Info,
 } from 'lucide-react';
 import { AgentQuestionnaire, type QuestionItemData } from './AgentQuestionnaire';
 import { extractQuestionsFromText } from '../utils/questionParser';
@@ -216,6 +217,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [isUnavailable, setIsUnavailable] = useState<boolean>(false);
+  const isSimulated = session?.simulated === true;
   const [copiedSessionId, setCopiedSessionId] = useState<boolean>(false);
 
   // Steer prompt state
@@ -574,7 +576,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
               >
                 {currentSessionId}
               </Badge>
-              {!isUnavailable && renderStatusBadge(session?.status)}
+              {!isUnavailable && !isSimulated && renderStatusBadge(session?.status)}
             </div>
 
             <div className="flex items-center gap-2">
@@ -584,7 +586,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
                   type="button"
                   variant="ghost"
                   size="sm"
-                  disabled={loading || isCompacting || isUnavailable}
+                  disabled={loading || isCompacting || isUnavailable || isSimulated}
                   onClick={handleCompactSession}
                   className="h-6 px-2 text-[11px] font-mono gap-1 text-muted-foreground hover:text-foreground"
                   title="Compact session context"
@@ -711,6 +713,21 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
               <div className="flex-1 flex flex-col items-center justify-center p-8 space-y-2 text-muted-foreground">
                 <RefreshCw className="size-6 animate-spin text-primary" />
                 <span className="text-xs font-mono">Fetching agent session state...</span>
+              </div>
+            ) : isSimulated ? (
+              <div
+                className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-3"
+                data-testid="simulated-session"
+              >
+                <div className="p-3 rounded-full bg-sky-500/10 text-sky-600 dark:text-sky-400">
+                  <Info className="size-6" />
+                </div>
+                <div className="space-y-1 max-w-sm">
+                  <h4 className="text-sm font-semibold text-foreground">Simulated Run</h4>
+                  <p className="text-xs text-muted-foreground">
+                    This task ran on the development runtime, so no agent session exists. See Terminal Logs for the simulated output. Steering is disabled.
+                  </p>
+                </div>
               </div>
             ) : isUnavailable ? (
               <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-3">
@@ -1266,14 +1283,14 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
                   }
                 }}
                 placeholder="Type guidance, bug fix details, or command corrections... (Ctrl+Enter to send)"
-                disabled={isSubmittingPrompt || isUnavailable}
+                disabled={isSubmittingPrompt || isUnavailable || isSimulated}
                 className="w-full sm:flex-1 min-h-[56px] max-h-28 text-xs font-mono resize-none bg-background placeholder:text-muted-foreground"
                 data-testid="steer-prompt-textarea"
               />
 
               <Button
                 type="submit"
-                disabled={!steerPrompt.trim() || isSubmittingPrompt || isUnavailable}
+                disabled={!steerPrompt.trim() || isSubmittingPrompt || isUnavailable || isSimulated}
                 size="sm"
                 className="h-10 sm:h-14 px-4 text-xs font-medium gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90 shrink-0 self-end sm:self-auto w-full sm:w-auto justify-center"
                 data-testid="send-steer-btn"

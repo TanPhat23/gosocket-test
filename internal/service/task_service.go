@@ -60,6 +60,7 @@ type taskService struct {
 	teamRepo        repository.TeamRepository
 	openCodeClient  runner.OpenCodeClient
 	logRepo         repository.LogRepository
+	simulated       bool
 
 	activeCancels *common.SafeMap[string, context.CancelFunc]
 	completionMu  sync.Mutex
@@ -67,6 +68,12 @@ type taskService struct {
 
 // TaskServiceOption allows configuring optional dependencies for TaskService.
 type TaskServiceOption func(*taskService)
+
+// WithTaskSimulatedRuntime marks the service as running against the development fake runtime, so
+// session reads report a simulated run instead of failing as unavailable.
+func WithTaskSimulatedRuntime(simulated bool) TaskServiceOption {
+	return func(s *taskService) { s.simulated = simulated }
+}
 
 // WithTaskLogRepository configures the log repository for task log persistence.
 func WithTaskLogRepository(logRepo repository.LogRepository) TaskServiceOption {
@@ -709,6 +716,10 @@ func (s *taskService) authorizeUserForTask(ctx context.Context, taskID, userID s
 func (s *taskService) GetTaskSession(ctx context.Context, taskID, userID string) (*dto.TaskSessionResponseDTO, error) {
 	if _, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleViewer); err != nil {
 		return nil, err
+	}
+
+	if s.simulated {
+		return &dto.TaskSessionResponseDTO{TaskID: taskID, Simulated: true, Messages: []dto.OpenCodeMessageDTO{}}, nil
 	}
 
 	return nil, runner.ErrRuntimeExecutionUnavailable
