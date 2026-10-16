@@ -26,8 +26,8 @@ COPY --chmod=0555 atm-entrypoint.sh /usr/local/bin/atm-entrypoint
 # Unprivileged user and workspace directory
 RUN addgroup -g 1000 opencode && \
     adduser -u 1000 -G opencode -s /bin/sh -D opencode && \
-    mkdir -p /workspaces && \
-    chown -R opencode:opencode /workspaces
+    mkdir -p /workspaces /var/lib/opencode && \
+    chown -R opencode:opencode /workspaces /var/lib/opencode
 
 {{range .Toolchains}}{{$layout := requireInstallLayout .InstallLayout}}
 # Toolchain: {{.Runtime}} {{.Version}}
