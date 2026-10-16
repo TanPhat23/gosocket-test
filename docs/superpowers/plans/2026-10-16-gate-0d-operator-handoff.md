@@ -163,3 +163,41 @@ Still open:
 5. Which disposable host runs the qualification probes. It needs root, Docker, nftables and an outside canary; `atm-build` has no sudo, so the operator either provides such a host or runs the probes and returns the output.
 
 Verification of decision 3: unit tests in `atm-guest` (exit-code mapping, hardening, positional arguments, config rejected before any Docker call) and a live test in `atm-build` (`TestLiveVerifyEgressFirewall`) covering pass, reachable canary and unreachable control against real listeners. That checks the probe, not an nftables ruleset.
+
+## 9. Live test in a QEMU VM (2026-10-16) — NOT a security sign-off
+
+Host: disposable Ubuntu 24.04 VM (`atm-fw`), Docker 29.1.3, nftables 1.0.9, iptables-nft, Squid in a container on `atm_egress_dmz` (172.28.200.0/24), sandbox networks `sbA`/`sbB` from pool 172.30.0.0/16, gateway dummy IP 172.29.0.2. The VM's own slirp gateway stood in for the WAN. IPv6, a real LAN, a real multi-NIC host and Docker upgrades were not tested. The VM, not a production host, so this does not qualify 0D.
+
+**Defect found in section 4 as written: the proxy is unreachable.** Docker blocks the path in two places that an nft ruleset cannot override (any drop wins):
+
+1. `iptables -t raw PREROUTING -d <proxy-ip> ! -i atm-egress-dmz -j DROP` (Docker's direct-access protection) drops sandbox-to-proxy packets before routing.
+2. Docker's inter-bridge isolation in `FORWARD` drops them next.
+
+Both need an explicit accept ahead of Docker's rules:
+
+```
+iptables -t raw -I PREROUTING 1 -s 172.30.0.0/16 -d 172.28.200.10 -p tcp --dport 3128 -j ACCEPT
+iptables -I DOCKER-USER 1 -s 172.30.0.0/16 -d 172.28.200.10 -p tcp --dport 3128 -j ACCEPT
+iptables -I DOCKER-USER 2 -s 172.28.200.10 -d 172.30.0.0/16 -p tcp --sport 3128 -m conntrack --ctstate ESTABLISHED -j ACCEPT
+```
+
+Removing the `DOCKER-USER` pair alone made the proxy time out; the raw rule alone was not enough earlier (DOCKER-USER counters stayed 0 until the raw accept existed). These rules are not persistent by themselves and were not re-checked after Docker recreated the networks (only after a daemon restart, where they and their order survived).
+
+**Matrix from a sandbox container (`--dns 192.0.2.1 --cap-drop ALL --read-only`):**
+
+| Target | no ATM ruleset | handoff ruleset + accepts above |
+|---|---|---|
+| proxy 172.28.200.10:3128 | blocked (Finding above) | reachable |
+| gateway 172.29.0.2:8082 | reachable | reachable |
+| peer sandbox on other bridge | blocked | blocked |
+| bridge gateway IP host service | reachable | blocked |
+| host primary IP host service | reachable | blocked |
+| WAN canary (10.0.2.3:53) | reachable | blocked |
+
+Note the peer-sandbox block comes from Docker, not from the ATM ruleset.
+
+**Proxy:** `registry.npmjs.org` via CONNECT returned 200; `github.com`, `registry.npmjs.org:8443`, no-proxy requests (DNS dead) and direct `1.1.1.1:443` all failed.
+
+**`sandbox.VerifyEgressFirewall` against this setup** (4 canaries: bridge gateway, host IP, WAN, peer sandbox): no ruleset gives `ErrEgressOpen`; handoff ruleset gives nil; wrong control port gives `ErrEgressControlUnreachable`; the gateway listed as a canary gives `ErrEgressOpen`. Positive control held for each canary.
+
+Still untested: IPv6, rule persistence across reboot, a rebuilt sandbox network, an outside canary on real hardware, and 0G through this path.
