@@ -376,10 +376,52 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
     prevMessagesCountRef.current = currentCount;
   }, [session?.messages]);
 
-  // Adaptive auto-refresh when session is in active running state or user is steering
+  // Live session stream: the server relays the (polled) OpenCode session over a WebSocket and pushes only
+  // changes. While it is connected the browser does not poll; if it drops we fall back to polling below.
+  const [streamLive, setStreamLive] = useState(false);
+  useEffect(() => {
+    if (!taskId || typeof WebSocket === 'undefined') return;
+    let socket: WebSocket | null = null;
+    try {
+      const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
+      const host = typeof window !== 'undefined' ? window.location.host : 'localhost:8080';
+      socket = new WebSocket(`${isHttps ? 'wss:' : 'ws:'}//${host}/api/v1/ws/session/${encodeURIComponent(taskId)}`);
+      socket.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(typeof event.data === 'string' ? event.data : '') as {
+            type?: string;
+            session?: TaskSessionResponse;
+          };
+          if (msg.type === 'session' && msg.session) {
+            setStreamLive(true);
+            setSession(msg.session);
+            if (msg.session.status && msg.session.status !== 'running') setIsSteeringActive(false);
+            setError(null);
+            setIsUnavailable(false);
+          } else if (msg.type === 'error') {
+            // The relay could not read the session (e.g. sandbox not running): use the normal fetch path.
+            setStreamLive(false);
+          }
+        } catch {
+          // ignore malformed frames
+        }
+      };
+      socket.onclose = () => setStreamLive(false);
+      socket.onerror = () => setStreamLive(false);
+    } catch {
+      // streaming is optional; polling covers it
+    }
+    return () => {
+      setStreamLive(false);
+      socket?.close();
+    };
+  }, [taskId]);
+
+  // Adaptive auto-refresh when session is in active running state or user is steering (fallback when the
+  // live stream is not connected)
   useEffect(() => {
     const isRunning = session?.status === 'running' || isSteeringActive;
-    if (!isRunning) return;
+    if (!isRunning || streamLive) return;
 
     let pollCount = 0;
     const maxPolls = 60; // 60 * 800ms = 48s max
@@ -399,7 +441,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
 
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.status, isSteeringActive, taskId]);
+  }, [session?.status, isSteeringActive, taskId, streamLive]);
 
   // Listen for real-time agent_event frames over WebSocket for instant transcript updates
   useEffect(() => {
@@ -741,6 +783,24 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
         >
           {/* Transcript Body or State banners */}
           <div className="flex-1 min-h-0 flex flex-col rounded-lg border border-border bg-card/60 overflow-hidden relative">
+            {session?.children && session.children.length > 0 && (
+              <div
+                className="flex flex-wrap items-center gap-1.5 px-3 py-1.5 border-b border-border text-[11px] font-mono text-muted-foreground"
+                data-testid="session-children"
+              >
+                <span>Subagents:</span>
+                {session.children.map((child) => (
+                  <span
+                    key={child.id}
+                    className="rounded border border-border px-1.5 py-0.5 text-foreground"
+                    title={child.id}
+                  >
+                    {child.title || child.id}
+                    {child.status ? ` · ${child.status}` : ''}
+                  </span>
+                ))}
+              </div>
+            )}
             {loading && !session ? (
               <div className="flex-1 flex flex-col items-center justify-center p-8 space-y-2 text-muted-foreground">
                 <RefreshCw className="size-6 animate-spin text-primary" />

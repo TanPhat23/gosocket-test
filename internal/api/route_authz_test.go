@@ -619,3 +619,34 @@ func TestWSEvents_AuthOriginAndEventFiltering(t *testing.T) {
 		t.Errorf("event for team B task leaked to team A viewer: %q", all)
 	}
 }
+
+func TestWSSession_AuthOriginAndSnapshot(t *testing.T) {
+	f := setupRouteAuthzFixture(t)
+	addr := startWSServer(t, f)
+	self := "http://" + addr
+	path := "/api/v1/ws/session/" + f.taskA.ID
+
+	if _, code := dialWS(t, f, addr, path, "", self); code != http.StatusUnauthorized {
+		t.Errorf("unauthenticated: expected 401, got %d", code)
+	}
+	for _, who := range []string{"outsider", "member-b"} {
+		if _, code := dialWS(t, f, addr, path, who, self); code != http.StatusForbidden {
+			t.Errorf("%s: expected 403, got %d", who, code)
+		}
+	}
+	if _, code := dialWS(t, f, addr, path, "viewer-a", "http://evil.example"); code != http.StatusForbidden {
+		t.Errorf("cross-site origin: expected 403, got %d", code)
+	}
+	conn, code := dialWS(t, f, addr, path, "viewer-a", self)
+	if code != http.StatusSwitchingProtocols {
+		t.Fatalf("viewer same-origin: expected 101, got %d", code)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, msg, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("expected an initial snapshot: %v", err)
+	}
+	if !strings.Contains(string(msg), `"type":"session"`) && !strings.Contains(string(msg), `"type":"error"`) {
+		t.Errorf("unexpected first message: %s", msg)
+	}
+}

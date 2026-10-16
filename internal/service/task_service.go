@@ -767,7 +767,15 @@ func (s *taskService) GetTaskSession(ctx context.Context, taskID, userID string)
 	if err != nil {
 		return nil, err
 	}
+	// Subagent sessions are best effort: the transcript is still useful without them.
+	var children []dto.SessionChildDTO
+	if kids, kerr := oc.ListChildSessions(ctx, sessionID); kerr == nil {
+		for _, k := range kids {
+			children = append(children, dto.SessionChildDTO{ID: k.ID, Title: k.Title, Status: k.Status, Cost: k.Cost, UpdatedAt: k.UpdatedAt})
+		}
+	}
 	return &dto.TaskSessionResponseDTO{
+		Children:  children,
 		SessionID: sessionID,
 		TaskID:    task.ID,
 		Status:    sessDTO.Status,

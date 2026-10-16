@@ -208,6 +208,7 @@ func (s *Server) setupRoutes() {
 	if s.WSHandler != nil {
 		v1.Get("/ws/events", RequireAuth(s.AuthService, s.SessionManager), s.WSHandler.HandleEventsWS)
 		v1.Get("/ws/terminal/:task_id", RequireAuth(s.AuthService, s.SessionManager), s.WSHandler.HandleTerminalWS)
+		v1.Get("/ws/session/:task_id", RequireAuth(s.AuthService, s.SessionManager), s.WSHandler.HandleSessionWS)
 	}
 
 	// Project integrations routes: reads require RoleViewer, writes RoleAdmin on the project's team.
