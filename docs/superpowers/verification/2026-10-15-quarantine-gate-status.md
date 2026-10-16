@@ -96,7 +96,7 @@ This addendum is not a readiness claim, a security sign-off, or a recommendation
 
 ## Gate 0C live probe run (2026-10-16, disposable VM `atm-build`, Docker 29.1.3)
 
-Harness: `internal/git/transfer/live_probe_test.go` (build tag `live`) drives the real `CredentialedWorker` against a real daemon and `internal/git/transfer/livefixture` (HTTPS smart-HTTP git server, own CA, Basic auth with a runtime canary token). Worker image: `alpine:3.20` + `git`, run as `1000:1000`, read-only rootfs, `cap-drop ALL`. The harness maps `github.com` to the fixture with `ExtraHosts`; nothing else about the worker is changed.
+Harness: `internal/git/transfer/live_probe_test.go` (build tag `live`) drives the real `CredentialedWorker` against a real daemon and `internal/git/transfer/testdata/livefixture` (HTTPS smart-HTTP git server, own CA, Basic auth with a runtime canary token). Worker image: `alpine:3.20` + `git`, run as `1000:1000`, read-only rootfs, `cap-drop ALL`. The harness maps `github.com` to the fixture with `ExtraHosts`; nothing else about the worker is changed.
 
 Defects the live run found (the mock-based probes 0C-1..9 all passed with them present):
 1. `HOME` was `/` on a read-only rootfs, so `git config --global` failed and every transfer exited 255. Fixed: worker containers set `HOME=/tmp` (the tmpfs) and `GIT_TERMINAL_PROMPT=0`.

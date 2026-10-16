@@ -23,7 +23,7 @@ import (
 )
 
 // Live Gate 0C probes: they drive the real credentialed worker against a real Docker daemon and an
-// HTTPS smart-HTTP git fixture (internal/git/transfer/livefixture). Run only on a disposable host via
+// HTTPS smart-HTTP git fixture (internal/git/transfer/testdata/livefixture). Run only on a disposable host via
 // the script in the Gate 0C plan; they need ATM_LIVE_* variables and are excluded from normal builds.
 //
 //	ATM_LIVE_IMAGE      worker image that trusts the fixture CA
