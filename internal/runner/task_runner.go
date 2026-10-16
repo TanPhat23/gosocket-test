@@ -68,6 +68,15 @@ func WithRunnerProjectSandboxManager(mgr ProjectSandboxManager) RunnerOption {
 	}
 }
 
+// WithRunnerRuntimeImage makes the project-container run resolve the project's runtime profile and build or
+// reuse its image, instead of using a fixed image. Unused while the runtime is quarantined.
+func WithRunnerRuntimeImage(resolver RuntimeResolver, builder RuntimeImageBuilder) RunnerOption {
+	return func(r *AgentTaskRunner) {
+		r.imageResolver = resolver
+		r.imageBuilder = builder
+	}
+}
+
 // WithRunnerWorkspaceManager sets the workspace manager for in-container worktree provisioning.
 func WithRunnerWorkspaceManager(mgr WorkspaceManager) RunnerOption {
 	return func(r *AgentTaskRunner) {
@@ -95,6 +104,8 @@ type AgentTaskRunner struct {
 
 	// Project-container run settings (see project_task_run.go). Unused while the runtime is quarantined.
 	projectImage     string
+	imageResolver    RuntimeResolver
+	imageBuilder     RuntimeImageBuilder
 	projectClientFor func(endpointURL, password string) (OpenCodeClient, error)
 	sessionPoll      time.Duration
 
@@ -652,7 +663,7 @@ func (r *AgentTaskRunner) runTaskDisabledDraft(ctx context.Context, task *models
 
 		var execErr error
 		subCtx, subCancel := context.WithCancel(ctx)
-		go r.watchChildSubagents(subCtx, task.ID, attempt.ID, sessionID)
+		go r.watchChildSubagents(subCtx, r.openCodeClient, task.ID, attempt.ID, sessionID)
 
 		if r.dockerRunner == nil || r.dockerCli == nil {
 			subCancel()
@@ -1106,8 +1117,8 @@ func (r *AgentTaskRunner) broadcastLog(ctx context.Context, taskID, attemptID, c
 	}
 }
 
-func (r *AgentTaskRunner) watchChildSubagents(ctx context.Context, taskID, attemptID, sessionID string) {
-	if r.openCodeClient == nil {
+func (r *AgentTaskRunner) watchChildSubagents(ctx context.Context, oc OpenCodeClient, taskID, attemptID, sessionID string) {
+	if oc == nil {
 		return
 	}
 
@@ -1117,13 +1128,13 @@ func (r *AgentTaskRunner) watchChildSubagents(ctx context.Context, taskID, attem
 	seenParts := make(map[string]bool)
 
 	poll := func() {
-		childSessions, err := r.openCodeClient.ListChildSessions(ctx, sessionID)
+		childSessions, err := oc.ListChildSessions(ctx, sessionID)
 		if err != nil || len(childSessions) == 0 {
 			return
 		}
 
 		for _, child := range childSessions {
-			cMsgs, cErr := r.openCodeClient.GetSessionMessages(ctx, child.ID)
+			cMsgs, cErr := oc.GetSessionMessages(ctx, child.ID)
 			if cErr != nil || len(cMsgs) == 0 {
 				continue
 			}
