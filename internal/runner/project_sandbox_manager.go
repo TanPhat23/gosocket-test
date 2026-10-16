@@ -157,7 +157,7 @@ func (m *projectSandboxManager) ensureProjectContainerDisabledDraft(ctx context.
 
 	containerName := "atm-project-" + project.ID
 	netName := "atm-net-" + project.ID
-	dataVolume := "atm-project-data-" + project.ID
+	dataVolume := sandbox.ProjectDataVolumeName(project.ID)
 	stateVolume := "atm-project-state-" + project.ID
 
 	// 1. Ensure bridge network exists

@@ -52,7 +52,7 @@ func (h *volumeTransferHelper) ApplyBundleAndProvisionWorktree(
 		return "", err
 	}
 
-	volumeName := fmt.Sprintf("atm-project-data-%s", repoID)
+	volumeName := sandbox.ProjectDataVolumeName(repoID)
 	branchName := strings.TrimPrefix(refName, "refs/heads/")
 
 	// In-container helper shell script executed with strict options.
@@ -215,7 +215,7 @@ func (h *volumeTransferHelper) ExportTaskBundle(ctx context.Context, repoID, tas
 		return err
 	}
 
-	volumeName := fmt.Sprintf("atm-project-data-%s", repoID)
+	volumeName := sandbox.ProjectDataVolumeName(repoID)
 	branchRef := fmt.Sprintf("refs/heads/task/%s", taskID)
 
 	exportScript := fmt.Sprintf(`

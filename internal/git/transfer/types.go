@@ -31,7 +31,7 @@ type GitTransferManager interface {
 // IngestRequest contains parameters for cloning/fetching into a project data volume.
 type IngestRequest struct {
 	ProjectID  string
-	RepoID     string
+	RepoID     string // names the project data volume: must be the sandbox project ID (sandbox.ProjectDataVolumeName)
 	TaskID     string
 	RemoteURL  string
 	BaseRef    string // e.g. "refs/heads/main"
@@ -41,7 +41,7 @@ type IngestRequest struct {
 // PushRequest contains parameters for exporting a task branch bundle and pushing upstream.
 type PushRequest struct {
 	ProjectID string
-	RepoID    string
+	RepoID    string // names the project data volume: must be the sandbox project ID (sandbox.ProjectDataVolumeName)
 	TaskID    string
 	RemoteURL string
 	AuthToken string
