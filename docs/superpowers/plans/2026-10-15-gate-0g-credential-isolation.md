@@ -1,6 +1,6 @@
 # Gate 0G Implementation Plan: Model Credential Isolation & OpenCode Password Lifecycle
 
-**Status:** Stage 2 library implemented (`internal/gateway`, not wired). Gate 0G remains BLOCKED / UNQUALIFIED. Phase 1A quarantine stays active. This plan is not a security sign-off.
+**Status:** Stage 2 library implemented (`internal/gateway`, not wired). Gate 0G QUALIFIED 2026-10-16 on VM evidence by explicit user sign-off (see end of document). Phase 1A quarantine stays active.
 **Spec:** `docs/superpowers/specs/2026-10-11-gate-0g-model-credential-isolation-design.md`
 **Method:** TDD (red, minimal change, green, mutation check). All Go tests run in `atm-guest`; never on the host; never touch the host Docker daemon.
 
@@ -98,7 +98,7 @@ The user runs the host, so they are the host operator for B1, and chose not to r
 | Behaviour | **Implemented.** The gateway starts without `ATM_GATEWAY_FIREWALL_ATTESTATION=sandbox-bridge-to-gateway-only` and logs a `WARNING` at startup (falls back to the standard logger if none is given). With the attestation it starts quietly. The other startup guards (https upstream, no wildcard bind, key/secret/limits) are unchanged. |
 | Opt-out / production | No separate opt-out variable and no production-mode refusal (the user chose warn-and-start). A production refusal could be added later. |
 | Risk accepted | A compromised sandbox may reach other host services and other projects' sandboxes. Capability tokens now cross the link inside TLS 1.3 (B4), so a passive observer on the bridge no longer sees them. Tolerable only where the host holds nothing sensitive. |
-| Gate 0G | Stays **BLOCKED / UNQUALIFIED**. The spec requires the restricted route (SEC-0G-03), so running with the opt-out never qualifies the gate. |
+| Gate 0G | Was BLOCKED / UNQUALIFIED when this row was written; qualified 2026-10-16 by user sign-off (see end of document). The spec requires the restricted route (SEC-0G-03), so running with the opt-out never qualifies the gate. |
 | Quarantine | Phase 1A unchanged. Lifting it needs gates 0C, 0D, 0G, 0F and a separate explicit user decision. |
 | ATM and firewall rules | Unchanged: ATM does not modify firewall rules or receive `NET_ADMIN`. The opt-out removes a startup check only. |
 
@@ -152,3 +152,6 @@ Gate 0G stays **UNQUALIFIED** until the user explicitly signs it off; this chang
 OpenCode runs the shell tool as `/bin/bash` directly under PID 1, so it inherits the OpenCode environment. `SHELL=` is ignored (live-tested, still leaked). Non-interactive bash sources `BASH_ENV`, so the image now carries a root-owned read-only `/usr/local/lib/atm-scrub.sh` (`unset OPENCODE_PASSWORD OPENCODE_SERVER_PASSWORD OPENCODE_CONFIG_CONTENT`) and the container env sets `BASH_ENV` to it. Live, same `printenv` task as before: leaked before, no `OPENCODE_PASSWORD` or `OPENCODE_CONFIG_CONTENT` after (image-baked file, env set as the draft does). Template hash pin recomputed again; `TestProjectContainer_TaskShellScrubsSecrets` fails when `BASH_ENV` is mutated; full `go test ./...` passes in `atm-guest`.
 
 Limits, stated plainly: this is hygiene, not a boundary. Task code runs as the same UID, so it can still read `/proc/1/environ` (accepted B6) and can run a shell that skips `BASH_ENV` (`sh`, `bash --norc` does not skip it, but `env BASH_ENV= bash`/`sh` do). It stops the accidental and the model-driven `printenv` path that sent the secrets to the model provider. Gate 0G remains **UNQUALIFIED**; open items are 18 (plain HTTP, B4) and 12 (quota, not a spend cap, B3).
+
+### Sign-off (2026-10-16)
+The user reviewed the live matrix, the B3/B4 changes and their live re-run, and signed off Gate 0G ("ok sign this off"). Gate 0G is **QUALIFIED on VM evidence**. Scope: 0G only. It accepts the recorded deviations (B1 optional firewall attestation, B2 provider key from server env or file, B6 same-UID password exposure plus the task-shell scrub, which is hygiene not a boundary) and the open limits (probe 11 approximated; streaming spend depends on `include_usage`). It does not cover 0F, does not lift the quarantine, and does not wire anything: no sandbox manager is built with a broker and no production code constructs the builder with the gateway CA. Lifting needs 0F qualified and a separate explicit go-ahead.

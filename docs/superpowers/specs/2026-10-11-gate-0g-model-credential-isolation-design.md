@@ -1,7 +1,7 @@
 # Specification: Gate 0G Model Credential Isolation & OpenCode Password Lifecycle Design
 
-**Status:** PROPOSED DESIGN DIRECTION (Informed by User Input 2026-10-12; Architecture & Specification Only)
-**Gate Status:** BLOCKED / UNQUALIFIED (Blocks self-hosting production readiness and project runtime LLM mediation)
+**Status:** APPROVED for Gate 0G by the user, 2026-10-16 ("ok sign this off"); see `verification/2026-10-15-quarantine-gate-status.md`
+**Gate Status:** QUALIFIED 2026-10-16 on VM evidence by explicit user sign-off, with the B1-B6 deviations recorded in the 0G plan. Does not lift the quarantine.
 **Formal Review & Security Sign-off:** PENDING (Requires formal threat review, adversarial qualification probe execution, and operator approval)
 **Author:** Documentation Implementation Specialist
 **Date:** 2026-10-11 (Updated 2026-10-12 post-security review)
