@@ -14,9 +14,9 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
+	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/config"
 	"agent-task-manager/internal/crypto"
 	"agent-task-manager/internal/git"
@@ -55,20 +55,36 @@ func WithRunnerOpenCodeClient(client OpenCodeClient) RunnerOption {
 	}
 }
 
+// WithRunnerProjectSandboxManager sets the project sandbox manager for project container lifecycle.
+func WithRunnerProjectSandboxManager(mgr ProjectSandboxManager) RunnerOption {
+	return func(r *AgentTaskRunner) {
+		r.projectSandboxMgr = mgr
+	}
+}
+
+// WithRunnerWorkspaceManager sets the workspace manager for in-container worktree provisioning.
+func WithRunnerWorkspaceManager(mgr WorkspaceManager) RunnerOption {
+	return func(r *AgentTaskRunner) {
+		r.workspaceMgr = mgr
+	}
+}
+
 type AgentTaskRunner struct {
-	cfg            *config.Config
-	projectRepo    repository.ProjectRepository
-	taskRepo       repository.TaskRepository
-	logRepo        repository.LogRepository
-	worktreeMgr    *git.WorktreeManager
-	dockerRunner   *sandbox.Runner
-	dockerCli      sandbox.DockerClient
-	hub            *ws.Hub
-	integRepo      repository.IntegrationRepository
-	credRepo       repository.CredentialRepository
-	cipher         *crypto.SecretCipher
-	ghProvider     integrations.PullRequestProvider
-	openCodeClient OpenCodeClient
+	cfg               *config.Config
+	projectRepo       repository.ProjectRepository
+	taskRepo          repository.TaskRepository
+	logRepo           repository.LogRepository
+	worktreeMgr       *git.WorktreeManager
+	dockerRunner      *sandbox.Runner
+	dockerCli         sandbox.DockerClient
+	hub               *ws.Hub
+	integRepo         repository.IntegrationRepository
+	credRepo          repository.CredentialRepository
+	cipher            *crypto.SecretCipher
+	ghProvider        integrations.PullRequestProvider
+	openCodeClient    OpenCodeClient
+	projectSandboxMgr ProjectSandboxManager
+	workspaceMgr      WorkspaceManager
 
 	mu        sync.RWMutex
 	doneChans map[string][]chan error
@@ -347,8 +363,55 @@ func (r *AgentTaskRunner) RunTaskAsync(ctx context.Context, task *models.Task, a
 	return done
 }
 
-// RunTask executes an individual task attempt in an isolated worktree and runs OpenCode.
+// ErrRuntimeExecutionUnavailable is returned by RunTask while task execution is disabled.
+// It wraps common.ErrRuntimeQuarantined.
+var ErrRuntimeExecutionUnavailable = fmt.Errorf("%w", common.ErrRuntimeQuarantined)
+
+// RunTask refuses to execute: task execution is disabled. It performs only the nil check and
+// done-channel bookkeeping, then returns ErrRuntimeExecutionUnavailable before any repository,
+// git, worktree, Docker, OpenCode, integration, or credential access.
 func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attempt *models.TaskAttempt) (retErr error) {
+	if task == nil {
+		return errors.New("task cannot be nil")
+	}
+
+	r.mu.Lock()
+	if r.doneChans == nil {
+		r.doneChans = make(map[string][]chan error)
+	}
+	if r.running == nil {
+		r.running = make(map[string]bool)
+	}
+	if r.completed == nil {
+		r.completed = make(map[string]error)
+	}
+	r.running[task.ID] = true
+	delete(r.completed, task.ID)
+	r.mu.Unlock()
+
+	defer func() {
+		r.mu.Lock()
+		r.running[task.ID] = false
+		r.completed[task.ID] = retErr
+		chans := r.doneChans[task.ID]
+		delete(r.doneChans, task.ID)
+		r.mu.Unlock()
+
+		for _, ch := range chans {
+			select {
+			case ch <- retErr:
+			default:
+			}
+			close(ch)
+		}
+	}()
+
+	return ErrRuntimeExecutionUnavailable
+}
+
+// runTaskDisabledDraft is the original RunTask implementation, intentionally unreferenced.
+// It is disabled pending Phase 1B/Gates 0C/0D/0G and must not be called.
+func (r *AgentTaskRunner) runTaskDisabledDraft(ctx context.Context, task *models.Task, attempt *models.TaskAttempt) (retErr error) {
 	if task == nil {
 		return errors.New("task cannot be nil")
 	}
@@ -497,10 +560,47 @@ func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attemp
 		_ = r.taskRepo.Update(ctx, task)
 	}
 
+	boundDirectory := hostWorktreePath
+	ocClient := r.openCodeClient
+
+	if r.projectSandboxMgr != nil && r.workspaceMgr != nil {
+		imageTag := "atm-project-runtime:test"
+		if override := os.Getenv("ATM_SANDBOX_IMAGE"); override != "" {
+			imageTag = override
+		}
+		route, err := r.projectSandboxMgr.EnsureProjectContainer(ctx, project, imageTag)
+		if err != nil {
+			return fmt.Errorf("failed to ensure project container: %w", err)
+		}
+
+		repoName := filepath.Base(repoPath)
+		if repoName == "" || repoName == "." || repoName == "/" {
+			repoName = "repo"
+		}
+
+		baseCommit := "HEAD"
+		if out, err := exec.CommandContext(ctx, "git", "-C", repoPath, "rev-parse", "HEAD").Output(); err == nil && len(bytes.TrimSpace(out)) > 0 {
+			baseCommit = strings.TrimSpace(string(out))
+		}
+
+		containerWorktreePath, err := r.workspaceMgr.EnsureTaskWorktree(ctx, project.ID, task, repoName, baseCommit)
+		if err != nil {
+			return fmt.Errorf("failed to ensure task worktree: %w", err)
+		}
+
+		projectClient, err := NewProjectOpenCodeClient(route.EndpointURL, route.AuthPassword, nil)
+		if err != nil {
+			return fmt.Errorf("failed to initialize project opencode client: %w", err)
+		}
+		ocClient = projectClient
+		boundDirectory = fmt.Sprintf("/workspaces/%s/tasks/%s", repoName, task.ID)
+		_ = containerWorktreePath
+	}
+
 	// Ensure the OpenCode session is bound to the task worktree directory
-	if r.openCodeClient != nil {
-		if err := r.openCodeClient.EnsureSessionAtLocation(ctx, sessionID, task.Title, hostWorktreePath); err != nil {
-			log.Printf("warning: failed to bind OpenCode session to worktree %s: %v", hostWorktreePath, err)
+	if ocClient != nil {
+		if err := ocClient.EnsureSessionAtLocation(ctx, sessionID, task.Title, boundDirectory); err != nil {
+			log.Printf("warning: failed to bind OpenCode session to worktree %s: %v", boundDirectory, err)
 		}
 	}
 
@@ -542,11 +642,11 @@ func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attemp
 		subCtx, subCancel := context.WithCancel(ctx)
 		go r.watchChildSubagents(subCtx, task.ID, attempt.ID, sessionID)
 
-		if r.dockerRunner != nil && r.dockerCli != nil {
-			execErr = r.runInDocker(ctx, task, attempt, hostWorktreePath, selectedModel, currentPrompt)
-		} else {
-			execErr = r.runOnHost(ctx, task, attempt, localWorktreePath, selectedModel, currentPrompt)
+		if r.dockerRunner == nil || r.dockerCli == nil {
+			subCancel()
+			return fmt.Errorf("docker sandbox runner is not configured; host execution fallback is disabled")
 		}
+		execErr = r.runInDocker(ctx, task, attempt, hostWorktreePath, selectedModel, currentPrompt)
 		subCancel()
 
 		if execErr != nil {
@@ -802,6 +902,32 @@ func (r *AgentTaskRunner) BuildProcessEnv(task *models.Task, model string, homeD
 	}
 }
 
+// scrubSandboxEnv removes OpenCode passwords and model-provider API keys from a container environment.
+func scrubSandboxEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, e := range env {
+		name := strings.ToUpper(strings.SplitN(e, "=", 2)[0])
+		if strings.HasSuffix(name, "_API_KEY") || strings.Contains(name, "PASSWORD") {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// agentSandboxBinds returns the bind mounts for a task container. It deliberately never mounts the host
+// OpenCode config/data directories, which may contain provider credentials (auth.json).
+func agentSandboxBinds(hostPath, hostBinPath string) []string {
+	binds := []string{
+		fmt.Sprintf("%s:/workspace:rw", hostPath),
+		fmt.Sprintf("%s:/usr/local/bin/opencode:ro", hostBinPath),
+	}
+	if hostPath != "/workspace" {
+		binds = append(binds, fmt.Sprintf("%s:%s:rw", hostPath, hostPath))
+	}
+	return binds
+}
+
 func (r *AgentTaskRunner) runInDocker(ctx context.Context, task *models.Task, attempt *models.TaskAttempt, hostPath, model, prompt string) error {
 	imageName := "agent-sandbox:latest"
 	if override := os.Getenv("ATM_SANDBOX_IMAGE"); override != "" {
@@ -826,7 +952,8 @@ func (r *AgentTaskRunner) runInDocker(ctx context.Context, task *models.Task, at
 		prompt,
 	}
 
-	env := r.BuildProcessEnv(task, model, "/root")
+	// Model credentials and the OpenCode password must not enter the task container (Gate 0G).
+	env := scrubSandboxEnv(r.BuildProcessEnv(task, model, "/root"))
 
 	containerCfg := &container.Config{
 		Image:        imageName,
@@ -842,25 +969,14 @@ func (r *AgentTaskRunner) runInDocker(ctx context.Context, task *models.Task, at
 		hostBinPath = "/home/ghug/.opencode/bin/opencode"
 	}
 
-	binds := []string{
-		fmt.Sprintf("%s:/workspace:rw", hostPath),
-		fmt.Sprintf("%s:/usr/local/bin/opencode:ro", hostBinPath),
-		fmt.Sprintf("%s:/root/.config/opencode:ro", r.cfg.OpenCodeConfigDir),
-		fmt.Sprintf("%s:/root/.local/share/opencode:rw", r.cfg.OpenCodeDataDir),
-	}
-	if hostPath != "/workspace" {
-		binds = append(binds, fmt.Sprintf("%s:%s:rw", hostPath, hostPath))
-	}
-
 	hostCfg := &container.HostConfig{
-		Binds:  binds,
+		Binds:  agentSandboxBinds(hostPath, hostBinPath),
 		Memory: 4 * 1024 * 1024 * 1024,
 	}
 
 	resp, err := r.dockerCli.ContainerCreate(ctx, containerCfg, hostCfg, nil, nil, "")
 	if err != nil {
-		log.Printf("container create failed with %s (%v), falling back to host execution", imageName, err)
-		return r.runOnHost(ctx, task, attempt, hostPath, model, prompt)
+		return fmt.Errorf("agent sandbox container create failed for image %s: %w", imageName, err)
 	}
 
 	containerID := resp.ID
@@ -903,63 +1019,6 @@ func (r *AgentTaskRunner) runInDocker(ctx context.Context, task *models.Task, at
 		timeoutSec := 0
 		_ = r.dockerCli.ContainerStop(stopCtx, containerID, container.StopOptions{Timeout: &timeoutSec})
 		return ctx.Err()
-	}
-
-	return nil
-}
-
-func (r *AgentTaskRunner) runOnHost(ctx context.Context, task *models.Task, attempt *models.TaskAttempt, worktreeDir, model, prompt string) error {
-	binPath := r.cfg.OpenCodeBinPath
-	if _, err := os.Stat(binPath); err != nil {
-		binPath = "opencode"
-	}
-
-	sessionID := fmt.Sprintf("ses_atm_%s", task.ID)
-	if task.SessionID != nil && *task.SessionID != "" {
-		sessionID = *task.SessionID
-	}
-
-	args := []string{
-		"run",
-		"--format", "json",
-		"--server", r.cfg.OpenCodeServerURL,
-		"--session", sessionID,
-		"--title", task.Title,
-		"--model", model,
-		"--auto",
-		prompt,
-	}
-
-	cmd := exec.CommandContext(ctx, binPath, args...)
-	cmd.Dir = worktreeDir
-	cmd.Env = append(cmd.Environ(), r.BuildProcessEnv(task, model, "/home/ghug")...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process != nil {
-			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
-		return nil
-	}
-	cmd.WaitDelay = 2 * time.Second
-
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("failed to capture stdout: %w", err)
-	}
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("failed to capture stderr: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start opencode on host: %w", err)
-	}
-
-	go r.streamPipe(ctx, task.ID, attempt.ID, stdoutPipe, "stdout")
-	go r.streamPipe(ctx, task.ID, attempt.ID, stderrPipe, "stderr")
-
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("opencode run exited with error: %w", err)
 	}
 
 	return nil

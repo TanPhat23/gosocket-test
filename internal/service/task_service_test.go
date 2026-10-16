@@ -4,6 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -45,7 +50,8 @@ func setupTestDB(t *testing.T) *gorm.DB {
 			issuer TEXT NOT NULL,
 			subject TEXT NOT NULL,
 			email TEXT,
-			display_name TEXT
+			display_name TEXT,
+			sessions_valid_after DATETIME
 		);
 		CREATE TABLE team_memberships (
 			team_id TEXT NOT NULL,
@@ -94,7 +100,8 @@ func setupTestDB(t *testing.T) *gorm.DB {
 			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			team_id TEXT NOT NULL,
 			name TEXT NOT NULL,
-			repo_path TEXT NOT NULL
+			repo_path TEXT NOT NULL,
+			runtime_config TEXT NOT NULL DEFAULT '{}'
 		);
 		CREATE TABLE tasks (
 			id TEXT PRIMARY KEY,
@@ -268,7 +275,7 @@ func TestTaskServiceTransitionsAndCancellation(t *testing.T) {
 	ctx := context.Background()
 
 	// GetTask
-	fetched, err := taskSvc.GetTask(ctx, task.ID)
+	fetched, err := taskRepo.GetByID(ctx, task.ID)
 	if err != nil {
 		t.Fatalf("GetTask failed: %v", err)
 	}
@@ -309,7 +316,7 @@ func TestTaskServiceTransitionsAndCancellation(t *testing.T) {
 	}
 
 	// Verify DB status is cancelled
-	updated, err := taskSvc.GetTask(ctx, task.ID)
+	updated, err := taskRepo.GetByID(ctx, task.ID)
 	if err != nil {
 		t.Fatalf("GetTask failed after cancel: %v", err)
 	}
@@ -362,12 +369,13 @@ func TestLogServiceAppendAndBroadcast(t *testing.T) {
 
 func TestTaskServiceCreateSubtaskAndListChildren(t *testing.T) {
 	gormDB := setupTestDB(t)
-	_, project, parentTask := createTestUserAndTask(t, gormDB)
+	user, project, parentTask := createTestUserAndTask(t, gormDB)
 	taskRepo := repository.NewTaskRepository(gormDB)
 	attemptRepo := repository.NewAttemptRepository(gormDB)
 	mockQueue := &mockQueueClient{}
 
-	taskSvc := service.NewTaskService(taskRepo, attemptRepo, mockQueue, nil)
+	taskSvc := service.NewTaskService(taskRepo, attemptRepo, mockQueue, nil,
+		service.WithTaskSessionDependencies(nil, repository.NewProjectRepository(gormDB), repository.NewTeamRepository(gormDB)))
 	ctx := context.Background()
 
 	subtaskReq := &dto.CreateTaskRequest{
@@ -380,7 +388,7 @@ func TestTaskServiceCreateSubtaskAndListChildren(t *testing.T) {
 		Priority:     int(models.PriorityNormal),
 	}
 
-	createdChild, err := taskSvc.CreateTask(ctx, subtaskReq)
+	createdChild, err := taskSvc.CreateTask(ctx, subtaskReq, user.ID)
 	if err != nil {
 		t.Fatalf("CreateTask child failed: %v", err)
 	}
@@ -389,7 +397,7 @@ func TestTaskServiceCreateSubtaskAndListChildren(t *testing.T) {
 		t.Fatalf("expected ParentTaskID %s, got %+v", parentTask.ID, createdChild.ParentTaskID)
 	}
 
-	children, err := taskSvc.ListSubtasks(ctx, parentTask.ID)
+	children, err := taskSvc.ListSubtasks(ctx, parentTask.ID, user.ID)
 	if err != nil {
 		t.Fatalf("ListSubtasks failed: %v", err)
 	}
@@ -418,12 +426,13 @@ func (m *mockRunnerCapture) RunTask(ctx context.Context, task *models.Task, atte
 
 func TestTaskServiceSessionIDGenerationAndExecution(t *testing.T) {
 	gormDB := setupTestDB(t)
-	_, project, _ := createTestUserAndTask(t, gormDB)
+	user, project, _ := createTestUserAndTask(t, gormDB)
 	taskRepo := repository.NewTaskRepository(gormDB)
 	attemptRepo := repository.NewAttemptRepository(gormDB)
 	mockQueue := &mockQueueClient{}
 
-	taskSvc := service.NewTaskService(taskRepo, attemptRepo, mockQueue, nil)
+	taskSvc := service.NewTaskService(taskRepo, attemptRepo, mockQueue, nil,
+		service.WithTaskSessionDependencies(nil, repository.NewProjectRepository(gormDB), repository.NewTeamRepository(gormDB)))
 	ctx := context.Background()
 
 	// 1. CreateTask initializes task.SessionID
@@ -436,7 +445,7 @@ func TestTaskServiceSessionIDGenerationAndExecution(t *testing.T) {
 		Priority:     int(models.PriorityNormal),
 	}
 
-	created, err := taskSvc.CreateTask(ctx, req)
+	created, err := taskSvc.CreateTask(ctx, req, user.ID)
 	if err != nil {
 		t.Fatalf("CreateTask failed: %v", err)
 	}
@@ -500,10 +509,10 @@ func TestTaskServiceSessionIDGenerationAndExecution(t *testing.T) {
 }
 
 type mockOpenCodeClient struct {
-	getSessionFunc        func(ctx context.Context, sessionID string) (*runner.OpenCodeSessionDTO, error)
-	getSessionMsgsFunc    func(ctx context.Context, sessionID string) ([]dto.OpenCodeMessageDTO, error)
-	promptSessionFunc     func(ctx context.Context, sessionID, prompt string) error
-	compactSessionFunc    func(ctx context.Context, sessionID string) error
+	getSessionFunc     func(ctx context.Context, sessionID string) (*runner.OpenCodeSessionDTO, error)
+	getSessionMsgsFunc func(ctx context.Context, sessionID string) ([]dto.OpenCodeMessageDTO, error)
+	promptSessionFunc  func(ctx context.Context, sessionID, prompt string) error
+	compactSessionFunc func(ctx context.Context, sessionID string) error
 }
 
 func (m *mockOpenCodeClient) GetSession(ctx context.Context, sessionID string) (*runner.OpenCodeSessionDTO, error) {
@@ -629,13 +638,13 @@ func TestTaskService_SessionOperationsAndRBAC(t *testing.T) {
 		service.WithTaskSessionDependencies(mockClient, projectRepo, teamRepo),
 	)
 
-	// 1. GetTaskSession with viewer user -> Success
+	// 1. GetTaskSession with viewer user -> authorized, but session inspection is disabled (quarantine)
 	sessResp, err := taskSvc.GetTaskSession(ctx, task.ID, viewerUser.ID)
-	if err != nil {
-		t.Fatalf("expected viewer to be able to GetTaskSession: %v", err)
+	if !errors.Is(err, runner.ErrRuntimeExecutionUnavailable) {
+		t.Fatalf("expected ErrRuntimeExecutionUnavailable for viewer on GetTaskSession, got %v", err)
 	}
-	if sessResp.SessionID != sessionID || sessResp.TaskID != task.ID {
-		t.Errorf("unexpected session response: %+v", sessResp)
+	if sessResp != nil {
+		t.Errorf("expected nil session response, got %+v", sessResp)
 	}
 
 	// 2. GetTaskSession with outsider user -> 403 Forbidden (AC-SEC-02)
@@ -651,10 +660,10 @@ func TestTaskService_SessionOperationsAndRBAC(t *testing.T) {
 		t.Fatalf("expected ErrForbidden for viewer on PromptTaskSession, got %v", err)
 	}
 
-	// 4. PromptTaskSession with member user -> Success
+	// 4. PromptTaskSession with member user -> authorized, but execution is disabled (quarantine)
 	err = taskSvc.PromptTaskSession(ctx, task.ID, memberUser.ID, promptReq)
-	if err != nil {
-		t.Fatalf("expected member to be able to PromptTaskSession: %v", err)
+	if !errors.Is(err, runner.ErrRuntimeExecutionUnavailable) {
+		t.Fatalf("expected ErrRuntimeExecutionUnavailable for member on PromptTaskSession, got %v", err)
 	}
 
 	// 5. CompactTaskSession with viewer user -> 403 Forbidden
@@ -663,10 +672,10 @@ func TestTaskService_SessionOperationsAndRBAC(t *testing.T) {
 		t.Fatalf("expected ErrForbidden for viewer on CompactTaskSession, got %v", err)
 	}
 
-	// 6. CompactTaskSession with member user -> Success
+	// 6. CompactTaskSession with member user -> authorized, but execution is disabled (quarantine)
 	err = taskSvc.CompactTaskSession(ctx, task.ID, memberUser.ID)
-	if err != nil {
-		t.Fatalf("expected member to be able to CompactTaskSession: %v", err)
+	if !errors.Is(err, runner.ErrRuntimeExecutionUnavailable) {
+		t.Fatalf("expected ErrRuntimeExecutionUnavailable for member on CompactTaskSession, got %v", err)
 	}
 
 	// 7. Daemon offline returns common.ErrServiceUnavailable (AC-SEC-04)
@@ -689,19 +698,21 @@ func TestTaskService_SessionOperationsAndRBAC(t *testing.T) {
 		service.WithTaskSessionDependencies(offlineClient, projectRepo, teamRepo),
 	)
 
+	// GetTaskSession is quarantined before the OpenCode client is ever consulted.
 	_, err = offlineSvc.GetTaskSession(ctx, task.ID, memberUser.ID)
-	if !errors.Is(err, common.ErrServiceUnavailable) {
-		t.Fatalf("expected ErrServiceUnavailable on GetTaskSession, got %v", err)
+	if !errors.Is(err, runner.ErrRuntimeExecutionUnavailable) {
+		t.Fatalf("expected ErrRuntimeExecutionUnavailable on GetTaskSession, got %v", err)
 	}
 
+	// PromptTaskSession is quarantined before the OpenCode client is ever consulted.
 	err = offlineSvc.PromptTaskSession(ctx, task.ID, memberUser.ID, promptReq)
-	if !errors.Is(err, common.ErrServiceUnavailable) {
-		t.Fatalf("expected ErrServiceUnavailable on PromptTaskSession, got %v", err)
+	if !errors.Is(err, runner.ErrRuntimeExecutionUnavailable) {
+		t.Fatalf("expected ErrRuntimeExecutionUnavailable on PromptTaskSession, got %v", err)
 	}
 
 	err = offlineSvc.CompactTaskSession(ctx, task.ID, memberUser.ID)
-	if !errors.Is(err, common.ErrServiceUnavailable) {
-		t.Fatalf("expected ErrServiceUnavailable on CompactTaskSession, got %v", err)
+	if !errors.Is(err, runner.ErrRuntimeExecutionUnavailable) {
+		t.Fatalf("expected ErrRuntimeExecutionUnavailable on CompactTaskSession, got %v", err)
 	}
 	// 8. CancelTask authorization tests
 	// CancelTask with viewer user -> 403 Forbidden
@@ -721,7 +732,7 @@ func TestTaskService_SessionOperationsAndRBAC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected member to be able to CancelTask, got %v", err)
 	}
-	reloadedTask, err := taskSvc.GetTask(ctx, task.ID)
+	reloadedTask, err := taskRepo.GetByID(ctx, task.ID)
 	if err != nil {
 		t.Fatalf("failed to reload task: %v", err)
 	}
@@ -794,7 +805,7 @@ func TestTaskService_InFlightCancellation(t *testing.T) {
 	<-runner.started
 
 	// Verify task is in_progress
-	tInProgress, _ := taskSvc.GetTask(ctx, task.ID)
+	tInProgress, _ := taskRepo.GetByID(ctx, task.ID)
 	if tInProgress.Status != models.TaskStatusInProgress {
 		t.Fatalf("expected task in_progress, got %s", tInProgress.Status)
 	}
@@ -815,7 +826,7 @@ func TestTaskService_InFlightCancellation(t *testing.T) {
 	}
 
 	// Check final DB task and attempt status
-	finalTask, err := taskSvc.GetTask(ctx, task.ID)
+	finalTask, err := taskRepo.GetByID(ctx, task.ID)
 	if err != nil {
 		t.Fatalf("failed to fetch final task: %v", err)
 	}
@@ -895,7 +906,7 @@ func TestTaskService_CancellationCompletionRace(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Verify terminal status is cancelled, never resurrected to review/done
-	finalTask, err := taskSvc.GetTask(ctx, task.ID)
+	finalTask, err := taskRepo.GetByID(ctx, task.ID)
 	if err != nil {
 		t.Fatalf("failed to fetch final task: %v", err)
 	}
@@ -961,7 +972,7 @@ func TestTaskService_CancelBeforeStart_DoesNotStart(t *testing.T) {
 	_ = runnerCalled
 
 	// Verify task is still cancelled and no in_progress overwrite occurred
-	tFinal, _ := taskSvc.GetTask(ctx, task.ID)
+	tFinal, _ := taskRepo.GetByID(ctx, task.ID)
 	if tFinal.Status != models.TaskStatusCancelled {
 		t.Errorf("expected task status to remain %s, got %s", models.TaskStatusCancelled, tFinal.Status)
 	}
@@ -1006,8 +1017,8 @@ func TestGetTaskDiff(t *testing.T) {
 	)
 
 	diff, err := taskSvc.GetTaskDiff(ctx, task.ID, ownerUser.ID)
-	if err != nil {
-		t.Fatalf("expected nil error from GetTaskDiff: %v", err)
+	if !errors.Is(err, runner.ErrRuntimeExecutionUnavailable) {
+		t.Fatalf("expected ErrRuntimeExecutionUnavailable from GetTaskDiff, got %v", err)
 	}
 	if diff != "" {
 		t.Errorf("expected empty diff on fresh dir, got: %s", diff)
@@ -1093,17 +1104,416 @@ func TestSyncTaskPRStatus(t *testing.T) {
 		service.WithTaskGitHubIntegration(integRepo, credRepo, cipher, mockPR),
 	)
 
+	// PR sync is quarantined: it refuses after authorization, even though the PR is merged.
 	syncedTask, err := taskSvc.SyncTaskPRStatus(ctx, task.ID, ownerUser.ID)
-	if err != nil {
-		t.Fatalf("SyncTaskPRStatus failed: %v", err)
+	if !errors.Is(err, runner.ErrRuntimeExecutionUnavailable) {
+		t.Fatalf("expected ErrRuntimeExecutionUnavailable from SyncTaskPRStatus, got %v", err)
 	}
-	if syncedTask.Status != models.TaskStatusDone {
-		t.Fatalf("expected task status %s, got %s", models.TaskStatusDone, syncedTask.Status)
+	if syncedTask != nil {
+		t.Fatalf("expected nil task, got %+v", syncedTask)
 	}
 
-	// Verify persistence in DB
+	// Verify the DB row is unchanged
 	reloaded, _ := taskRepo.GetByID(ctx, task.ID)
-	if reloaded.Status != models.TaskStatusDone {
-		t.Fatalf("expected persisted task status %s, got %s", models.TaskStatusDone, reloaded.Status)
+	if reloaded.Status != models.TaskStatusReview {
+		t.Fatalf("expected persisted task status %s, got %s", models.TaskStatusReview, reloaded.Status)
+	}
+}
+
+// countingPRProvider records every call so tests can prove it was never reached.
+type countingPRProvider struct {
+	createCalls int
+	statusCalls int
+}
+
+func (c *countingPRProvider) CreatePullRequest(ctx context.Context, integration *models.ProjectIntegration, plainSecret string, branch, title, body string) (string, error) {
+	c.createCalls++
+	return "https://github.com/owner/repo/pull/99", nil
+}
+
+func (c *countingPRProvider) GetPullRequestStatus(ctx context.Context, integration *models.ProjectIntegration, plainSecret string, prNumberOrURL string) (*integrations.PullRequestStatus, error) {
+	c.statusCalls++
+	return &integrations.PullRequestStatus{Number: 99, State: "open"}, nil
+}
+
+func TestTaskService_PromptTaskSession_QuarantineHasNoSideEffects(t *testing.T) {
+	db := setupTestDB(t)
+	taskRepo := repository.NewTaskRepository(db)
+	attemptRepo := repository.NewAttemptRepository(db)
+	projectRepo := repository.NewProjectRepository(db)
+	teamRepo := repository.NewTeamRepository(db)
+	ctx := context.Background()
+
+	team := &models.Team{ID: common.NewID(), Name: "Quarantine Team", Slug: "quarantine-team"}
+	db.Create(team)
+	member := &models.User{ID: common.NewID(), Email: "q-member@example.com", DisplayName: "Member", Subject: "sub-q-member", Issuer: "test"}
+	db.Create(member)
+	db.Create(&models.TeamMembership{TeamID: team.ID, UserID: member.ID, Role: models.RoleMember})
+	project := &models.Project{ID: common.NewID(), TeamID: team.ID, Name: "Quarantine Project", RepoPath: "/tmp/quarantine-repo"}
+	db.Create(project)
+
+	sessionID := "ses_atm_quarantine"
+	worktree := t.TempDir()
+	task := &models.Task{
+		ID:           common.NewID(),
+		ProjectID:    project.ID,
+		Title:        "Quarantine Task",
+		Prompt:       "Do something",
+		AssigneeID:   "agent-1",
+		AssigneeType: models.AssigneeAgent,
+		Status:       models.TaskStatusReview, // would be moved to in_progress by a real steer
+		Priority:     models.PriorityNormal,
+		SessionID:    &sessionID,
+		WorktreePath: &worktree, // would start watchSteeringTurn
+		Skills:       models.StringArray{},
+		MCPServers:   models.StringArray{},
+	}
+	db.Create(task)
+
+	var openCodeCalls atomic.Int64
+	client := &mockOpenCodeClient{
+		getSessionFunc: func(ctx context.Context, sessionID string) (*runner.OpenCodeSessionDTO, error) {
+			openCodeCalls.Add(1)
+			return &runner.OpenCodeSessionDTO{ID: sessionID}, nil
+		},
+		getSessionMsgsFunc: func(ctx context.Context, sessionID string) ([]dto.OpenCodeMessageDTO, error) {
+			openCodeCalls.Add(1)
+			return nil, nil
+		},
+		promptSessionFunc: func(ctx context.Context, sessionID, prompt string) error {
+			openCodeCalls.Add(1)
+			return nil
+		},
+	}
+	svc := service.NewTaskService(taskRepo, attemptRepo, &mockQueueClient{}, nil,
+		service.WithTaskSessionDependencies(client, projectRepo, teamRepo))
+
+	err := svc.PromptTaskSession(ctx, task.ID, member.ID, &dto.TaskSessionPromptRequest{Prompt: "steer"})
+	if !errors.Is(err, runner.ErrRuntimeExecutionUnavailable) {
+		t.Fatalf("expected ErrRuntimeExecutionUnavailable, got %v", err)
+	}
+	if !errors.Is(err, common.ErrRuntimeQuarantined) {
+		t.Errorf("expected error to wrap common.ErrRuntimeQuarantined, got %v", err)
+	}
+
+	// watchSteeringTurn polls on a 1500ms ticker (task_service.go), so wait past its first tick
+	// to catch a (wrongly) started watcher reaching the OpenCode mock.
+	time.Sleep(2 * time.Second)
+	if n := openCodeCalls.Load(); n != 0 {
+		t.Errorf("expected zero OpenCode calls, got %d", n)
+	}
+	reloaded, getErr := taskRepo.GetByID(ctx, task.ID)
+	if getErr != nil {
+		t.Fatalf("failed to reload task: %v", getErr)
+	}
+	if reloaded.Status != models.TaskStatusReview {
+		t.Errorf("task status must not change, got %s", reloaded.Status)
+	}
+
+	// Authorization still runs first: a non-member gets Forbidden, not the quarantine error.
+	outsider := &models.User{ID: common.NewID(), Email: "q-out@example.com", DisplayName: "Out", Subject: "sub-q-out", Issuer: "test"}
+	db.Create(outsider)
+	err = svc.PromptTaskSession(ctx, task.ID, outsider.ID, &dto.TaskSessionPromptRequest{Prompt: "steer"})
+	if !errors.Is(err, common.ErrForbidden) {
+		t.Errorf("expected ErrForbidden for outsider, got %v", err)
+	}
+	if n := openCodeCalls.Load(); n != 0 {
+		t.Errorf("expected zero OpenCode calls after outsider attempt, got %d", n)
+	}
+}
+
+func TestTaskService_CreatePullRequestForTask_QuarantineHasNoSideEffects(t *testing.T) {
+	db := setupTestDB(t)
+	taskRepo := repository.NewTaskRepository(db)
+	attemptRepo := repository.NewAttemptRepository(db)
+	projectRepo := repository.NewProjectRepository(db)
+	teamRepo := repository.NewTeamRepository(db)
+	integRepo := repository.NewIntegrationRepository(db)
+	credRepo := repository.NewCredentialRepository(db)
+	cipher, _ := crypto.NewSecretCipher([]byte("01234567890123456789012345678901"))
+	ctx := context.Background()
+
+	team := &models.Team{ID: common.NewID(), Name: "PR Quarantine Team", Slug: "pr-quarantine-team"}
+	db.Create(team)
+	member := &models.User{ID: common.NewID(), Email: "prq-member@example.com", DisplayName: "V", Subject: "sub-prq-m", Issuer: "test"}
+	outsider := &models.User{ID: common.NewID(), Email: "prq-out@example.com", DisplayName: "O", Subject: "sub-prq-o", Issuer: "test"}
+	db.Create(member)
+	viewer := &models.User{ID: common.NewID(), Email: "prq-viewer@example.com", DisplayName: "W", Subject: "sub-prq-w", Issuer: "test"}
+	db.Create(viewer)
+	db.Create(outsider)
+	db.Create(&models.TeamMembership{TeamID: team.ID, UserID: member.ID, Role: models.RoleMember})
+	db.Create(&models.TeamMembership{TeamID: team.ID, UserID: viewer.ID, Role: models.RoleViewer})
+	project := &models.Project{ID: common.NewID(), TeamID: team.ID, Name: "PR Quarantine Project"}
+	db.Create(project)
+
+	credEnc, _ := cipher.Encrypt("pat-test")
+	cred := &models.Credential{ID: common.NewID(), TeamID: team.ID, Provider: models.ProviderGitHub, Label: "PAT", EncryptedData: credEnc}
+	db.Create(cred)
+	db.Create(&models.ProjectIntegration{
+		ID: common.NewID(), ProjectID: project.ID, CredentialID: cred.ID,
+		Provider: models.IntegrationGitHub, ExternalID: "owner/repo", Enabled: true,
+	})
+
+	// Real worktree repo whose push target (the exact URL the unquarantined code would use) is
+	// redirected via url.insteadOf to a local bare repo. A push would then succeed and leave refs there.
+	worktree := t.TempDir()
+	bare := t.TempDir()
+	runGit := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, gitErr := cmd.CombinedOutput()
+		if gitErr != nil {
+			t.Fatalf("git %s failed: %v: %s", strings.Join(args, " "), gitErr, out)
+		}
+		return string(out)
+	}
+	runGit(bare, "init", "--bare", "-b", "main")
+	runGit(worktree, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(worktree, "f.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	runGit(worktree, "add", "f.txt")
+	runGit(worktree, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-m", "init")
+	runGit(worktree, "config", "url.file://"+bare+".insteadOf", "https://github.com/owner/repo.git")
+	existingPR := "https://github.com/owner/repo/pull/1"
+	taskNoPR := &models.Task{ID: common.NewID(), ProjectID: project.ID, Title: "No PR", Prompt: "p", WorktreePath: &worktree, Status: models.TaskStatusReview}
+	taskWithPR := &models.Task{ID: common.NewID(), ProjectID: project.ID, Title: "Has PR", Prompt: "p", WorktreePath: &worktree, PRURL: &existingPR, Status: models.TaskStatusReview}
+	db.Create(taskNoPR)
+	db.Create(taskWithPR)
+
+	runGit(worktree, "branch", "task/"+taskNoPR.ID)
+	runGit(worktree, "branch", "task/"+taskWithPR.ID)
+
+	provider := &countingPRProvider{}
+	svc := service.NewTaskService(taskRepo, attemptRepo, &mockQueueClient{}, nil,
+		service.WithTaskSessionDependencies(nil, projectRepo, teamRepo),
+		service.WithTaskGitHubIntegration(integRepo, credRepo, cipher, provider),
+	)
+
+	// Authorized member: the refusal happens only after authorization.
+	for _, id := range []string{taskNoPR.ID, taskWithPR.ID} {
+		got, err := svc.CreatePullRequestForTask(ctx, id, member.ID)
+		if got != nil {
+			t.Errorf("task %q: expected nil task, got %+v", id, got)
+		}
+		if !errors.Is(err, runner.ErrRuntimeExecutionUnavailable) {
+			t.Errorf("task %q: expected ErrRuntimeExecutionUnavailable, got %v", id, err)
+		}
+		if !errors.Is(err, common.ErrRuntimeQuarantined) {
+			t.Errorf("task %q: expected error to wrap common.ErrRuntimeQuarantined, got %v", id, err)
+		}
+	}
+	// Unauthorized / unknown callers never reach the quarantine refusal.
+	for name, c := range map[string]struct{ task, user string }{
+		"empty user":     {taskNoPR.ID, ""},
+		"outsider":       {taskNoPR.ID, outsider.ID},
+		"viewer":         {taskNoPR.ID, viewer.ID},
+		"unknown task":   {"does-not-exist", member.ID},
+		"empty task id":  {"", member.ID},
+	} {
+		got, err := svc.CreatePullRequestForTask(ctx, c.task, c.user)
+		if got != nil || err == nil || errors.Is(err, common.ErrRuntimeQuarantined) {
+			t.Errorf("%s: expected non-quarantine error and nil task, got %+v / %v", name, got, err)
+		}
+	}
+	if provider.createCalls != 0 || provider.statusCalls != 0 {
+		t.Errorf("PR provider must not be invoked, got create=%d status=%d", provider.createCalls, provider.statusCalls)
+	}
+	if refs := strings.TrimSpace(runGit(bare, "for-each-ref")); refs != "" {
+		t.Errorf("nothing may be pushed, but the remote has refs:\n%s", refs)
+	}
+	reloaded, err := taskRepo.GetByID(ctx, taskNoPR.ID)
+	if err != nil {
+		t.Fatalf("failed to reload task: %v", err)
+	}
+	if reloaded.PRURL != nil || reloaded.Status != models.TaskStatusReview {
+		t.Errorf("task must be unchanged, got status=%s pr=%v", reloaded.Status, reloaded.PRURL)
+	}
+}
+
+// spyOpenCodeClient counts every call made through the OpenCode client interface.
+type spyOpenCodeClient struct{ calls atomic.Int64 }
+
+func (s *spyOpenCodeClient) GetSession(ctx context.Context, sessionID string) (*runner.OpenCodeSessionDTO, error) {
+	s.calls.Add(1)
+	return &runner.OpenCodeSessionDTO{ID: sessionID}, nil
+}
+func (s *spyOpenCodeClient) GetSessionMessages(ctx context.Context, sessionID string) ([]dto.OpenCodeMessageDTO, error) {
+	s.calls.Add(1)
+	return nil, nil
+}
+func (s *spyOpenCodeClient) PromptSession(ctx context.Context, sessionID, prompt string) error {
+	s.calls.Add(1)
+	return nil
+}
+func (s *spyOpenCodeClient) CompactSession(ctx context.Context, sessionID string) error {
+	s.calls.Add(1)
+	return nil
+}
+func (s *spyOpenCodeClient) ListChildSessions(ctx context.Context, parentID string) ([]runner.OpenCodeSessionDTO, error) {
+	s.calls.Add(1)
+	return nil, nil
+}
+func (s *spyOpenCodeClient) InterruptSession(ctx context.Context, sessionID string) error {
+	s.calls.Add(1)
+	return nil
+}
+func (s *spyOpenCodeClient) InterruptSessionTree(ctx context.Context, rootSessionID string) error {
+	s.calls.Add(1)
+	return nil
+}
+func (s *spyOpenCodeClient) EnsureSessionAtLocation(ctx context.Context, sessionID, title, directory string) error {
+	s.calls.Add(1)
+	return nil
+}
+
+func TestTaskService_CompactTaskSession_QuarantineHasNoSideEffects(t *testing.T) {
+	db := setupTestDB(t)
+	taskRepo := repository.NewTaskRepository(db)
+	attemptRepo := repository.NewAttemptRepository(db)
+	projectRepo := repository.NewProjectRepository(db)
+	teamRepo := repository.NewTeamRepository(db)
+	ctx := context.Background()
+
+	member := &models.User{ID: common.NewID(), Email: "cq-member@example.com", DisplayName: "M", Subject: "sub-cq-m", Issuer: "test"}
+	viewer := &models.User{ID: common.NewID(), Email: "cq-viewer@example.com", DisplayName: "V", Subject: "sub-cq-v", Issuer: "test"}
+	db.Create(member)
+	db.Create(viewer)
+	team := &models.Team{ID: common.NewID(), Name: "Compact Quarantine Team", Slug: "compact-quarantine-team"}
+	db.Create(team)
+	db.Create(&models.TeamMembership{TeamID: team.ID, UserID: member.ID, Role: models.RoleMember})
+	db.Create(&models.TeamMembership{TeamID: team.ID, UserID: viewer.ID, Role: models.RoleViewer})
+	project := &models.Project{ID: common.NewID(), TeamID: team.ID, Name: "Compact Quarantine Project"}
+	db.Create(project)
+	sessionID := "ses_atm_compact_q"
+	task := &models.Task{ID: common.NewID(), ProjectID: project.ID, Title: "T", Prompt: "p", SessionID: &sessionID, Status: models.TaskStatusReview}
+	db.Create(task)
+
+	spy := &spyOpenCodeClient{}
+	svc := service.NewTaskService(taskRepo, attemptRepo, &mockQueueClient{}, nil,
+		service.WithTaskSessionDependencies(spy, projectRepo, teamRepo))
+
+	err := svc.CompactTaskSession(ctx, task.ID, member.ID)
+	if !errors.Is(err, runner.ErrRuntimeExecutionUnavailable) || !errors.Is(err, common.ErrRuntimeQuarantined) {
+		t.Fatalf("expected quarantine error, got %v", err)
+	}
+	if err := svc.CompactTaskSession(ctx, task.ID, viewer.ID); !errors.Is(err, common.ErrForbidden) {
+		t.Errorf("expected ErrForbidden for viewer, got %v", err)
+	}
+	if n := spy.calls.Load(); n != 0 {
+		t.Errorf("expected zero OpenCode client calls, got %d", n)
+	}
+}
+
+// snapshotTree returns path -> content for every file and directory under root (including .git).
+func snapshotTree(t *testing.T, root string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	walkErr := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(root, p)
+		if d.IsDir() {
+			out[rel] = "<dir>"
+			return nil
+		}
+		b, rErr := os.ReadFile(p)
+		if rErr != nil {
+			return rErr
+		}
+		out[rel] = string(b)
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("snapshot walk: %v", walkErr)
+	}
+	return out
+}
+
+func TestTaskService_GetTaskDiff_QuarantineHasNoSideEffects(t *testing.T) {
+	db := setupTestDB(t)
+	taskRepo := repository.NewTaskRepository(db)
+	attemptRepo := repository.NewAttemptRepository(db)
+	projectRepo := repository.NewProjectRepository(db)
+	teamRepo := repository.NewTeamRepository(db)
+	ctx := context.Background()
+
+	viewer := &models.User{ID: common.NewID(), Email: "dq-viewer@example.com", DisplayName: "V", Subject: "sub-dq-v", Issuer: "test"}
+	outsider := &models.User{ID: common.NewID(), Email: "dq-out@example.com", DisplayName: "O", Subject: "sub-dq-o", Issuer: "test"}
+	db.Create(viewer)
+	db.Create(outsider)
+	team := &models.Team{ID: common.NewID(), Name: "Diff Quarantine Team", Slug: "diff-quarantine-team"}
+	db.Create(team)
+	db.Create(&models.TeamMembership{TeamID: team.ID, UserID: viewer.ID, Role: models.RoleViewer})
+	project := &models.Project{ID: common.NewID(), TeamID: team.ID, Name: "Diff Quarantine Project"}
+	db.Create(project)
+
+	// Real repo with an uncommitted change: CaptureSnapshot would add/commit it and edit config.
+	worktree := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = worktree
+		if out, gitErr := cmd.CombinedOutput(); gitErr != nil {
+			t.Fatalf("git %s failed: %v: %s", strings.Join(args, " "), gitErr, out)
+		}
+	}
+	runGit("init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(worktree, "f.txt"), []byte("one"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	runGit("add", "f.txt")
+	runGit("-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-m", "init")
+	if err := os.WriteFile(filepath.Join(worktree, "f.txt"), []byte("two"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "untracked.txt"), []byte("u"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	task := &models.Task{ID: common.NewID(), ProjectID: project.ID, Title: "T", Prompt: "p", WorktreePath: &worktree, Status: models.TaskStatusReview}
+	db.Create(task)
+
+	// PATH shim: any `git` invocation is recorded and fails.
+	shimDir := t.TempDir()
+	record := filepath.Join(shimDir, "invocations.log")
+	shim := "#!/bin/sh\necho \"$@\" >> '" + record + "'\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte(shim), 0o755); err != nil {
+		t.Fatalf("write shim: %v", err)
+	}
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	before := snapshotTree(t, worktree)
+
+	svc := service.NewTaskService(taskRepo, attemptRepo, &mockQueueClient{}, nil,
+		service.WithTaskSessionDependencies(nil, projectRepo, teamRepo))
+
+	diff, err := svc.GetTaskDiff(ctx, task.ID, viewer.ID)
+	if !errors.Is(err, runner.ErrRuntimeExecutionUnavailable) || !errors.Is(err, common.ErrRuntimeQuarantined) {
+		t.Fatalf("viewer: expected quarantine error, got %v", err)
+	}
+	if diff != "" {
+		t.Errorf("viewer: expected empty diff, got %q", diff)
+	}
+	if d, err := svc.GetTaskDiff(ctx, task.ID, ""); !errors.Is(err, common.ErrForbidden) || d != "" {
+		t.Errorf("empty userID: expected ErrForbidden and empty diff, got %q / %v", d, err)
+	}
+	if _, err := svc.GetTaskDiff(ctx, task.ID, outsider.ID); !errors.Is(err, common.ErrForbidden) {
+		t.Errorf("expected ErrForbidden for outsider, got %v", err)
+	}
+
+	if b, err := os.ReadFile(record); err == nil {
+		t.Fatalf("git was invoked: %s", b)
+	}
+	after := snapshotTree(t, worktree)
+	if len(before) != len(after) {
+		t.Fatalf("worktree file listing changed: %d -> %d entries", len(before), len(after))
+	}
+	for p, c := range before {
+		if after[p] != c {
+			t.Errorf("worktree entry %s changed", p)
+		}
 	}
 }

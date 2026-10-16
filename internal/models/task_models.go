@@ -24,6 +24,8 @@ type Task struct {
 	ExitCode      *int         `gorm:"type:integer" json:"exit_code,omitempty"`
 	Skills        StringArray  `gorm:"type:jsonb;not null;default:'[]';index:idx_tasks_skills,type:gin" json:"skills"`
 	MCPServers    StringArray  `gorm:"type:jsonb;not null;default:'[]';index:idx_tasks_mcp,type:gin" json:"mcp_servers"`
+	// FailureReason is filled from the latest attempt when a task is read; it is not stored on the task.
+	FailureReason *string      `gorm:"-" json:"-"`
 	ID            string       `gorm:"type:uuid;primaryKey" json:"id" validate:"required"`
 	ProjectID     string       `gorm:"type:uuid;not null;index:idx_tasks_project" json:"project_id" validate:"required"`
 	Title         string       `gorm:"type:text;not null" json:"title" validate:"required,min=1,max=255"`

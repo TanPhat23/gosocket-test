@@ -46,6 +46,7 @@ type TaskResponse struct {
 	BranchName    *string             `json:"branch_name,omitempty"`
 	ContainerID   *string             `json:"container_id,omitempty"`
 	ExitCode      *int                `json:"exit_code,omitempty"`
+	FailureReason *string             `json:"failure_reason,omitempty"`
 	HeartbeatAt   *time.Time          `json:"heartbeat_at,omitempty"`
 	CreatedAt     time.Time           `json:"created_at"`
 	UpdatedAt     time.Time           `json:"updated_at"`
@@ -92,6 +93,7 @@ func ToTaskResponse(t *models.Task) TaskResponse {
 		BranchName:   t.BranchName,
 		ContainerID:  t.ContainerID,
 		ExitCode:     t.ExitCode,
+		FailureReason: t.FailureReason,
 		HeartbeatAt:  t.HeartbeatAt,
 		CreatedAt:    t.CreatedAt,
 		UpdatedAt:    t.UpdatedAt,
@@ -136,5 +138,6 @@ type TaskSessionResponseDTO struct {
 	Directory string               `json:"directory,omitempty"`
 	CreatedAt *time.Time           `json:"created_at,omitempty"`
 	UpdatedAt *time.Time           `json:"updated_at,omitempty"`
+	Simulated bool                 `json:"simulated,omitempty"`
 	Messages  []OpenCodeMessageDTO `json:"messages"`
 }

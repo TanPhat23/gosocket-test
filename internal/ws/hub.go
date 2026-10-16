@@ -132,6 +132,11 @@ func (h *Hub) BroadcastTaskLog(taskID string, chunk string) error {
 	return nil
 }
 
+// BroadcastGlobal broadcasts payload to all clients subscribed to the "global" events room.
+func (h *Hub) BroadcastGlobal(data []byte) {
+	h.BroadcastToTask("global", data)
+}
+
 // BroadcastTaskStatus marshals and broadcasts a status update message to subscribers of taskID and global event listeners.
 func (h *Hub) BroadcastTaskStatus(taskID string, status models.TaskStatus) error {
 	hasTask := h.HasSubscribers(taskID)

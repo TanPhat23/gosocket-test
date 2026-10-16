@@ -24,3 +24,9 @@ type ContainerInstance struct {
 	ExitCode int
 	Logs     io.ReadCloser
 }
+
+// ProjectDataVolumeName is the named volume holding a project's repository and task worktrees.
+// The sandbox mounts it and the git transfer helper writes it, so both must derive the name here.
+func ProjectDataVolumeName(projectID string) string {
+	return "atm-project-data-" + projectID
+}

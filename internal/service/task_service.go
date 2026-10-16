@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +23,7 @@ import (
 	"agent-task-manager/internal/repository"
 	"agent-task-manager/internal/runner"
 	"agent-task-manager/internal/ws"
+	"gorm.io/gorm"
 )
 
 // TaskRunner is aliased from queue.TaskRunner.
@@ -28,14 +31,14 @@ type TaskRunner = queue.TaskRunner
 
 // TaskService defines the business operations for tasks.
 type TaskService interface {
-	GetTask(ctx context.Context, taskID string) (*models.Task, error)
-	ListTasks(ctx context.Context, projectID string) ([]models.Task, error)
-	ListSubtasks(ctx context.Context, parentTaskID string) ([]models.Task, error)
-	CreateTask(ctx context.Context, req *dto.CreateTaskRequest) (*models.Task, error)
+	GetTask(ctx context.Context, taskID, userID string) (*models.Task, error)
+	ListTasks(ctx context.Context, projectID, userID string) ([]models.Task, error)
+	ListSubtasks(ctx context.Context, parentTaskID, userID string) ([]models.Task, error)
+	CreateTask(ctx context.Context, req *dto.CreateTaskRequest, userID string) (*models.Task, error)
 	UpdateStatus(ctx context.Context, taskID string, status models.TaskStatus) error
 	CancelTask(ctx context.Context, taskID, userID string) error
 	ExecuteTask(ctx context.Context, taskID string, runner TaskRunner) error
-	CreatePullRequestForTask(ctx context.Context, taskID string) (*models.Task, error)
+	CreatePullRequestForTask(ctx context.Context, taskID, userID string) (*models.Task, error)
 	GetTaskSession(ctx context.Context, taskID, userID string) (*dto.TaskSessionResponseDTO, error)
 	PromptTaskSession(ctx context.Context, taskID, userID string, req *dto.TaskSessionPromptRequest) error
 	CompactTaskSession(ctx context.Context, taskID, userID string) error
@@ -57,6 +60,7 @@ type taskService struct {
 	teamRepo        repository.TeamRepository
 	openCodeClient  runner.OpenCodeClient
 	logRepo         repository.LogRepository
+	simulated       bool
 
 	activeCancels *common.SafeMap[string, context.CancelFunc]
 	completionMu  sync.Mutex
@@ -64,6 +68,12 @@ type taskService struct {
 
 // TaskServiceOption allows configuring optional dependencies for TaskService.
 type TaskServiceOption func(*taskService)
+
+// WithTaskSimulatedRuntime marks the service as running against the development fake runtime, so
+// session reads report a simulated run instead of failing as unavailable.
+func WithTaskSimulatedRuntime(simulated bool) TaskServiceOption {
+	return func(s *taskService) { s.simulated = simulated }
+}
 
 // WithTaskLogRepository configures the log repository for task log persistence.
 func WithTaskLogRepository(logRepo repository.LogRepository) TaskServiceOption {
@@ -121,23 +131,105 @@ func NewTaskService(
 	return svc
 }
 
-// GetTask retrieves a task by ID.
-func (s *taskService) GetTask(ctx context.Context, taskID string) (*models.Task, error) {
-	return s.taskRepo.GetByID(ctx, taskID)
+// GetTask retrieves a task by ID. Requires RoleViewer or higher on the task's team.
+func (s *taskService) GetTask(ctx context.Context, taskID, userID string) (*models.Task, error) {
+	task, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleViewer)
+	if err != nil {
+		return nil, err
+	}
+	if task.Status == models.TaskStatusFailed && s.attemptRepo != nil {
+		// Best effort: a missing reason must not hide the task itself.
+		if reason, rerr := s.attemptRepo.LatestFailureReason(ctx, task.ID); rerr == nil {
+			task.FailureReason = reason
+		}
+	}
+	return task, nil
 }
 
-// ListTasks lists tasks, optionally filtered by project ID.
-func (s *taskService) ListTasks(ctx context.Context, projectID string) ([]models.Task, error) {
-	return s.taskRepo.List(ctx, projectID)
+// ListTasks lists tasks visible to userID (RoleViewer or higher on the project's team).
+// With a projectID it authorizes that project's team and fails with ErrForbidden otherwise.
+// Without a projectID it returns only tasks of projects whose team the user belongs to.
+func (s *taskService) ListTasks(ctx context.Context, projectID, userID string) ([]models.Task, error) {
+	if projectID != "" {
+		if _, err := s.authorizeUserForProject(ctx, projectID, userID, models.RoleViewer); err != nil {
+			return nil, err
+		}
+		return s.taskRepo.List(ctx, projectID)
+	}
+
+	if userID == "" {
+		return nil, common.ErrForbidden
+	}
+	if s.projectRepo == nil || s.teamRepo == nil {
+		return nil, common.ErrServiceUnavailable
+	}
+
+	teams, err := s.teamRepo.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list teams: %w", err)
+	}
+
+	tasks := []models.Task{}
+	for i := range teams {
+		if !auth.TeamAllowed(ctx, teams[i].ID) {
+			continue
+		}
+		membership, mErr := s.teamRepo.GetMembership(ctx, teams[i].ID, userID)
+		if mErr != nil {
+			if errors.Is(mErr, gorm.ErrRecordNotFound) {
+				continue
+			}
+			return nil, fmt.Errorf("failed to load team membership: %w", mErr)
+		}
+		if !auth.HasRolePermission(membership.Role, models.RoleViewer) {
+			continue
+		}
+		projects, pErr := s.projectRepo.List(ctx, teams[i].ID)
+		if pErr != nil {
+			return nil, fmt.Errorf("failed to list projects: %w", pErr)
+		}
+		for j := range projects {
+			projectTasks, tErr := s.taskRepo.List(ctx, projects[j].ID)
+			if tErr != nil {
+				return nil, fmt.Errorf("failed to list tasks: %w", tErr)
+			}
+			tasks = append(tasks, projectTasks...)
+		}
+	}
+
+	sort.SliceStable(tasks, func(a, b int) bool { return tasks[a].CreatedAt.After(tasks[b].CreatedAt) })
+	return tasks, nil
 }
 
-// ListSubtasks lists subtasks for a given parent task ID.
-func (s *taskService) ListSubtasks(ctx context.Context, parentTaskID string) ([]models.Task, error) {
-	return s.taskRepo.ListByParentID(ctx, parentTaskID)
+// ListSubtasks lists subtasks of a parent task. Authorization is resolved through the parent task's project.
+func (s *taskService) ListSubtasks(ctx context.Context, parentTaskID, userID string) ([]models.Task, error) {
+	parent, err := s.authorizeUserForTask(ctx, parentTaskID, userID, models.RoleViewer)
+	if err != nil {
+		return nil, err
+	}
+
+	children, err := s.taskRepo.ListByParentID(ctx, parent.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Never return children that live in another project than the authorized parent.
+	visible := make([]models.Task, 0, len(children))
+	for i := range children {
+		if children[i].ProjectID == parent.ProjectID {
+			visible = append(visible, children[i])
+		}
+	}
+	return visible, nil
 }
 
-// CreateTask validates input via models.Validate, creates a new task in DB, enqueues to Asynq queue if queued, and broadcasts status via WebSocket.
-func (s *taskService) CreateTask(ctx context.Context, req *dto.CreateTaskRequest) (*models.Task, error) {
+// CreateTask validates input via models.Validate, authorizes RoleMember on the project's team, creates a new
+// task in DB, enqueues to Asynq queue if queued, and broadcasts status via WebSocket.
+// Authorization happens before any write, enqueue or broadcast.
+func (s *taskService) CreateTask(ctx context.Context, req *dto.CreateTaskRequest, userID string) (*models.Task, error) {
+	if userID == "" {
+		return nil, common.ErrForbidden
+	}
 	if req == nil {
 		return nil, errors.New("request cannot be nil")
 	}
@@ -148,6 +240,26 @@ func (s *taskService) CreateTask(ctx context.Context, req *dto.CreateTaskRequest
 
 	if err := models.Validate.Struct(req); err != nil {
 		return nil, fmt.Errorf("invalid create task request: %w", err)
+	}
+
+	if _, err := s.authorizeUserForProject(ctx, req.ProjectID, userID, models.RoleMember); err != nil {
+		return nil, err
+	}
+
+	if req.ParentTaskID != nil && *req.ParentTaskID != "" {
+		parent, err := s.taskRepo.GetByID(ctx, *req.ParentTaskID)
+		if err != nil || parent.ProjectID != req.ProjectID {
+			return nil, common.NewAppError(400, "parent task does not belong to the project", nil)
+		}
+	}
+	if req.IntegrationID != nil && *req.IntegrationID != "" {
+		if s.integRepo == nil {
+			return nil, common.ErrServiceUnavailable
+		}
+		integ, err := s.integRepo.GetByID(ctx, *req.IntegrationID)
+		if err != nil || integ.ProjectID != req.ProjectID {
+			return nil, common.NewAppError(400, "integration does not belong to the project", nil)
+		}
 	}
 
 	taskID := common.NewID()
@@ -234,14 +346,8 @@ func (s *taskService) CancelTask(ctx context.Context, taskID, userID string) err
 		return err
 	}
 
-	// 2. Interrupt OpenCode session tree outside completionMu without holding mutex during HTTP calls
-	if s.openCodeClient != nil && task.SessionID != nil && *task.SessionID != "" {
-		interruptCtx, intCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if intErr := s.openCodeClient.InterruptSessionTree(interruptCtx, *task.SessionID); intErr != nil {
-			log.Printf("warning: error interrupting OpenCode session tree for task %s: %v", taskID, intErr)
-		}
-		intCancel()
-	}
+	// 2. The OpenCode session-tree interrupt is disabled pending Phase 1B/Gates 0C/0D/0G; see
+	// interruptSessionTreeDisabledDraft. Cancellation still stops work via steps 1 and 3.
 
 	// 3. Cancel Asynq queue job if queued (outside completionMu)
 	if s.queueClient != nil && task.AsynqTaskID != nil && *task.AsynqTaskID != "" {
@@ -252,8 +358,20 @@ func (s *taskService) CancelTask(ctx context.Context, taskID, userID string) err
 	return nil
 }
 
+// interruptSessionTreeDisabledDraft is the original CancelTask step 2, intentionally unreferenced.
+func (s *taskService) interruptSessionTreeDisabledDraft(taskID string, task *models.Task) {
+	// 2. Interrupt OpenCode session tree outside completionMu without holding mutex during HTTP calls
+	if s.openCodeClient != nil && task.SessionID != nil && *task.SessionID != "" {
+		interruptCtx, intCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if intErr := s.openCodeClient.InterruptSessionTree(interruptCtx, *task.SessionID); intErr != nil {
+			log.Printf("warning: error interrupting OpenCode session tree for task %s: %v", taskID, intErr)
+		}
+		intCancel()
+	}
+}
+
 // ExecuteTask orchestrates the task execution lifecycle: status transition, attempt tracking, runner execution, and status completion.
-func (s *taskService) ExecuteTask(ctx context.Context, taskID string, runner TaskRunner) error {
+func (s *taskService) ExecuteTask(ctx context.Context, taskID string, taskRunner TaskRunner) error {
 	task, err := s.taskRepo.GetByID(ctx, taskID)
 	if err != nil {
 		return fmt.Errorf("failed to find task %q: %w", taskID, err)
@@ -323,8 +441,11 @@ func (s *taskService) ExecuteTask(ctx context.Context, taskID string, runner Tas
 	}()
 
 	var runErr error
-	if runner != nil {
-		runErr = runner.RunTask(runCtx, task, attempt)
+	if isNilTaskRunner(taskRunner) {
+		// Fail closed: a missing runner must never record a succeeded attempt.
+		runErr = runner.ErrRuntimeExecutionUnavailable
+	} else {
+		runErr = taskRunner.RunTask(runCtx, task, attempt)
 	}
 
 	finishedAt := time.Now().UTC()
@@ -368,8 +489,33 @@ func (s *taskService) ExecuteTask(ctx context.Context, taskID string, runner Tas
 	return runErr
 }
 
+// isNilTaskRunner reports whether r is nil, including a typed nil pointer wrapped in the interface.
+func isNilTaskRunner(r TaskRunner) bool {
+	if r == nil {
+		return true
+	}
+	v := reflect.ValueOf(r)
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface:
+		return v.IsNil()
+	}
+	return false
+}
+
 // CreatePullRequestForTask manually pushes the task's worktree branch to remote origin and opens a Pull Request.
-func (s *taskService) CreatePullRequestForTask(ctx context.Context, taskID string) (*models.Task, error) {
+//
+// Disabled pending Phase 1B/Gates 0C/0D/0G: after the read-only authorization check (RoleMember; empty userID is
+// forbidden), it refuses before any git/push, token decrypt, provider, or status access.
+func (s *taskService) CreatePullRequestForTask(ctx context.Context, taskID, userID string) (*models.Task, error) {
+	if _, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleMember); err != nil {
+		return nil, err
+	}
+
+	return nil, runner.ErrRuntimeExecutionUnavailable
+}
+
+// createPullRequestForTaskDisabledDraft is the original implementation, intentionally unreferenced.
+func (s *taskService) createPullRequestForTaskDisabledDraft(ctx context.Context, taskID string) (*models.Task, error) {
 	if s.integRepo == nil || s.credRepo == nil || s.cipher == nil || s.ghProvider == nil {
 		return nil, errors.New("github integration dependencies not configured")
 	}
@@ -489,8 +635,43 @@ func (s *taskService) CreatePullRequestForTask(ctx context.Context, taskID strin
 	return task, nil
 }
 
-// authorizeUserForTask verifies that task exists, resolves its project and team,
-// and confirms the requesting user has at least the requiredRole on that team.
+// authorizeUserForProject confirms userID has at least requiredRole on the team owning projectID.
+// It fails closed: empty userID, unknown project, a team outside ctx's PAT team scope and
+// non-membership all yield ErrForbidden (no project existence oracle), and missing repository
+// wiring yields ErrServiceUnavailable.
+func (s *taskService) authorizeUserForProject(ctx context.Context, projectID, userID string, requiredRole models.TeamRole) (*models.Project, error) {
+	if userID == "" || projectID == "" {
+		return nil, common.ErrForbidden
+	}
+	if s.projectRepo == nil || s.teamRepo == nil {
+		return nil, common.ErrServiceUnavailable
+	}
+
+	project, err := s.projectRepo.GetByID(ctx, projectID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, common.ErrNotFound) {
+			return nil, common.ErrForbidden
+		}
+		return nil, fmt.Errorf("failed to load project: %w", err)
+	}
+	if !auth.TeamAllowed(ctx, project.TeamID) {
+		return nil, common.ErrForbidden
+	}
+
+	membership, err := s.teamRepo.GetMembership(ctx, project.TeamID, userID)
+	if err != nil {
+		return nil, common.ErrForbidden
+	}
+	if !auth.HasRolePermission(membership.Role, requiredRole) {
+		return nil, common.ErrForbidden
+	}
+
+	return project, nil
+}
+
+// authorizeUserForTask verifies that task exists, resolves its project and team, and confirms the
+// team is within ctx's PAT team scope and the requesting user has at least requiredRole on it.
+// Missing repository wiring yields ErrServiceUnavailable before the task is read (fail closed).
 func (s *taskService) authorizeUserForTask(ctx context.Context, taskID, userID string, requiredRole models.TeamRole) (*models.Task, error) {
 	if taskID == "" {
 		return nil, errors.New("task ID is required")
@@ -498,26 +679,30 @@ func (s *taskService) authorizeUserForTask(ctx context.Context, taskID, userID s
 	if userID == "" {
 		return nil, common.ErrForbidden
 	}
+	if s.projectRepo == nil || s.teamRepo == nil {
+		return nil, common.ErrServiceUnavailable
+	}
 
 	task, err := s.taskRepo.GetByID(ctx, taskID)
 	if err != nil {
 		return nil, err
 	}
 
-	if s.projectRepo != nil && s.teamRepo != nil {
-		project, err := s.projectRepo.GetByID(ctx, task.ProjectID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load project for task: %w", err)
-		}
+	project, err := s.projectRepo.GetByID(ctx, task.ProjectID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load project for task: %w", err)
+	}
+	if !auth.TeamAllowed(ctx, project.TeamID) {
+		return nil, common.ErrForbidden
+	}
 
-		membership, err := s.teamRepo.GetMembership(ctx, project.TeamID, userID)
-		if err != nil {
-			return nil, common.ErrForbidden
-		}
+	membership, err := s.teamRepo.GetMembership(ctx, project.TeamID, userID)
+	if err != nil {
+		return nil, common.ErrForbidden
+	}
 
-		if !auth.HasRolePermission(membership.Role, requiredRole) {
-			return nil, common.ErrForbidden
-		}
+	if !auth.HasRolePermission(membership.Role, requiredRole) {
+		return nil, common.ErrForbidden
 	}
 
 	return task, nil
@@ -525,7 +710,23 @@ func (s *taskService) authorizeUserForTask(ctx context.Context, taskID, userID s
 
 // GetTaskSession retrieves metadata and message history for an ongoing or completed task session.
 // AC-SEC-02: Requires RoleViewer or higher.
+//
+// Disabled pending Phase 1B/Gates 0C/0D/0G: after the read-only authorization check, it refuses
+// before any OpenCode call.
 func (s *taskService) GetTaskSession(ctx context.Context, taskID, userID string) (*dto.TaskSessionResponseDTO, error) {
+	if _, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleViewer); err != nil {
+		return nil, err
+	}
+
+	if s.simulated {
+		return &dto.TaskSessionResponseDTO{TaskID: taskID, Simulated: true, Messages: []dto.OpenCodeMessageDTO{}}, nil
+	}
+
+	return nil, runner.ErrRuntimeExecutionUnavailable
+}
+
+// getTaskSessionDisabledDraft is the original implementation, intentionally unreferenced.
+func (s *taskService) getTaskSessionDisabledDraft(ctx context.Context, taskID, userID string) (*dto.TaskSessionResponseDTO, error) {
 	task, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleViewer)
 	if err != nil {
 		return nil, err
@@ -583,11 +784,23 @@ func (s *taskService) broadcastTaskLog(ctx context.Context, taskID, chunk string
 
 // PromptTaskSession sends a targeted prompt into the task's existing OpenCode session.
 // AC-SEC-02: Requires RoleMember or higher.
+//
+// Disabled pending Phase 1B/Gates 0C/0D/0G: after input validation and the read-only authorization
+// check, it refuses before any OpenCode call, status update, broadcast, or goroutine start.
 func (s *taskService) PromptTaskSession(ctx context.Context, taskID, userID string, req *dto.TaskSessionPromptRequest) error {
 	if req == nil || strings.TrimSpace(req.Prompt) == "" {
 		return errors.New("prompt cannot be empty")
 	}
 
+	if _, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleMember); err != nil {
+		return err
+	}
+
+	return runner.ErrRuntimeExecutionUnavailable
+}
+
+// promptTaskSessionDisabledDraft is the original implementation, intentionally unreferenced.
+func (s *taskService) promptTaskSessionDisabledDraft(ctx context.Context, taskID, userID string, req *dto.TaskSessionPromptRequest) error {
 	task, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleMember)
 	if err != nil {
 		return err
@@ -1007,6 +1220,15 @@ func (s *taskService) maybePushBranchForSteering(ctx context.Context, task *mode
 // CompactTaskSession triggers context compaction on the task's OpenCode session.
 // AC-SEC-02: Requires RoleMember or higher.
 func (s *taskService) CompactTaskSession(ctx context.Context, taskID, userID string) error {
+	if _, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleMember); err != nil {
+		return err
+	}
+
+	return runner.ErrRuntimeExecutionUnavailable
+}
+
+// compactTaskSessionDisabledDraft is the original implementation, intentionally unreferenced.
+func (s *taskService) compactTaskSessionDisabledDraft(ctx context.Context, taskID, userID string) error {
 	task, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleMember)
 	if err != nil {
 		return err
@@ -1024,8 +1246,17 @@ func (s *taskService) CompactTaskSession(ctx context.Context, taskID, userID str
 }
 
 // GetTaskDiff retrieves the unified git diff between origin/main and the task branch or current worktree.
-// AC-SEC-02: Requires RoleViewer or higher when userID is provided.
+// AC-SEC-02: Requires RoleViewer or higher; an empty userID is forbidden.
 func (s *taskService) GetTaskDiff(ctx context.Context, taskID, userID string) (string, error) {
+	if _, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleViewer); err != nil {
+		return "", err
+	}
+
+	return "", runner.ErrRuntimeExecutionUnavailable
+}
+
+// getTaskDiffDisabledDraft is the original implementation, intentionally unreferenced.
+func (s *taskService) getTaskDiffDisabledDraft(ctx context.Context, taskID, userID string) (string, error) {
 	var task *models.Task
 	var err error
 	if userID != "" {
@@ -1070,7 +1301,19 @@ func (s *taskService) GetTaskDiff(ctx context.Context, taskID, userID string) (s
 }
 
 // SyncTaskPRStatus checks the external PR status on GitHub and marks the task as done if merged.
+//
+// Disabled pending Phase 1B/Gates 0C/0D/0G: after authorization (RoleMember; an empty userID is forbidden),
+// it refuses before any credential lookup, token decrypt, GitHub call, or status update.
 func (s *taskService) SyncTaskPRStatus(ctx context.Context, taskID, userID string) (*models.Task, error) {
+	if _, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleMember); err != nil {
+		return nil, err
+	}
+
+	return nil, runner.ErrRuntimeExecutionUnavailable
+}
+
+// syncTaskPRStatusDisabledDraft is the original implementation, intentionally unreferenced.
+func (s *taskService) syncTaskPRStatusDisabledDraft(ctx context.Context, taskID, userID string) (*models.Task, error) {
 	var task *models.Task
 	var err error
 	if userID != "" {
@@ -1171,7 +1414,15 @@ func (s *taskService) SyncTaskPRStatus(ctx context.Context, taskID, userID strin
 }
 
 // ReconcileActivePRs inspects tasks in review status with a PR URL and marks them done if merged.
+//
+// Disabled pending Phase 1B/Gates 0C/0D/0G: a silent no-op, so the periodic reconciler neither
+// lists tasks nor contacts GitHub and does not log a quarantine error every tick.
 func (s *taskService) ReconcileActivePRs(ctx context.Context) error {
+	return nil
+}
+
+// reconcileActivePRsDisabledDraft is the original implementation, intentionally unreferenced.
+func (s *taskService) reconcileActivePRsDisabledDraft(ctx context.Context) error {
 	tasks, err := s.taskRepo.List(ctx, "")
 	if err != nil {
 		return err

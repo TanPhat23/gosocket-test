@@ -12,6 +12,8 @@ type AttemptRepository interface {
 	CountByTaskID(ctx context.Context, taskID string) (int64, error)
 	Create(ctx context.Context, attempt *models.TaskAttempt) error
 	Update(ctx context.Context, attempt *models.TaskAttempt) error
+	// LatestFailureReason returns the failure reason of the task's newest attempt, or nil if there is none.
+	LatestFailureReason(ctx context.Context, taskID string) (*string, error)
 }
 
 type attemptRepo struct {
@@ -33,4 +35,12 @@ func (r *attemptRepo) Create(ctx context.Context, attempt *models.TaskAttempt) e
 
 func (r *attemptRepo) Update(ctx context.Context, attempt *models.TaskAttempt) error {
 	return r.db.WithContext(ctx).Save(attempt).Error
+}
+
+func (r *attemptRepo) LatestFailureReason(ctx context.Context, taskID string) (*string, error) {
+	attempts, err := gorm.G[models.TaskAttempt](r.db).Where("task_id = ?", taskID).Order("attempt_number DESC").Limit(1).Find(ctx)
+	if err != nil || len(attempts) == 0 {
+		return nil, err
+	}
+	return attempts[0].FailureReason, nil
 }

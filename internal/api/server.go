@@ -13,18 +13,19 @@ import (
 
 // Server encapsulates the Fiber application and dependencies.
 type Server struct {
-	App               *fiber.App
-	Config            *config.Config
-	SessionManager    *auth.SessionManager
+	App                *fiber.App
+	Config             *config.Config
+	Security           config.SecurityConfig
+	SessionManager     *auth.SessionManager
 	AuthService        service.AuthService
 	CredentialService  service.CredentialService
 	WebhookService     service.WebhookService
 	TaskService        service.TaskService
 	IntegrationService service.IntegrationService
 	TeamRepo           repository.TeamRepository
-	ProjectRepo       repository.ProjectRepository
-	WSHandler         *WSHandler
-	OpenCodeClient    runner.OpenCodeClient
+	ProjectRepo        repository.ProjectRepository
+	WSHandler          *WSHandler
+	OpenCodeClient     runner.OpenCodeClient
 }
 
 // ServerOptions allows optional configuration or dependencies when constructing Server.
@@ -67,7 +68,8 @@ func WithProjectRepository(pr repository.ProjectRepository) Option {
 	}
 }
 
-// WithWSHandler sets the WSHandler.
+// WithWSHandler sets the WSHandler. NewServer supplies its authentication services (for re-validating
+// open sockets) and the configured origin allowlist.
 func WithWSHandler(wsh *WSHandler) Option {
 	return func(s *Server) {
 		s.WSHandler = wsh
@@ -82,6 +84,11 @@ func WithOpenCodeClient(client runner.OpenCodeClient) Option {
 }
 
 // NewServer creates and configures a Fiber v3 app.
+//
+// It loads config.SecurityConfig from the environment and panics if it is invalid (a malformed
+// ATM_ALLOWED_ORIGINS entry, or ATM_ENABLE_LOCAL_LOGIN=true in production). NewServer runs once at
+// startup and cannot return an error without changing its callers; refusing to start is the
+// fail-closed choice, whereas silently falling back would hide the misconfiguration.
 func NewServer(
 	cfg *config.Config,
 	sessionManager *auth.SessionManager,
@@ -90,6 +97,15 @@ func NewServer(
 	webhookService service.WebhookService,
 	opts ...Option,
 ) *Server {
+	appEnv := ""
+	if cfg != nil {
+		appEnv = cfg.AppEnv
+	}
+	security, err := config.LoadSecurityConfig(appEnv)
+	if err != nil {
+		panic("api: invalid security configuration: " + err.Error())
+	}
+
 	app := fiber.New(fiber.Config{
 		StructValidator: NewStructValidator(),
 		ErrorHandler:    CentralErrorHandler,
@@ -98,6 +114,7 @@ func NewServer(
 	server := &Server{
 		App:               app,
 		Config:            cfg,
+		Security:          security,
 		SessionManager:    sessionManager,
 		AuthService:       authService,
 		CredentialService: credService,
@@ -106,6 +123,12 @@ func NewServer(
 
 	for _, opt := range opts {
 		opt(server)
+	}
+
+	if server.WSHandler != nil {
+		server.WSHandler.authService = authService
+		server.WSHandler.sessions = sessionManager
+		server.WSHandler.allowedOrigins = security.AllowedOrigins
 	}
 
 	if server.OpenCodeClient == nil && cfg != nil {
@@ -118,17 +141,21 @@ func NewServer(
 }
 
 func (s *Server) setupRoutes() {
-	authHandlers := NewAuthHandlers(s.AuthService, s.SessionManager, s.Config != nil && s.Config.AppEnv == "production")
+	authHandlers := NewAuthHandlers(s.AuthService, s.SessionManager, s.Config != nil && s.Config.AppEnv == "production", s.Security.EnableLocalLogin)
 	credHandlers := NewCredentialHandlers(s.CredentialService)
 	webhookHandlers := NewWebhookHandlers(s.WebhookService)
+
+	// Cookie-authenticated mutations must come from a trusted origin; login and logout always must.
+	s.App.Use(CSRFProtection(s.Security.AllowedOrigins))
+	trustedOrigin := RequireTrustedOrigin(s.Security.AllowedOrigins)
 
 	v1 := s.App.Group("/api/v1")
 	authGroup := v1.Group("/auth")
 
 	authGroup.Get("/login", authHandlers.Login)
-	authGroup.Post("/login", authHandlers.LoginWithCredentials)
+	authGroup.Post("/login", trustedOrigin, authHandlers.LoginWithCredentials)
 	authGroup.Get("/callback", authHandlers.Callback)
-	authGroup.Post("/logout", authHandlers.Logout)
+	authGroup.Post("/logout", trustedOrigin, authHandlers.Logout)
 	authGroup.Get("/me", authHandlers.Me)
 
 	// Webhook endpoint
@@ -136,20 +163,20 @@ func (s *Server) setupRoutes() {
 
 	// Model discovery endpoint
 	modelHandlers := NewModelHandlers(s.Config)
-	v1.Get("/models", modelHandlers.ListModels)
+	v1.Get("/models", RequireAuth(s.AuthService, s.SessionManager), modelHandlers.ListModels)
 
 	// Task routes
 	if s.TaskService != nil {
 		taskHandlers := NewTaskHandlers(s.TaskService)
-		v1.Get("/tasks", taskHandlers.List)
-		v1.Get("/tasks/:task_id", taskHandlers.Get)
-		v1.Post("/tasks", taskHandlers.Create)
+		v1.Get("/tasks", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.List)
+		v1.Get("/tasks/:task_id", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.Get)
+		v1.Post("/tasks", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.Create)
 		v1.Post("/tasks/:task_id/cancel", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.Cancel)
 		v1.Post("/tasks/:id/cancel", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.Cancel)
-		v1.Post("/tasks/:id/pr", taskHandlers.CreatePR)
-		v1.Post("/tasks/:id/sync-pr", OptionalAuth(s.AuthService, s.SessionManager), taskHandlers.SyncPR)
-		v1.Post("/tasks/:id/pr/sync", OptionalAuth(s.AuthService, s.SessionManager), taskHandlers.SyncPR)
-		v1.Get("/tasks/:id/diff", OptionalAuth(s.AuthService, s.SessionManager), taskHandlers.GetDiff)
+		v1.Post("/tasks/:id/pr", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.CreatePR)
+		v1.Post("/tasks/:id/sync-pr", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.SyncPR)
+		v1.Post("/tasks/:id/pr/sync", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.SyncPR)
+		v1.Get("/tasks/:id/diff", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.GetDiff)
 
 		// OpenCode session endpoints (AC-SEC-01: Protected by RequireAuth)
 		sessionGroup := v1.Group("/tasks/:id/session", RequireAuth(s.AuthService, s.SessionManager))
@@ -160,32 +187,40 @@ func (s *Server) setupRoutes() {
 
 	// Team & Project routes
 	if s.TeamRepo != nil || s.ProjectRepo != nil {
-		teamHandlers := NewTeamHandlers(s.TeamRepo, s.ProjectRepo)
+		// Listing is filtered to the caller's teams; project creation requires RoleAdmin on the target
+		// team (checked in the handler because team_id is in the body); deletion requires RoleAdmin on
+		// the project's team.
+		teamHandlers := NewTeamHandlers(s.TeamRepo, s.ProjectRepo, s.AuthService)
 		if s.TeamRepo != nil {
-			v1.Get("/teams", teamHandlers.ListTeams)
+			v1.Get("/teams", RequireAuth(s.AuthService, s.SessionManager), teamHandlers.ListTeams)
 		}
 		if s.ProjectRepo != nil {
-			v1.Get("/projects", teamHandlers.ListProjects)
-			v1.Post("/projects", teamHandlers.CreateProject)
-			v1.Delete("/projects/:id", teamHandlers.DeleteProject)
+			v1.Get("/projects", RequireAuth(s.AuthService, s.SessionManager), teamHandlers.ListProjects)
+			v1.Post("/projects", RequireAuth(s.AuthService, s.SessionManager), teamHandlers.CreateProject)
+			v1.Delete("/projects/:id", RequireAuth(s.AuthService, s.SessionManager),
+				RequireProjectRole(s.AuthService, s.ProjectRepo, "id", models.RoleAdmin), teamHandlers.DeleteProject)
 		}
 	}
 
-	// WebSocket routes: live events & terminal logs
+	// WebSocket routes: live events & terminal logs. Browsers send the atm_session cookie on the
+	// handshake; the handlers additionally enforce same-origin and per-task authorization.
 	if s.WSHandler != nil {
-		v1.Get("/ws/events", s.WSHandler.HandleEventsWS)
-		v1.Get("/ws/terminal/:task_id", s.WSHandler.HandleTerminalWS)
+		v1.Get("/ws/events", RequireAuth(s.AuthService, s.SessionManager), s.WSHandler.HandleEventsWS)
+		v1.Get("/ws/terminal/:task_id", RequireAuth(s.AuthService, s.SessionManager), s.WSHandler.HandleTerminalWS)
 	}
 
-	// Project integrations routes
+	// Project integrations routes: reads require RoleViewer, writes RoleAdmin on the project's team.
+	// The service rejects integration IDs that do not belong to :project_id.
 	if s.IntegrationService != nil {
 		integHandlers := NewIntegrationHandlers(s.IntegrationService)
-		projIntegGroup := v1.Group("/projects/:project_id/integrations")
-		projIntegGroup.Get("", integHandlers.List)
-		projIntegGroup.Post("", integHandlers.Create)
-		projIntegGroup.Get("/:id", integHandlers.Get)
-		projIntegGroup.Patch("/:id", integHandlers.Update)
-		projIntegGroup.Delete("/:id", integHandlers.Delete)
+		integRead := RequireProjectRole(s.AuthService, s.ProjectRepo, "project_id", models.RoleViewer)
+		integWrite := RequireProjectRole(s.AuthService, s.ProjectRepo, "project_id", models.RoleAdmin)
+		projIntegGroup := v1.Group("/projects/:project_id/integrations", RequireAuth(s.AuthService, s.SessionManager))
+		projIntegGroup.Get("", integRead, integHandlers.List)
+		projIntegGroup.Post("", integWrite, integHandlers.Create)
+		projIntegGroup.Get("/:id", integRead, integHandlers.Get)
+		projIntegGroup.Patch("/:id", integWrite, integHandlers.Update)
+		projIntegGroup.Delete("/:id", integWrite, integHandlers.Delete)
 	}
 
 	// Team credential routes protected by RequireAuth and RequireTeamRole(owner)

@@ -13,17 +13,20 @@ import (
 
 // AuthHandlers holds dependencies for authentication endpoints.
 type AuthHandlers struct {
-	authService    service.AuthService
-	sessionManager *auth.SessionManager
-	secureCookies  bool
+	authService       service.AuthService
+	sessionManager    *auth.SessionManager
+	secureCookies     bool
+	localLoginEnabled bool
 }
 
-// NewAuthHandlers creates a new AuthHandlers instance.
-func NewAuthHandlers(authService service.AuthService, sm *auth.SessionManager, secureCookies bool) *AuthHandlers {
+// NewAuthHandlers creates a new AuthHandlers instance. localLoginEnabled gates the built-in
+// development credential login (config.SecurityConfig.EnableLocalLogin).
+func NewAuthHandlers(authService service.AuthService, sm *auth.SessionManager, secureCookies, localLoginEnabled bool) *AuthHandlers {
 	return &AuthHandlers{
-		authService:    authService,
-		sessionManager: sm,
-		secureCookies:  secureCookies,
+		authService:       authService,
+		sessionManager:    sm,
+		secureCookies:     secureCookies,
+		localLoginEnabled: localLoginEnabled,
 	}
 }
 
@@ -55,7 +58,15 @@ func (h *AuthHandlers) Login(c fiber.Ctx) error {
 
 // LoginWithCredentials authenticates direct user credentials and creates a session.
 // POST /api/v1/auth/login
+//
+// When local login is disabled (the default, and always in production) the route stays registered
+// and answers exactly like a wrong password (401 ErrInvalidCredentials), so it neither checks the
+// built-in accounts nor advertises whether they exist.
 func (h *AuthHandlers) LoginWithCredentials(c fiber.Ctx) error {
+	if !h.localLoginEnabled {
+		return CentralErrorHandler(c, service.ErrInvalidCredentials)
+	}
+
 	var req dto.LoginRequestDTO
 	if err := c.Bind().Body(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -131,10 +142,20 @@ func (h *AuthHandlers) Callback(c fiber.Ctx) error {
 	})
 }
 
-// Logout clears the atm_session cookie.
+// Logout revokes the caller's sessions and clears the atm_session cookie. Sessions are stateless
+// signed cookies, so revocation is per user ("log out everywhere"): every cookie issued before now
+// stops validating. Personal Access Tokens are unaffected. Without a valid, unrevoked cookie it only
+// clears the cookie, so it is idempotent and a replayed revoked cookie cannot end newer sessions.
 // POST /api/v1/auth/logout
 func (h *AuthHandlers) Logout(c fiber.Ctx) error {
 	h.sessionManager.ClearSessionFiber(c)
+	if claims, err := h.sessionManager.ValidateFiberRequest(c); err == nil {
+		if _, ok := sessionUser(c.Context(), h.authService, claims); ok {
+			if err := h.authService.RevokeSessions(c.Context(), claims.UserID); err != nil {
+				return CentralErrorHandler(c, err)
+			}
+		}
+	}
 	return c.JSON(fiber.Map{
 		"status": "logged_out",
 	})
@@ -150,8 +171,8 @@ func (h *AuthHandlers) Me(c fiber.Ctx) error {
 		})
 	}
 
-	user, err := h.authService.GetUserByID(c.Context(), claims.UserID)
-	if err != nil {
+	user, ok := sessionUser(c.Context(), h.authService, claims)
+	if !ok {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 			"error": "User not found",
 		})

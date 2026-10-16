@@ -12,6 +12,7 @@ import (
 	"agent-task-manager/internal/dto"
 	"agent-task-manager/internal/integrations"
 	"agent-task-manager/internal/integrations/github"
+	"agent-task-manager/internal/integrations/trello"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/queue"
 	"agent-task-manager/internal/repository"
@@ -29,8 +30,8 @@ var (
 // WebhookService encapsulates external webhook verification, idempotency, and task creation.
 type WebhookService interface {
 	HandleGitHubWebhook(ctx context.Context, payload []byte, deliveryID, signature string) (*dto.WebhookResultDTO, error)
-	HandleJiraWebhook(ctx context.Context, payload []byte, eventID string) (*dto.WebhookResultDTO, error)
-	HandleTrelloWebhook(ctx context.Context, payload []byte, isHead bool) (*dto.WebhookResultDTO, error)
+	HandleJiraWebhook(ctx context.Context, payload []byte, eventID, signature string) (*dto.WebhookResultDTO, error)
+	HandleTrelloWebhook(ctx context.Context, payload []byte, isHead bool, signature string) (*dto.WebhookResultDTO, error)
 }
 
 type webhookService struct {
@@ -366,17 +367,8 @@ func (s *webhookService) HandleGitHubWebhook(ctx context.Context, payload []byte
 				}
 				taskIDCreated = task.ID
 
-				// If linked to an issue, close issue on GitHub and post completion comment
-				if task.ExternalID != nil && *task.ExternalID != "" && s.ghProvider != nil && s.cipher != nil {
-					cred, _ := s.credRepo.GetByID(ctx, integration.CredentialID)
-					if cred != nil {
-						token, _ := s.cipher.Decrypt(cred.EncryptedData)
-						if token != "" {
-							_ = s.ghProvider.UpdateIssueStatus(ctx, integration, token, *task.ExternalID, "closed")
-							_ = s.ghProvider.AddComment(ctx, integration, token, *task.ExternalID, fmt.Sprintf("Pull Request %s was merged. Task marked as completed.", pr.HTMLURL))
-						}
-					}
-				}
+				// Closing the linked GitHub issue (PAT decrypt + GitHub writes) is disabled pending
+				// Phase 1B/Gates 0C/0D/0G; see closeLinkedIssueOnMergeDisabledDraft.
 			}
 		}
 	}
@@ -431,6 +423,21 @@ func (s *webhookService) requeueFailedTask(ctx context.Context, task *models.Tas
 	}
 }
 
+// closeLinkedIssueOnMergeDisabledDraft is the original merged-PR issue sync, intentionally unreferenced.
+func (s *webhookService) closeLinkedIssueOnMergeDisabledDraft(ctx context.Context, integration *models.ProjectIntegration, task *models.Task, prHTMLURL string) {
+	// If linked to an issue, close issue on GitHub and post completion comment
+	if task.ExternalID != nil && *task.ExternalID != "" && s.ghProvider != nil && s.cipher != nil {
+		cred, _ := s.credRepo.GetByID(ctx, integration.CredentialID)
+		if cred != nil {
+			token, _ := s.cipher.Decrypt(cred.EncryptedData)
+			if token != "" {
+				_ = s.ghProvider.UpdateIssueStatus(ctx, integration, token, *task.ExternalID, "closed")
+				_ = s.ghProvider.AddComment(ctx, integration, token, *task.ExternalID, fmt.Sprintf("Pull Request %s was merged. Task marked as completed.", prHTMLURL))
+			}
+		}
+	}
+}
+
 func (s *webhookService) findTaskByBranch(ctx context.Context, projectID, branchName string) *models.Task {
 	if branchName == "" {
 		return nil
@@ -474,7 +481,7 @@ func (s *webhookService) findTaskByPRURL(ctx context.Context, projectID, prURL s
 	return nil
 }
 
-func (s *webhookService) HandleJiraWebhook(ctx context.Context, payload []byte, eventID string) (*dto.WebhookResultDTO, error) {
+func (s *webhookService) HandleJiraWebhook(ctx context.Context, payload []byte, eventID, signature string) (*dto.WebhookResultDTO, error) {
 	if eventID == "" {
 		eventID = uuid.NewString()
 	}
@@ -502,6 +509,12 @@ func (s *webhookService) HandleJiraWebhook(ctx context.Context, payload []byte, 
 		}, nil
 	}
 
+	// Authenticate against the integration's shared secret BEFORE any idempotency write. Fail closed
+	// when no secret is configured.
+	if !github.VerifySignature(integrationConfigString(integration, "webhook_secret"), payload, signature) {
+		return nil, ErrInvalidSignature
+	}
+
 	dup, err := s.recordOnce(ctx, models.IntegrationJira, integration.ProjectID, eventID)
 	if err != nil {
 		return nil, err
@@ -520,7 +533,7 @@ func (s *webhookService) HandleJiraWebhook(ctx context.Context, payload []byte, 
 	}, nil
 }
 
-func (s *webhookService) HandleTrelloWebhook(ctx context.Context, payload []byte, isHead bool) (*dto.WebhookResultDTO, error) {
+func (s *webhookService) HandleTrelloWebhook(ctx context.Context, payload []byte, isHead bool, signature string) (*dto.WebhookResultDTO, error) {
 	if isHead {
 		return &dto.WebhookResultDTO{
 			Status: "processed",
@@ -558,6 +571,12 @@ func (s *webhookService) HandleTrelloWebhook(ctx context.Context, payload []byte
 		}, nil
 	}
 
+	if !trello.VerifyWebhookSignature(
+		integrationConfigString(integration, "webhook_secret"), payload,
+		integrationConfigString(integration, "webhook_callback_url"), signature) {
+		return nil, ErrInvalidSignature
+	}
+
 	dup, err := s.recordOnce(ctx, models.IntegrationTrello, integration.ProjectID, eventID)
 	if err != nil {
 		return nil, err
@@ -574,4 +593,13 @@ func (s *webhookService) HandleTrelloWebhook(ctx context.Context, payload []byte
 		Status:  "processed",
 		EventID: eventID,
 	}, nil
+}
+
+// integrationConfigString returns a string value from an integration's config, or "" when absent.
+func integrationConfigString(integ *models.ProjectIntegration, key string) string {
+	if integ == nil || integ.Config == nil {
+		return ""
+	}
+	v, _ := integ.Config[key].(string)
+	return v
 }

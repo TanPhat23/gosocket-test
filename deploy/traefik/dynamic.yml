@@ -2,7 +2,7 @@ http:
   middlewares:
     security-headers:
       headers:
-        sslRedirect: false
+        sslRedirect: true
         hostsProxyHeaders:
           - "X-Forwarded-Host"
         customResponseHeaders:
@@ -12,32 +12,44 @@ http:
           Referrer-Policy: "strict-origin-when-cross-origin"
           Permissions-Policy: "camera=(), microphone=(), geolocation=()"
 
-    traefik-auth:
-      basicAuth:
-        users:
-          - "admin:$2y$05$sTjyUiiS7IKeqC5t0.AIgeTp3Z1BVQCUWADVZ8Dw0N9ZmJ5Nw203y"
-
-    traefik-redirect:
-      redirectRegex:
-        regex: "^.*/traefik/?$"
-        replacement: "/dashboard/"
-        permanent: true
-
   routers:
-    traefik-dashboard:
-      rule: "Host(`localhost`) && (PathPrefix(`/dashboard`) || (PathPrefix(`/api`) && !PathPrefix(`/api/v1`)))"
-      service: api@internal
+    web-ui:
+      rule: 'Host(`{{ env "DOMAIN" }}`)'
       entryPoints:
-        - web
         - websecure
+      priority: 10
       middlewares:
-        - traefik-auth
+        - security-headers
+      service: web-ui-service
 
-    traefik-redirect-router:
-      rule: "Host(`localhost`) && PathPrefix(`/traefik`)"
-      service: api@internal
+    control-plane:
+      rule: 'Host(`{{ env "DOMAIN" }}`) && (PathPrefix(`/api/v1`) || PathPrefix(`/ws`))'
       entryPoints:
-        - web
         - websecure
+      priority: 100
       middlewares:
-        - traefik-redirect
+        - security-headers
+      service: control-plane-service
+
+    dex:
+      rule: 'Host(`{{ env "DOMAIN" }}`) && PathPrefix(`/dex`)'
+      entryPoints:
+        - websecure
+      priority: 100
+      service: dex-service
+
+  services:
+    web-ui-service:
+      loadBalancer:
+        servers:
+          - url: "http://web-ui:3000"
+
+    control-plane-service:
+      loadBalancer:
+        servers:
+          - url: "http://control-plane:8080"
+
+    dex-service:
+      loadBalancer:
+        servers:
+          - url: "http://dex:5556"

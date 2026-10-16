@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 var (
 	ErrInvalidRepoSlug      = errors.New("invalid repository slug (expected owner/repo)")
 	ErrInvalidBaseBranch    = errors.New("invalid base branch")
+	ErrInvalidWebhookCallbackURL = errors.New("invalid webhook callback url (expected absolute http(s) url without credentials)")
 	ErrProjectNotFound      = errors.New("project not found")
 	ErrUnauthorizedTenant   = errors.New("credential does not belong to project team")
 )
@@ -38,6 +40,19 @@ func validateBaseBranch(branch string) error {
 	}
 	if strings.HasPrefix(branch, "-") || strings.Contains(branch, "..") || strings.ContainsAny(branch, " \t\n\r~^:?*[\x00-\x1f") {
 		return ErrInvalidBaseBranch
+	}
+	return nil
+}
+
+// validateWebhookCallbackURL accepts an empty value (unset) or an absolute http(s) URL with a host
+// and no embedded credentials.
+func validateWebhookCallbackURL(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil {
+		return ErrInvalidWebhookCallbackURL
 	}
 	return nil
 }
@@ -77,6 +92,9 @@ func (s *integrationService) CreateIntegration(ctx context.Context, projectID st
 	if err := validateBaseBranch(req.BaseBranch); err != nil {
 		return nil, err
 	}
+	if err := validateWebhookCallbackURL(req.WebhookCallbackURL); err != nil {
+		return nil, err
+	}
 
 	proj, err := s.loadProject(ctx, projectID)
 	if err != nil {
@@ -102,6 +120,9 @@ func (s *integrationService) CreateIntegration(ctx context.Context, projectID st
 	}
 	if req.WebhookSecret != "" {
 		cfg["webhook_secret"] = req.WebhookSecret
+	}
+	if req.WebhookCallbackURL != "" {
+		cfg["webhook_callback_url"] = req.WebhookCallbackURL
 	}
 	if req.FilterLabel != "" {
 		cfg["filter_label"] = req.FilterLabel
@@ -164,6 +185,12 @@ func (s *integrationService) UpdateIntegration(ctx context.Context, projectID, i
 		return nil, err
 	}
 
+	if req.WebhookCallbackURL != nil {
+		if err := validateWebhookCallbackURL(*req.WebhookCallbackURL); err != nil {
+			return nil, err
+		}
+	}
+
 	if req.CredentialID != nil {
 		if err := s.checkCredentialTenant(ctx, *req.CredentialID, proj.TeamID); err != nil {
 			return nil, err
@@ -191,6 +218,9 @@ func (s *integrationService) UpdateIntegration(ctx context.Context, projectID, i
 	}
 	if req.WebhookSecret != nil {
 		integ.Config["webhook_secret"] = *req.WebhookSecret
+	}
+	if req.WebhookCallbackURL != nil {
+		integ.Config["webhook_callback_url"] = *req.WebhookCallbackURL
 	}
 	if req.FilterLabel != nil {
 		integ.Config["filter_label"] = *req.FilterLabel

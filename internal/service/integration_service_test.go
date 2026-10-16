@@ -179,3 +179,45 @@ func TestIntegrationService_UpdateAndDelete(t *testing.T) {
 		t.Errorf("expected ErrIntegrationNotFound, got %v", err)
 	}
 }
+
+func TestIntegrationService_WebhookCallbackURL(t *testing.T) {
+	db := setupTestDB(t)
+	integRepo := repository.NewIntegrationRepository(db)
+	projRepo := repository.NewProjectRepository(db)
+	credRepo := repository.NewCredentialRepository(db)
+	svc := service.NewIntegrationService(integRepo, projRepo, credRepo)
+	ctx := context.Background()
+
+	_ = projRepo.Create(ctx, &models.Project{ID: "proj-cb", Name: "Demo", TeamID: "team-1", RepoPath: "/tmp"})
+	_ = credRepo.Create(ctx, &models.Credential{ID: "cred-cb", TeamID: "team-1", Provider: models.ProviderGitHub, Label: "PAT", EncryptedData: "encrypted"})
+
+	const cb = "https://atm.example.com/api/v1/webhooks/trello"
+	created, err := svc.CreateIntegration(ctx, "proj-cb", dto.CreateIntegrationRequest{
+		CredentialID: "cred-cb", Provider: "github", Repo: "octocat/hello-world",
+		WebhookCallbackURL: cb,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if created.Config["webhook_callback_url"] != cb {
+		t.Errorf("create did not store callback url: %v", created.Config)
+	}
+
+	newCB := "https://atm.example.com/other"
+	updated, err := svc.UpdateIntegration(ctx, "proj-cb", created.ID, dto.UpdateIntegrationRequest{WebhookCallbackURL: &newCB})
+	if err != nil || updated.Config["webhook_callback_url"] != newCB {
+		t.Errorf("update did not store callback url: %v err=%v", updated, err)
+	}
+
+	for _, bad := range []string{"ftp://x.example/a", "not a url", "javascript:alert(1)", "https://", "/relative", "https://u:p@host/x"} {
+		if _, err := svc.CreateIntegration(ctx, "proj-cb", dto.CreateIntegrationRequest{
+			CredentialID: "cred-cb", Provider: "github", Repo: "octocat/hello-world", WebhookCallbackURL: bad,
+		}); err != service.ErrInvalidWebhookCallbackURL {
+			t.Errorf("create %q: want ErrInvalidWebhookCallbackURL, got %v", bad, err)
+		}
+		b := bad
+		if _, err := svc.UpdateIntegration(ctx, "proj-cb", created.ID, dto.UpdateIntegrationRequest{WebhookCallbackURL: &b}); err != service.ErrInvalidWebhookCallbackURL {
+			t.Errorf("update %q: want ErrInvalidWebhookCallbackURL, got %v", bad, err)
+		}
+	}
+}

@@ -99,3 +99,58 @@ func TestClearSession(t *testing.T) {
 		t.Errorf("expected cookie to be cleared: %+v", cookie)
 	}
 }
+
+func TestSessionClaims_RevokedBy(t *testing.T) {
+	cutoff := time.Now()
+	for name, tc := range map[string]struct {
+		issuedAt   time.Time
+		validAfter *time.Time
+		want       bool
+	}{
+		"no revocation":            {issuedAt: cutoff, validAfter: nil, want: false},
+		"legacy without revocation": {issuedAt: time.Time{}, validAfter: nil, want: false},
+		"legacy after revocation":  {issuedAt: time.Time{}, validAfter: &cutoff, want: true},
+		"issued before":            {issuedAt: cutoff.Add(-time.Nanosecond), validAfter: &cutoff, want: true},
+		"issued at the cutoff":     {issuedAt: cutoff, validAfter: &cutoff, want: false},
+		"issued after":             {issuedAt: cutoff.Add(time.Nanosecond), validAfter: &cutoff, want: false},
+	} {
+		claims := auth.SessionClaims{IssuedAt: tc.issuedAt}
+		if got := claims.RevokedBy(tc.validAfter); got != tc.want {
+			t.Errorf("%s: RevokedBy = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+func TestCreateSession_SetsIssuedAt(t *testing.T) {
+	sm := auth.NewSessionManager([]byte("test-secret-32-bytes-long-enough!"), time.Hour, false)
+	before := time.Now()
+	token, err := sm.CreateSession(httptest.NewRecorder(), "user-123", "github.com", "sub-456")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	claims, err := sm.VerifyPayload(token)
+	if err != nil {
+		t.Fatalf("VerifyPayload: %v", err)
+	}
+	if claims.IssuedAt.Before(before.Add(-time.Second)) || claims.IssuedAt.After(time.Now().Add(time.Second)) {
+		t.Errorf("IssuedAt = %v, want about now", claims.IssuedAt)
+	}
+}
+
+func TestVerifyPayloadRejectsTokensWithoutIssuedAt(t *testing.T) {
+	sm := auth.NewSessionManager([]byte("0123456789abcdef0123456789abcdef"), time.Hour, false)
+	legacy, err := sm.SignPayload(auth.SessionClaims{UserID: "u", ExpiresAt: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sm.VerifyPayload(legacy); err != auth.ErrInvalidSession {
+		t.Fatalf("token without iat: err = %v, want ErrInvalidSession", err)
+	}
+	current, err := sm.SignPayload(auth.SessionClaims{UserID: "u", IssuedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sm.VerifyPayload(current); err != nil {
+		t.Fatalf("token with iat rejected: %v", err)
+	}
+}

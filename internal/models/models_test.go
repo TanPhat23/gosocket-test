@@ -217,6 +217,26 @@ func TestJSONMapValueAndScan(t *testing.T) {
 		t.Errorf("unexpected scanned board_id: %v", scanned["board_id"])
 	}
 
+	// Project.RuntimeConfig JSONMap serialization
+	project := models.Project{
+		ID:            "proj-1",
+		TeamID:        "team-1",
+		Name:          "Project Alpha",
+		RepoPath:      "/tmp/repo",
+		RuntimeConfig: models.JSONMap{"go": "1.27.2", "rust": "false"},
+	}
+	runtimeVal, err := project.RuntimeConfig.Value()
+	if err != nil {
+		t.Fatalf("expected nil error on RuntimeConfig.Value(), got %v", err)
+	}
+	var scannedRuntime models.JSONMap
+	if err := scannedRuntime.Scan(runtimeVal); err != nil {
+		t.Fatalf("expected nil error on scanning RuntimeConfig, got %v", err)
+	}
+	if scannedRuntime["go"] != "1.27.2" || scannedRuntime["rust"] != "false" {
+		t.Errorf("unexpected scanned runtime config: %v", scannedRuntime)
+	}
+
 	// nil handling
 	var nilMap models.JSONMap
 	nilVal, err := nilMap.Value()
@@ -352,6 +372,17 @@ func TestModelCreationSanity(t *testing.T) {
 	}
 	if err := models.Validate.Struct(log); err != nil {
 		t.Errorf("expected valid TaskLog, got %v", err)
+	}
+
+	project := models.Project{
+		ID:            "proj-1",
+		TeamID:        "team-1",
+		Name:          "Project Alpha",
+		RepoPath:      "/tmp/repo",
+		RuntimeConfig: models.JSONMap{"go": "1.27.2"},
+	}
+	if err := models.Validate.Struct(project); err != nil {
+		t.Errorf("expected valid Project, got %v", err)
 	}
 
 	webhook := models.WebhookEvent{

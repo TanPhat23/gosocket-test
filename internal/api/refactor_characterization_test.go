@@ -53,7 +53,7 @@ type charTaskService struct {
 	calls int
 }
 
-func (s *charTaskService) CreateTask(_ context.Context, req *dto.CreateTaskRequest) (*models.Task, error) {
+func (s *charTaskService) CreateTask(_ context.Context, req *dto.CreateTaskRequest, _ string) (*models.Task, error) {
 	s.calls++
 	return &models.Task{ID: "t1", Title: req.Title}, nil
 }

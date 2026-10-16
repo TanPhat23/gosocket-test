@@ -55,6 +55,7 @@ func TestOIDCStateSigningAndVerification(t *testing.T) {
 	// Test signing with SessionManager (HMAC verification)
 	sm := auth.NewSessionManager(cfg.CookieSecret, 10*time.Minute, false)
 	signed, err := sm.SignPayload(auth.SessionClaims{
+		IssuedAt: time.Now(),
 		UserID:    state.State,
 		Issuer:    state.Nonce,
 		Subject:   state.CodeVerifier,

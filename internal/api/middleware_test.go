@@ -34,7 +34,8 @@ func setupMiddlewareTestDB(t *testing.T) *gorm.DB {
 			issuer TEXT NOT NULL,
 			subject TEXT NOT NULL,
 			email TEXT,
-			display_name TEXT
+			display_name TEXT,
+			sessions_valid_after DATETIME
 		);`,
 		`CREATE TABLE teams (
 			id TEXT PRIMARY KEY,
@@ -159,6 +160,7 @@ func TestRequireAuthMiddleware(t *testing.T) {
 
 	t.Run("Authenticates with valid session cookie", func(t *testing.T) {
 		claims := auth.SessionClaims{
+			IssuedAt: time.Now(),
 			UserID:    user.ID,
 			Issuer:    user.Issuer,
 			Subject:   user.Subject,
@@ -284,6 +286,7 @@ func TestRequireTeamRoleMiddleware(t *testing.T) {
 
 	makeReq := func(userID string) *http.Response {
 		claims := auth.SessionClaims{
+			IssuedAt: time.Now(),
 			UserID:    userID,
 			ExpiresAt: time.Now().Add(1 * time.Hour),
 		}

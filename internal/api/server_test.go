@@ -82,6 +82,7 @@ func (m *mockAuthenticator) GenerateOIDCState() (*auth.OIDCState, string, error)
 func (m *mockAuthenticator) SignOIDCState(state *auth.OIDCState) (string, error) {
 	mac := auth.NewSessionManager([]byte("mock-32-byte-secret-for-testing!"), 10*time.Minute, false)
 	claims := auth.SessionClaims{
+		IssuedAt: time.Now(),
 		UserID:    state.State,
 		Issuer:    state.Nonce,
 		Subject:   state.CodeVerifier,
@@ -129,7 +130,8 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		issuer TEXT NOT NULL,
 		subject TEXT NOT NULL,
 		email TEXT,
-		display_name TEXT
+		display_name TEXT,
+		sessions_valid_after DATETIME
 	)`).Error
 	if err != nil {
 		t.Fatalf("failed to create users table: %v", err)
@@ -306,6 +308,7 @@ func TestAuthEndpoints(t *testing.T) {
 		// Test logout
 		logoutReq := httptest.NewRequest("POST", "/api/v1/auth/logout", nil)
 		logoutReq.AddCookie(sessionCookie)
+		logoutReq.Header.Set("Sec-Fetch-Site", "same-origin")
 
 		logoutResp, err := server.App.Test(logoutReq)
 		if err != nil {

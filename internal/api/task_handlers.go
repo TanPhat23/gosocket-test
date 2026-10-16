@@ -1,11 +1,14 @@
 package api
 
 import (
+	"errors"
+
 	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/dto"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/service"
 	"github.com/gofiber/fiber/v3"
+	"gorm.io/gorm"
 )
 
 // TaskHandlers handles task CRUD endpoints.
@@ -30,6 +33,15 @@ func parseTaskID(c fiber.Ctx) (string, error) {
 	return param.ID, nil
 }
 
+// isPassthroughTaskError reports errors that must keep their central HTTP mapping instead of a generic 400.
+func isPassthroughTaskError(err error) bool {
+	return errors.Is(err, common.ErrNotFound) ||
+		errors.Is(err, gorm.ErrRecordNotFound) ||
+		errors.Is(err, common.ErrRuntimeQuarantined) ||
+		errors.Is(err, common.ErrForbidden) ||
+		errors.Is(err, common.ErrServiceUnavailable)
+}
+
 // NewTaskHandlers creates a new TaskHandlers instance.
 func NewTaskHandlers(taskService service.TaskService) *TaskHandlers {
 	return &TaskHandlers{
@@ -39,15 +51,16 @@ func NewTaskHandlers(taskService service.TaskService) *TaskHandlers {
 
 // List handles GET /api/v1/tasks?project_id=...&parent_task_id=...
 func (h *TaskHandlers) List(c fiber.Ctx) error {
+	userID := currentUserID(c)
 	parentTaskID := c.Query("parent_task_id")
 	var tasks []models.Task
 	var err error
 
 	if parentTaskID != "" {
-		tasks, err = h.taskService.ListSubtasks(c.Context(), parentTaskID)
+		tasks, err = h.taskService.ListSubtasks(c.Context(), parentTaskID, userID)
 	} else {
 		projectID := c.Query("project_id")
-		tasks, err = h.taskService.ListTasks(c.Context(), projectID)
+		tasks, err = h.taskService.ListTasks(c.Context(), projectID, userID)
 	}
 
 	if err != nil {
@@ -69,14 +82,14 @@ func (h *TaskHandlers) Get(c fiber.Ctx) error {
 		return badRequest(c, err)
 	}
 
-	task, err := h.taskService.GetTask(c.Context(), taskID)
+	userID := currentUserID(c)
+	task, err := h.taskService.GetTask(c.Context(), taskID, userID)
 	if err != nil {
 		return CentralErrorHandler(c, err)
 	}
 
 	// If task is in review and has a PR, check if PR status changed on GitHub
 	if task.Status == models.TaskStatusReview && task.PRURL != nil && *task.PRURL != "" {
-		userID := currentUserID(c)
 		if updated, syncErr := h.taskService.SyncTaskPRStatus(c.Context(), taskID, userID); syncErr == nil && updated != nil {
 			task = updated
 		}
@@ -92,7 +105,7 @@ func (h *TaskHandlers) Create(c fiber.Ctx) error {
 		return badRequest(c, err)
 	}
 
-	task, err := h.taskService.CreateTask(c.Context(), &req)
+	task, err := h.taskService.CreateTask(c.Context(), &req, currentUserID(c))
 	if err != nil {
 		return CentralErrorHandler(c, err)
 	}
@@ -123,9 +136,9 @@ func (h *TaskHandlers) CreatePR(c fiber.Ctx) error {
 		return badRequest(c, err)
 	}
 
-	task, err := h.taskService.CreatePullRequestForTask(c.Context(), taskID)
+	task, err := h.taskService.CreatePullRequestForTask(c.Context(), taskID, currentUserID(c))
 	if err != nil {
-		if common.IsNotFound(err) {
+		if isPassthroughTaskError(err) {
 			return CentralErrorHandler(c, err)
 		}
 		return badRequest(c, err)
@@ -153,7 +166,7 @@ func (h *TaskHandlers) SyncPR(c fiber.Ctx) error {
 
 	task, err := h.taskService.SyncTaskPRStatus(c.Context(), taskID, userID)
 	if err != nil {
-		if common.IsNotFound(err) {
+		if isPassthroughTaskError(err) {
 			return CentralErrorHandler(c, err)
 		}
 		return badRequest(c, err)

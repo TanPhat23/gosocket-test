@@ -10,6 +10,8 @@ import (
 	"agent-task-manager/internal/config"
 	"agent-task-manager/internal/db"
 	"agent-task-manager/internal/models"
+
+	"gorm.io/gorm"
 )
 
 func main() {
@@ -54,9 +56,25 @@ func main() {
 		log.Fatalf("failed to run database automigrations: %v", err)
 	}
 
-	// Seed default team and project if none exist
+	if shouldSeed(cfg.AppEnv) {
+		seedDefaults(gormDB, cfg.HostRepoRoot)
+	} else {
+		fmt.Println("Skipping default data seeding in production")
+	}
+
+	fmt.Println("Database automigrations completed successfully.")
+}
+
+// shouldSeed reports whether the development defaults (a default team, project and the admin@example.com
+// owner) may be created. They must never exist in production.
+func shouldSeed(appEnv string) bool {
+	return appEnv != "production"
+}
+
+// seedDefaults creates the default team, project and admin owner when no team exists yet.
+func seedDefaults(db *gorm.DB, hostRepoRoot string) {
 	var teamCount int64
-	gormDB.Model(&models.Team{}).Count(&teamCount)
+	db.Model(&models.Team{}).Count(&teamCount)
 	if teamCount == 0 {
 		teamID := common.NewID()
 		projectID := common.NewID()
@@ -65,16 +83,16 @@ func main() {
 			Name: "Core Team",
 			Slug: "core-team",
 		}
-		if err := gormDB.Create(defaultTeam).Error; err != nil {
+		if err := db.Create(defaultTeam).Error; err != nil {
 			log.Printf("warning: failed to seed default team: %v", err)
 		} else {
 			defaultProject := &models.Project{
 				ID:       projectID,
 				TeamID:   teamID,
 				Name:     "Core Workspace",
-				RepoPath: filepath.Join(cfg.HostRepoRoot, "core"),
+				RepoPath: filepath.Join(hostRepoRoot, "core"),
 			}
-			if err := gormDB.Create(defaultProject).Error; err != nil {
+			if err := db.Create(defaultProject).Error; err != nil {
 				log.Printf("warning: failed to seed default project: %v", err)
 			} else {
 				fmt.Printf("Seeded default team (%s) and project (%s)\n", teamID, projectID)
@@ -89,8 +107,8 @@ func main() {
 				Email:       "admin@example.com",
 				DisplayName: "admin",
 			}
-			if err := gormDB.Create(adminUser).Error; err == nil {
-				_ = gormDB.Create(&models.TeamMembership{
+			if err := db.Create(adminUser).Error; err == nil {
+				_ = db.Create(&models.TeamMembership{
 					TeamID: teamID,
 					UserID: adminUserID,
 					Role:   models.RoleOwner,
@@ -99,6 +117,4 @@ func main() {
 			}
 		}
 	}
-
-	fmt.Println("Database automigrations completed successfully.")
 }

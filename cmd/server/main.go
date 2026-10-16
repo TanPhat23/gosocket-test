@@ -16,7 +16,9 @@ import (
 	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/config"
 	"agent-task-manager/internal/crypto"
+	"agent-task-manager/internal/devruntime"
 	"agent-task-manager/internal/db"
+	"agent-task-manager/internal/gateway"
 	"agent-task-manager/internal/git"
 	"agent-task-manager/internal/integrations"
 	"agent-task-manager/internal/integrations/github"
@@ -37,6 +39,10 @@ func main() {
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("failed to load configuration: %v", err)
+	}
+
+	if err := config.ValidateRawProductionConfig(cfg.ToRaw()); err != nil {
+		log.Fatalf("production preflight validation failed: %v", err)
 	}
 
 	fmt.Printf("Starting Agent Task Manager Control Plane on port %d (env: %s)\n", cfg.Port, cfg.AppEnv)
@@ -111,11 +117,11 @@ func main() {
 	integrationRepo := repository.NewIntegrationRepository(gormDB)
 
 	// Cryptographic Cipher
-	masterKey := []byte(cfg.SecretEncryptionKey)
-	if len(masterKey) != 32 {
-		log.Fatalf("SECRET_ENCRYPTION_KEY must be exactly 32 bytes (got %d)", len(masterKey))
+	masterKey, err := config.NormalizeEncryptionKey(cfg.SecretEncryptionKey)
+	if err != nil {
+		log.Fatalf("failed to initialize encryption key: %v", err)
 	}
-	cipher, err := crypto.NewGCMCipher(masterKey)
+	cipher, err := crypto.NewGCMCipher(masterKey.RawBytes[:])
 	if err != nil {
 		log.Fatalf("failed to initialize secret cipher: %v", err)
 	}
@@ -167,6 +173,31 @@ func main() {
 		service.WithWebhookHub(hub),
 		service.WithWebhookSyncProvider(ghProvider),
 	)
+	fakeRuntime, err := devruntime.EnabledFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	// Gate 0G: the credential gateway is off unless ATM_GATEWAY_ENABLED=true. It only serves; no sandbox
+	// receives a token until the project sandbox manager is built with a broker, which the runtime
+	// quarantine still prevents.
+	gatewaySvc, err := gateway.ServiceFromEnv(os.Getenv, os.ReadFile, log.Printf)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	if gatewaySvc != nil {
+		gwLn, err := gatewaySvc.Listen()
+		if err != nil {
+			log.Fatalf("gateway: listen: %v", err)
+		}
+		gwCtx, gwCancel := context.WithCancel(context.Background())
+		defer gwCancel()
+		go func() {
+			if err := gatewaySvc.Run(gwCtx, gwLn); err != nil {
+				log.Printf("gateway: stopped: %v", err)
+			}
+		}()
+		log.Printf("LLM gateway listening on %s", gwLn.Addr())
+	}
 	openCodeClient := runner.NewOpenCodeClient(cfg.OpenCodeServerURL, cfg.OpenCodePassword, nil)
 	taskService := service.NewTaskService(
 		taskRepo,
@@ -176,6 +207,7 @@ func main() {
 		service.WithTaskGitHubIntegration(integrationRepo, credRepo, cipher, ghProvider),
 		service.WithTaskSessionDependencies(openCodeClient, projectRepo, teamRepo),
 		service.WithTaskLogRepository(logRepo),
+		service.WithTaskSimulatedRuntime(fakeRuntime),
 	)
 	logService := service.NewLogService(logRepo, hub)
 	integrationService := service.NewIntegrationService(integrationRepo, projectRepo, credRepo)
@@ -206,7 +238,12 @@ func main() {
 	)
 
 	// Concurrency-bounded Asynq Worker Server
-	workerServer := queue.NewWorkerServer(cfg, taskService, agentRunner)
+	var taskRunner queue.TaskRunner = agentRunner
+	if fakeRuntime {
+		log.Printf("WARNING: ATM_DEV_FAKE_RUNTIME is on: tasks are simulated. The real runtime stays quarantined.")
+		taskRunner = devruntime.NewRunner(logRepo, hub, 700*time.Millisecond)
+	}
+	workerServer := queue.NewWorkerServer(cfg, taskService, taskRunner)
 	if err := workerServer.Start(); err != nil {
 		log.Fatalf("failed to start Asynq worker server: %v", err)
 	}

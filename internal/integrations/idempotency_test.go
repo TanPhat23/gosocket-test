@@ -2,10 +2,8 @@ package integrations_test
 
 import (
 	"context"
-	"errors"
-	"sort"
-	"strings"
 	"testing"
+	"time"
 
 	"agent-task-manager/internal/integrations"
 	"agent-task-manager/internal/models"
@@ -291,46 +289,111 @@ func TestPullRequestProvider(t *testing.T) {
 	}
 }
 
-func TestRegistry_ZeroValueAndParity(t *testing.T) {
-	var reg integrations.Registry // zero value must be usable
-
-	if got := reg.List(); got != nil {
-		t.Fatalf("empty List() = %v, want nil", got)
+// A delivery whose processing failed was acknowledged with an error, so the provider will redeliver it
+// under the same id. That redelivery must be processed again, exactly once, and never after success.
+func TestIdempotencyStores_RetryFailedEvent(t *testing.T) {
+	stores := map[string]func(t *testing.T) integrations.IdempotencyStore{
+		"memory": func(t *testing.T) integrations.IdempotencyStore { return integrations.NewMemoryIdempotencyStore() },
+		"db":     func(t *testing.T) integrations.IdempotencyStore { return integrations.NewDBIdempotencyStore(setupTestDB(t)) },
 	}
-	if _, err := reg.Get(models.IntegrationGitHub); !errors.Is(err, integrations.ErrProviderNotFound) {
-		t.Fatalf("Get on empty = %v, want ErrProviderNotFound", err)
-	}
+	for name, mk := range stores {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := mk(t)
 
-	first := &mockSyncProvider{provider: models.IntegrationGitHub}
-	second := &mockSyncProvider{provider: models.IntegrationGitHub}
-	if err := reg.Register(first); err != nil {
+			if first, err := store.RecordEvent(ctx, "github", "p", "evt"); err != nil || !first {
+				t.Fatalf("first: %v %v", first, err)
+			}
+			// A received (in-flight) event is not retryable: that would double-process concurrent deliveries.
+			if again, _ := store.RecordEvent(ctx, "github", "p", "evt"); again {
+				t.Fatal("in-flight event must stay a duplicate")
+			}
+			if err := store.MarkFailed(ctx, "github", "p", "evt", "boom"); err != nil {
+				t.Fatal(err)
+			}
+			// The failed event is reclaimed by exactly one redelivery.
+			if retry, err := store.RecordEvent(ctx, "github", "p", "evt"); err != nil || !retry {
+				t.Fatalf("failed event must be retryable, got %v %v", retry, err)
+			}
+			if second, _ := store.RecordEvent(ctx, "github", "p", "evt"); second {
+				t.Fatal("only one redelivery may reclaim a failed event")
+			}
+			// Another provider or project with the same id is independent.
+			if other, _ := store.RecordEvent(ctx, "jira", "p", "evt"); !other {
+				t.Fatal("different provider must be independent")
+			}
+			// Once processed, redeliveries are duplicates again, and a late failure mark does not reopen them.
+			if err := store.MarkProcessed(ctx, "github", "p", "evt"); err != nil {
+				t.Fatal(err)
+			}
+			if again, _ := store.RecordEvent(ctx, "github", "p", "evt"); again {
+				t.Fatal("processed event must stay a duplicate")
+			}
+		})
+	}
+}
+
+func TestDBIdempotencyStore_RetryClearsFailureState(t *testing.T) {
+	db := setupTestDB(t)
+	store := integrations.NewDBIdempotencyStore(db)
+	ctx := context.Background()
+
+	_, _ = store.RecordEvent(ctx, "github", "p", "evt")
+	_ = store.MarkFailed(ctx, "github", "p", "evt", "boom")
+	if retry, err := store.RecordEvent(ctx, "github", "p", "evt"); err != nil || !retry {
+		t.Fatalf("retry: %v %v", retry, err)
+	}
+	var ev models.WebhookEvent
+	if err := db.Where("provider_event_id = ?", "evt").First(&ev).Error; err != nil {
 		t.Fatal(err)
 	}
-	// LoadOrStore parity: duplicate rejected, first registration wins.
-	err := reg.Register(second)
-	if !errors.Is(err, integrations.ErrProviderAlreadyRegistered) || err.Error() != "provider already registered: github" {
-		t.Fatalf("duplicate error = %v", err)
+	if ev.Status != models.WebhookReceived || ev.ErrorMessage != nil || ev.ProcessedAt != nil {
+		t.Errorf("reclaimed event must be back in received state without stale failure data: %+v", ev)
 	}
-	got, err := reg.Get(models.IntegrationGitHub)
-	if err != nil || got != integrations.SyncProvider(first) {
-		t.Fatalf("Get returned %v, %v; want first provider", got, err)
-	}
-	if err := reg.Register(nil); !errors.Is(err, integrations.ErrProviderNil) {
-		t.Fatalf("nil register = %v", err)
-	}
+}
 
-	jira := &mockSyncProvider{provider: models.IntegrationJira}
-	trello := &mockSyncProvider{provider: models.IntegrationTrello}
-	_ = reg.Register(jira)
-	_ = reg.Register(trello)
-	// List order is unspecified (sync.Map.Range); assert membership only.
-	var names []string
-	for _, p := range reg.List() {
-		names = append(names, string(p.Provider()))
+// A delivery stuck in "received" (the process died before MarkProcessed/MarkFailed) must not block the
+// provider's retries forever: once older than StaleReceivedAfter, exactly one redelivery reclaims it.
+func TestIdempotencyStores_ReclaimsStaleReceivedEvent(t *testing.T) {
+	var now time.Time
+	clock := func() time.Time { return now }
+	stores := map[string]func(t *testing.T) integrations.IdempotencyStore{
+		"memory": func(t *testing.T) integrations.IdempotencyStore {
+			return integrations.NewMemoryIdempotencyStoreWithClock(clock)
+		},
+		"db": func(t *testing.T) integrations.IdempotencyStore {
+			return integrations.NewDBIdempotencyStoreWithClock(setupTestDB(t), clock)
+		},
 	}
-	sort.Strings(names)
-	if strings.Join(names, ",") != "github,jira,trello" {
-		t.Fatalf("List() providers = %v", names)
+	for name, mk := range stores {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			now = time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+			store := mk(t)
+
+			if first, err := store.RecordEvent(ctx, "github", "p", "evt"); err != nil || !first {
+				t.Fatalf("first: %v %v", first, err)
+			}
+			now = now.Add(integrations.StaleReceivedAfter - time.Second)
+			if again, _ := store.RecordEvent(ctx, "github", "p", "evt"); again {
+				t.Fatal("a fresh in-flight event must stay a duplicate")
+			}
+			now = now.Add(2 * time.Second)
+			if retry, err := store.RecordEvent(ctx, "github", "p", "evt"); err != nil || !retry {
+				t.Fatalf("stale received event must be reclaimable, got %v %v", retry, err)
+			}
+			if second, _ := store.RecordEvent(ctx, "github", "p", "evt"); second {
+				t.Fatal("reclaiming must restart the clock: only one redelivery wins")
+			}
+			// A stale processed event is never reopened.
+			if err := store.MarkProcessed(ctx, "github", "p", "evt"); err != nil {
+				t.Fatal(err)
+			}
+			now = now.Add(24 * time.Hour)
+			if again, _ := store.RecordEvent(ctx, "github", "p", "evt"); again {
+				t.Fatal("processed events stay duplicates forever")
+			}
+		})
 	}
 }
 

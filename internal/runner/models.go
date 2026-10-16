@@ -96,6 +96,43 @@ func ListAvailableModels(cfg *config.Config) []ModelInfo {
 
 	var models []ModelInfo
 
+	// Host-binary model discovery is disabled (runtime quarantine): never exec cfg.OpenCodeBinPath.
+	// See listModelsViaHostBinaryDisabledDraft.
+
+	if len(models) == 0 {
+		models = DefaultKnownModels()
+	}
+
+	// Always ensure google/gemini-3.8-flash is at the top if present
+	prioritized := make([]ModelInfo, 0, len(models))
+	var activeModel *ModelInfo
+	for i := range models {
+		if models[i].ID == "google/gemini-3.8-flash" {
+			activeModel = &models[i]
+		}
+	}
+	if activeModel != nil {
+		prioritized = append(prioritized, *activeModel)
+	}
+	for _, m := range models {
+		if m.ID != "google/gemini-3.8-flash" {
+			prioritized = append(prioritized, m)
+		}
+	}
+
+	modelCache.Store(&modelCacheEntry{
+		models: prioritized,
+		expiry: time.Now().Add(1 * time.Minute),
+	})
+
+	// Return a copy so callers cannot mutate the cached snapshot.
+	return slices.Clone(prioritized)
+}
+
+// listModelsViaHostBinaryDisabledDraft is the original host-binary discovery, intentionally unreferenced.
+func listModelsViaHostBinaryDisabledDraft(cfg *config.Config) []ModelInfo {
+	var models []ModelInfo
+
 	if cfg != nil && cfg.OpenCodeBinPath != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
@@ -128,32 +165,5 @@ func ListAvailableModels(cfg *config.Config) []ModelInfo {
 		}
 	}
 
-	if len(models) == 0 {
-		models = DefaultKnownModels()
-	}
-
-	// Always ensure google/gemini-3.8-flash is at the top if present
-	prioritized := make([]ModelInfo, 0, len(models))
-	var activeModel *ModelInfo
-	for i := range models {
-		if models[i].ID == "google/gemini-3.8-flash" {
-			activeModel = &models[i]
-		}
-	}
-	if activeModel != nil {
-		prioritized = append(prioritized, *activeModel)
-	}
-	for _, m := range models {
-		if m.ID != "google/gemini-3.8-flash" {
-			prioritized = append(prioritized, m)
-		}
-	}
-
-	modelCache.Store(&modelCacheEntry{
-		models: prioritized,
-		expiry: time.Now().Add(1 * time.Minute),
-	})
-
-	// Return a copy so callers cannot mutate the cached snapshot.
-	return slices.Clone(prioritized)
+	return models
 }

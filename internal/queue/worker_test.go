@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
+	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/config"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/queue"
@@ -414,4 +416,54 @@ func TestWorkerExecutionHandler_RunWithExecutor(t *testing.T) {
 	if runner.calls != 1 {
 		t.Fatalf("expected runner to be called once, got %d", runner.calls)
 	}
+}
+
+type funcTaskExecutor struct {
+	err   error
+	calls int
+}
+
+func (f *funcTaskExecutor) ExecuteTask(ctx context.Context, taskID string, runner queue.TaskRunner) error {
+	f.calls++
+	return f.err
+}
+
+func TestWorkerExecutionHandler_QuarantineErrorIsNotRetried(t *testing.T) {
+	cfg := &config.Config{RedisAddr: "localhost:6379"}
+	payloadBytes, _ := json.Marshal(queue.TaskExecutionPayload{TaskID: "task-q", ProjectID: "proj-1"})
+
+	t.Run("direct and wrapped quarantine errors skip retry", func(t *testing.T) {
+		for name, execErr := range map[string]error{
+			"direct":  common.ErrRuntimeQuarantined,
+			"wrapped": fmt.Errorf("run failed: %w", common.ErrRuntimeQuarantined),
+		} {
+			executor := &funcTaskExecutor{err: execErr}
+			handler := queue.NewWorkerServer(cfg, executor, nil).Handler()
+			err := handler.ProcessTask(context.Background(), asynq.NewTask(queue.TypeExecuteAgentTask, payloadBytes))
+			if err == nil {
+				t.Fatalf("%s: expected error, got nil", name)
+			}
+			if !errors.Is(err, asynq.SkipRetry) {
+				t.Errorf("%s: expected asynq.SkipRetry, got %v", name, err)
+			}
+			if !errors.Is(err, common.ErrRuntimeQuarantined) {
+				t.Errorf("%s: expected error to still match ErrRuntimeQuarantined, got %v", name, err)
+			}
+			if executor.calls != 1 {
+				t.Errorf("%s: expected executor to be called once, got %d", name, executor.calls)
+			}
+		}
+	})
+
+	t.Run("other errors remain retryable", func(t *testing.T) {
+		executor := &funcTaskExecutor{err: errors.New("transient failure")}
+		handler := queue.NewWorkerServer(cfg, executor, nil).Handler()
+		err := handler.ProcessTask(context.Background(), asynq.NewTask(queue.TypeExecuteAgentTask, payloadBytes))
+		if err == nil {
+			t.Fatalf("expected error, got nil")
+		}
+		if errors.Is(err, asynq.SkipRetry) {
+			t.Errorf("non-quarantine errors must not skip retry, got %v", err)
+		}
+	})
 }

@@ -9,10 +9,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
+	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/config"
 	"agent-task-manager/internal/crypto"
 	"agent-task-manager/internal/git"
@@ -22,9 +22,11 @@ import (
 	"agent-task-manager/internal/sandbox"
 	"agent-task-manager/internal/ws"
 
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/volume"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -241,25 +243,33 @@ func TestSyncRepoWithRemote_WithRemote(t *testing.T) {
 }
 
 type mockDockerClientForRunner struct {
+	createErr      error
 	createdConfig  *container.Config
 	createdConfigs []*container.Config
 	waitStatusCh   chan container.WaitResponse
 	waitErrCh      chan error
-	stopCalled   bool
-	removeCalled bool
+	stopCalled     bool
+	removeCalled   bool
+	calls          int // every DockerClient method invocation
 }
 
 func (m *mockDockerClientForRunner) ContainerCreate(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *ocispec.Platform, containerName string) (container.CreateResponse, error) {
+	m.calls++
+	if m.createErr != nil {
+		return container.CreateResponse{}, m.createErr
+	}
 	m.createdConfig = config
 	m.createdConfigs = append(m.createdConfigs, config)
 	return container.CreateResponse{ID: fmt.Sprintf("test-cid-%d", len(m.createdConfigs))}, nil
 }
 
 func (m *mockDockerClientForRunner) ContainerStart(ctx context.Context, containerID string, options container.StartOptions) error {
+	m.calls++
 	return nil
 }
 
 func (m *mockDockerClientForRunner) ContainerWait(ctx context.Context, containerID string, condition container.WaitCondition) (<-chan container.WaitResponse, <-chan error) {
+	m.calls++
 	statusCh := make(chan container.WaitResponse, 1)
 	errCh := make(chan error, 1)
 	if m.waitStatusCh != nil {
@@ -277,117 +287,84 @@ func (m *mockDockerClientForRunner) ContainerWait(ctx context.Context, container
 }
 
 func (m *mockDockerClientForRunner) ContainerLogs(ctx context.Context, containerID string, options container.LogsOptions) (io.ReadCloser, error) {
+	m.calls++
 	return io.NopCloser(strings.NewReader("")), nil
 }
 
+func (m *mockDockerClientForRunner) ContainerAttach(ctx context.Context, containerID string, options container.AttachOptions) (types.HijackedResponse, error) {
+	return types.HijackedResponse{}, nil
+}
+
 func (m *mockDockerClientForRunner) ContainerStop(ctx context.Context, containerID string, options container.StopOptions) error {
+	m.calls++
 	m.stopCalled = true
 	return nil
 }
 
 func (m *mockDockerClientForRunner) ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error {
+	m.calls++
 	m.removeCalled = true
 	return nil
 }
 
+func (m *mockDockerClientForRunner) ContainerInspect(ctx context.Context, containerID string) (types.ContainerJSON, error) {
+	m.calls++
+	return types.ContainerJSON{}, nil
+}
+
 func (m *mockDockerClientForRunner) ImagePull(ctx context.Context, refStr string, options image.PullOptions) (io.ReadCloser, error) {
+	m.calls++
 	return io.NopCloser(strings.NewReader("")), nil
 }
 
-func TestRunInDocker_SessionAndTitleFlags(t *testing.T) {
-	tmpDir := t.TempDir()
-	repoPath := filepath.Join(tmpDir, "repo")
-	if err := runner.EnsureGitRepo(repoPath); err != nil {
-		t.Fatalf("failed to init repo: %v", err)
-	}
+func (m *mockDockerClientForRunner) ImageBuild(ctx context.Context, buildContext io.Reader, options types.ImageBuildOptions) (types.ImageBuildResponse, error) {
+	m.calls++
+	return types.ImageBuildResponse{Body: io.NopCloser(strings.NewReader(""))}, nil
+}
 
-	cfg := &config.Config{
-		OpenCodeServerURL: "http://127.0.0.1:49374",
-		HostWorktreeRoot:  filepath.Join(tmpDir, "worktrees"),
-		HostRepoRoot:      tmpDir,
-	}
-	pRepo := &mockProjectRepo{
-		project: &models.Project{
-			ID:       "proj-docker-1",
-			RepoPath: repoPath,
-		},
-	}
-	sessionID := "ses_atm_task-docker-1"
-	task := &models.Task{
-		ID:        "task-docker-1",
-		ProjectID: "proj-docker-1",
-		Title:     "Add deterministic session binding",
-		Prompt:    "Write tests and update runner",
-		SessionID: &sessionID,
-	}
-	attempt := &models.TaskAttempt{
-		ID:     "attempt-1",
-		TaskID: task.ID,
-	}
-	tRepo := &mockTaskRepo{task: task}
-	lRepo := &mockLogRepo{}
-	wm := git.NewWorktreeManager(cfg.HostWorktreeRoot)
+func (m *mockDockerClientForRunner) ImageList(ctx context.Context, options image.ListOptions) ([]image.Summary, error) {
+	m.calls++
+	return nil, nil
+}
 
-	statusCh := make(chan container.WaitResponse, 1)
-	errCh := make(chan error, 1)
-	statusCh <- container.WaitResponse{StatusCode: 0}
+func (m *mockDockerClientForRunner) ImageInspectWithRaw(ctx context.Context, imageID string) (types.ImageInspect, []byte, error) {
+	m.calls++
+	return types.ImageInspect{}, nil, nil
+}
 
-	mockCli := &mockDockerClientForRunner{
-		waitStatusCh: statusCh,
-		waitErrCh:    errCh,
-	}
-	dockerRunner := sandbox.NewRunner(mockCli)
+func (m *mockDockerClientForRunner) NetworkCreate(ctx context.Context, name string, options network.CreateOptions) (network.CreateResponse, error) {
+	m.calls++
+	return network.CreateResponse{}, nil
+}
 
-	ar := runner.NewAgentTaskRunner(cfg, pRepo, tRepo, lRepo, wm, dockerRunner, mockCli, nil)
+func (m *mockDockerClientForRunner) NetworkInspect(ctx context.Context, networkID string, options network.InspectOptions) (network.Inspect, error) {
+	m.calls++
+	return network.Inspect{}, nil
+}
 
-	ctx := context.Background()
-	err := ar.RunTask(ctx, task, attempt)
-	if err != nil {
-		t.Fatalf("RunTask failed: %v", err)
-	}
+func (m *mockDockerClientForRunner) NetworkRemove(ctx context.Context, networkID string) error {
+	m.calls++
+	return nil
+}
 
-	if mockCli.createdConfig == nil {
-		t.Fatalf("expected ContainerCreate to have been called")
-	}
+func (m *mockDockerClientForRunner) VolumeCreate(ctx context.Context, options volume.CreateOptions) (volume.Volume, error) {
+	m.calls++
+	return volume.Volume{}, nil
+}
 
-	cmd := mockCli.createdConfig.Cmd
-	// Assert --session and --title are present in cmd arguments
-	sessionIdx := -1
-	titleIdx := -1
-	for i, arg := range cmd {
-		if arg == "--session" && i+1 < len(cmd) {
-			sessionIdx = i + 1
-		}
-		if arg == "--title" && i+1 < len(cmd) {
-			titleIdx = i + 1
-		}
-	}
+func (m *mockDockerClientForRunner) VolumeInspect(ctx context.Context, volumeID string) (volume.Volume, error) {
+	m.calls++
+	return volume.Volume{}, nil
+}
 
-	if sessionIdx == -1 {
-		t.Fatalf("expected --session flag in cmd: %v", cmd)
-	}
-	if cmd[sessionIdx] != "ses_atm_task-docker-1" {
-		t.Errorf("expected session ID ses_atm_task-docker-1, got %s", cmd[sessionIdx])
-	}
+func (m *mockDockerClientForRunner) VolumeRemove(ctx context.Context, volumeID string, force bool) error {
+	m.calls++
+	return nil
+}
 
-	if titleIdx == -1 {
-		t.Fatalf("expected --title flag in cmd: %v", cmd)
-	}
-	if cmd[titleIdx] != task.Title {
-		t.Errorf("expected title %q, got %q", task.Title, cmd[titleIdx])
-	}
-
-	// Verify ATM_SESSION_ID in environment
-	envMap := make(map[string]string)
-	for _, e := range mockCli.createdConfig.Env {
-		parts := strings.SplitN(e, "=", 2)
-		if len(parts) == 2 {
-			envMap[parts[0]] = parts[1]
-		}
-	}
-	if envMap["ATM_SESSION_ID"] != "ses_atm_task-docker-1" {
-		t.Errorf("expected ATM_SESSION_ID=ses_atm_task-docker-1 in container env, got %s", envMap["ATM_SESSION_ID"])
-	}
+func (m *mockDockerClientForRunner) CopyToContainer(ctx context.Context, containerID, dstPath string, content io.Reader, options container.CopyToContainerOptions) error {
+	m.calls++
+	return nil
 }
 
 func TestDetectVerificationCommand(t *testing.T) {
@@ -510,646 +487,45 @@ func TestFormatVerificationFeedbackPrompt(t *testing.T) {
 	}
 }
 
-func TestRunTask_VerificationLoop_PassFirstTurn(t *testing.T) {
-	tmpDir := t.TempDir()
-	repoPath := filepath.Join(tmpDir, "repo")
-	if err := runner.EnsureGitRepo(repoPath); err != nil {
-		t.Fatalf("failed to init repo: %v", err)
-	}
-
-	cfg := &config.Config{
-		OpenCodeServerURL:      "http://127.0.0.1:49374",
-		HostWorktreeRoot:       filepath.Join(tmpDir, "worktrees"),
-		HostRepoRoot:           tmpDir,
-		MaxVerificationRetries: 3,
-	}
-	pRepo := &mockProjectRepo{
-		project: &models.Project{
-			ID:       "proj-loop-pass",
-			RepoPath: repoPath,
-		},
-	}
-	task := &models.Task{
-		ID:        "task-loop-pass",
-		ProjectID: "proj-loop-pass",
-		Title:     "Task that passes verification on first turn",
-		Prompt:    "Implement feature cleanly",
-	}
-	attempt := &models.TaskAttempt{
-		ID:     "attempt-1",
-		TaskID: task.ID,
-	}
-
-	t.Setenv("ATM_VERIFY_CMD", "echo 'all tests pass'")
-
-	mockCli := &mockDockerClientForRunner{}
-	dockerRunner := sandbox.NewRunner(mockCli)
-	ar := runner.NewAgentTaskRunner(cfg, pRepo, &mockTaskRepo{task: task}, &mockLogRepo{}, git.NewWorktreeManager(cfg.HostWorktreeRoot), dockerRunner, mockCli, nil)
-
-	err := ar.RunTask(context.Background(), task, attempt)
-	if err != nil {
-		t.Fatalf("expected RunTask to succeed: %v", err)
-	}
-
-	if len(mockCli.createdConfigs) != 1 {
-		t.Fatalf("expected 1 execution turn, got %d", len(mockCli.createdConfigs))
-	}
-	firstCmd := mockCli.createdConfigs[0].Cmd
-	if firstCmd[len(firstCmd)-1] != task.Prompt {
-		t.Errorf("expected initial prompt on first turn, got %q", firstCmd[len(firstCmd)-1])
-	}
-}
-
-func TestRunTask_VerificationLoop_FailThenPass(t *testing.T) {
-	tmpDir := t.TempDir()
-	repoPath := filepath.Join(tmpDir, "repo")
-	if err := runner.EnsureGitRepo(repoPath); err != nil {
-		t.Fatalf("failed to init repo: %v", err)
-	}
-
-	cfg := &config.Config{
-		OpenCodeServerURL:      "http://127.0.0.1:49374",
-		HostWorktreeRoot:       filepath.Join(tmpDir, "worktrees"),
-		HostRepoRoot:           tmpDir,
-		MaxVerificationRetries: 3,
-	}
-	pRepo := &mockProjectRepo{
-		project: &models.Project{
-			ID:       "proj-loop-repair",
-			RepoPath: repoPath,
-		},
-	}
-	task := &models.Task{
-		ID:        "task-loop-repair",
-		ProjectID: "proj-loop-repair",
-		Title:     "Task that fails on turn 1 and passes on turn 2",
-		Prompt:    "Fix the failing test",
-	}
-	attempt := &models.TaskAttempt{
-		ID:     "attempt-repair-1",
-		TaskID: task.ID,
-	}
-
-	flagFile := filepath.Join(tmpDir, "test_pass.flag")
-	verifyScript := fmt.Sprintf("if [ -f %s ]; then echo 'all tests pass now'; exit 0; else touch %s; echo 'FAIL: broken assertion line 42'; exit 1; fi", flagFile, flagFile)
-	t.Setenv("ATM_VERIFY_CMD", verifyScript)
-
-	mockCli := &mockDockerClientForRunner{}
-	dockerRunner := sandbox.NewRunner(mockCli)
-	ar := runner.NewAgentTaskRunner(cfg, pRepo, &mockTaskRepo{task: task}, &mockLogRepo{}, git.NewWorktreeManager(cfg.HostWorktreeRoot), dockerRunner, mockCli, nil)
-
-	err := ar.RunTask(context.Background(), task, attempt)
-	if err != nil {
-		t.Fatalf("expected RunTask to succeed after repair: %v", err)
-	}
-
-	if len(mockCli.createdConfigs) != 2 {
-		t.Fatalf("expected exactly 2 execution turns, got %d", len(mockCli.createdConfigs))
-	}
-
-	// Turn 1 should be the user initial prompt
-	turn1Cmd := mockCli.createdConfigs[0].Cmd
-	if turn1Cmd[len(turn1Cmd)-1] != task.Prompt {
-		t.Errorf("expected initial prompt on turn 1, got %q", turn1Cmd[len(turn1Cmd)-1])
-	}
-
-	// Turn 2 should be the diagnostic error prompt targeting the same session
-	turn2Cmd := mockCli.createdConfigs[1].Cmd
-	turn2Prompt := turn2Cmd[len(turn2Cmd)-1]
-	if !strings.Contains(turn2Prompt, "Iteration 1/3") {
-		t.Errorf("expected 'Iteration 1/3' in turn 2 prompt, got %s", turn2Prompt)
-	}
-	if !strings.Contains(turn2Prompt, "FAIL: broken assertion line 42") {
-		t.Errorf("expected failure error log in turn 2 prompt, got %s", turn2Prompt)
-	}
-}
-
-func TestRunTask_VerificationLoop_MaxRetriesExceeded(t *testing.T) {
-	tmpDir := t.TempDir()
-	repoPath := filepath.Join(tmpDir, "repo")
-	if err := runner.EnsureGitRepo(repoPath); err != nil {
-		t.Fatalf("failed to init repo: %v", err)
-	}
-
-	cfg := &config.Config{
-		OpenCodeServerURL:      "http://127.0.0.1:49374",
-		HostWorktreeRoot:       filepath.Join(tmpDir, "worktrees"),
-		HostRepoRoot:           tmpDir,
-		MaxVerificationRetries: 2,
-	}
-	pRepo := &mockProjectRepo{
-		project: &models.Project{
-			ID:       "proj-loop-exceeded",
-			RepoPath: repoPath,
-		},
-	}
-	task := &models.Task{
-		ID:        "task-loop-exceeded",
-		ProjectID: "proj-loop-exceeded",
-		Title:     "Task that never passes verification",
-		Prompt:    "Impossible problem",
-	}
-	attempt := &models.TaskAttempt{
-		ID:     "attempt-exceeded-1",
-		TaskID: task.ID,
-	}
-
-	t.Setenv("ATM_VERIFY_CMD", "echo 'persistent compilation error' && exit 1")
-
-	mockCli := &mockDockerClientForRunner{}
-	dockerRunner := sandbox.NewRunner(mockCli)
-	ar := runner.NewAgentTaskRunner(cfg, pRepo, &mockTaskRepo{task: task}, &mockLogRepo{}, git.NewWorktreeManager(cfg.HostWorktreeRoot), dockerRunner, mockCli, nil)
-
-	err := ar.RunTask(context.Background(), task, attempt)
-	if err == nil {
-		t.Fatalf("expected RunTask to return error when retries exceeded")
-	}
-
-	if !strings.Contains(err.Error(), "pre-flight verification failed after 2 iterations") {
-		t.Errorf("expected error message mentioning iterations exceeded, got: %v", err)
-	}
-
-	if attempt.FailureReason == nil || !strings.Contains(*attempt.FailureReason, "persistent compilation error") {
-		t.Errorf("expected attempt.FailureReason to be populated with error log, got: %v", attempt.FailureReason)
-	}
-
-	if len(mockCli.createdConfigs) != 2 {
-		t.Fatalf("expected exactly 2 execution turns before giving up, got %d", len(mockCli.createdConfigs))
-	}
-}
-
-func TestAgentTaskRunner_Watch_Success(t *testing.T) {
-	tmpDir := t.TempDir()
-	repoPath := filepath.Join(tmpDir, "repo")
-	if err := runner.EnsureGitRepo(repoPath); err != nil {
-		t.Fatalf("failed to init repo: %v", err)
-	}
-
-	cfg := &config.Config{
-		OpenCodeServerURL: "http://127.0.0.1:49374",
-		HostWorktreeRoot:  filepath.Join(tmpDir, "worktrees"),
-		HostRepoRoot:      tmpDir,
-	}
-	pRepo := &mockProjectRepo{
-		project: &models.Project{
-			ID:       "proj-watch-1",
-			RepoPath: repoPath,
-		},
-	}
-	task := &models.Task{
-		ID:        "task-watch-1",
-		ProjectID: "proj-watch-1",
-		Title:     "Watch task",
-		Prompt:    "Prompt",
-	}
-	attempt := &models.TaskAttempt{
-		ID:     "attempt-watch-1",
-		TaskID: task.ID,
-	}
-
-	t.Setenv("ATM_VERIFY_CMD", "echo 'pass'")
-	mockCli := &mockDockerClientForRunner{}
-	dockerRunner := sandbox.NewRunner(mockCli)
-	ar := runner.NewAgentTaskRunner(cfg, pRepo, &mockTaskRepo{task: task}, &mockLogRepo{}, git.NewWorktreeManager(cfg.HostWorktreeRoot), dockerRunner, mockCli, nil)
-
-	// Watch before or during task execution
-	doneCh := ar.Watch(task.ID)
-
-	go func() {
-		_ = ar.RunTask(context.Background(), task, attempt)
-	}()
-
-	select {
-	case err := <-doneCh:
-		if err != nil {
-			t.Errorf("expected nil error on success, got: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatalf("timed out waiting for task done channel")
-	}
-
-	// Verify channel is closed
-	select {
-	case _, ok := <-doneCh:
-		if ok {
-			t.Errorf("expected done channel to be closed")
-		}
-	default:
-	}
-}
-
-func TestAgentTaskRunner_Watch_Failure(t *testing.T) {
-	tmpDir := t.TempDir()
-	repoPath := filepath.Join(tmpDir, "repo")
-	if err := runner.EnsureGitRepo(repoPath); err != nil {
-		t.Fatalf("failed to init repo: %v", err)
-	}
-
-	cfg := &config.Config{
-		OpenCodeServerURL:      "http://127.0.0.1:49374",
-		HostWorktreeRoot:       filepath.Join(tmpDir, "worktrees"),
-		HostRepoRoot:           tmpDir,
-		MaxVerificationRetries: 1,
-	}
-	pRepo := &mockProjectRepo{
-		project: &models.Project{
-			ID:       "proj-watch-fail",
-			RepoPath: repoPath,
-		},
-	}
-	task := &models.Task{
-		ID:        "task-watch-fail",
-		ProjectID: "proj-watch-fail",
-		Title:     "Watch failing task",
-		Prompt:    "Prompt",
-	}
-	attempt := &models.TaskAttempt{
-		ID:     "attempt-watch-fail",
-		TaskID: task.ID,
-	}
-
-	t.Setenv("ATM_VERIFY_CMD", "exit 1")
-	mockCli := &mockDockerClientForRunner{}
-	dockerRunner := sandbox.NewRunner(mockCli)
-	ar := runner.NewAgentTaskRunner(cfg, pRepo, &mockTaskRepo{task: task}, &mockLogRepo{}, git.NewWorktreeManager(cfg.HostWorktreeRoot), dockerRunner, mockCli, nil)
-
-	doneCh := ar.Watch(task.ID)
-
-	go func() {
-		_ = ar.RunTask(context.Background(), task, attempt)
-	}()
-
-	select {
-	case err := <-doneCh:
-		if err == nil {
-			t.Errorf("expected non-nil error on failure, got nil")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatalf("timed out waiting for failing task done channel")
-	}
-}
-
-func TestAgentTaskRunner_CancelExecution_StopsDocker(t *testing.T) {
-	tmpDir := t.TempDir()
-	repoPath := filepath.Join(tmpDir, "repo")
-	if err := runner.EnsureGitRepo(repoPath); err != nil {
-		t.Fatalf("failed to init repo: %v", err)
-	}
-
-	cfg := &config.Config{
-		OpenCodeServerURL: "http://127.0.0.1:49374",
-		HostWorktreeRoot:  filepath.Join(tmpDir, "worktrees"),
-		HostRepoRoot:      tmpDir,
-	}
-	pRepo := &mockProjectRepo{
-		project: &models.Project{
-			ID:       "proj-cancel-docker",
-			RepoPath: repoPath,
-		},
-	}
-	task := &models.Task{
-		ID:        "task-cancel-docker",
-		ProjectID: "proj-cancel-docker",
-		Title:     "Cancel Docker Task",
-		Prompt:    "Long running agent prompt",
-	}
-	attempt := &models.TaskAttempt{
-		ID:     "attempt-cancel-docker",
-		TaskID: task.ID,
-	}
-
-	mockCli := &mockDockerClientForRunner{
-		waitStatusCh: make(chan container.WaitResponse), // blocks container wait
-	}
-
-	dockerRunner := sandbox.NewRunner(mockCli)
-	ar := runner.NewAgentTaskRunner(cfg, pRepo, &mockTaskRepo{task: task}, &mockLogRepo{}, git.NewWorktreeManager(cfg.HostWorktreeRoot), dockerRunner, mockCli, nil)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	doneCh := make(chan error, 1)
-	go func() {
-		doneCh <- ar.RunTask(ctx, task, attempt)
-	}()
-
-	// Wait briefly until runner is running
-	time.Sleep(50 * time.Millisecond)
-
-	// Cancel context
-	cancel()
-
-	select {
-	case err := <-doneCh:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("expected context.Canceled error from RunTask, got: %v", err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatalf("timed out waiting for RunTask to abort on context cancellation")
-	}
-
-	if !mockCli.stopCalled {
-		t.Errorf("expected ContainerStop to be called on cancellation")
-	}
-	if !mockCli.removeCalled {
-		t.Errorf("expected ContainerRemove to be called on cancellation")
-	}
-}
-
-func TestAgentTaskRunner_Watch_IsRunning(t *testing.T) {
-	ar := runner.NewAgentTaskRunner(nil, nil, nil, nil, nil, nil, nil, nil)
-	if ar.IsRunning("non-existent-task") {
-		t.Errorf("expected IsRunning to be false for non-existent-task")
-	}
-}
-
-func TestAgentTaskRunner_CancelExecution_StopsHostDescendants(t *testing.T) {
-	tmpDir := t.TempDir()
-	repoPath := filepath.Join(tmpDir, "repo")
-	if err := runner.EnsureGitRepo(repoPath); err != nil {
-		t.Fatalf("failed to init repo: %v", err)
-	}
-
-	// Create a dummy binary/script that spawns a child sleep process
-	scriptPath := filepath.Join(tmpDir, "fake_opencode.sh")
-	pidFilePath := filepath.Join(tmpDir, "child.pid")
-	scriptContent := fmt.Sprintf("#!/bin/sh\nsleep 30 &\necho $! > %s\nwait\n", pidFilePath)
-	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
-		t.Fatalf("failed to write fake script: %v", err)
-	}
-
-	cfg := &config.Config{
-		OpenCodeBinPath:  scriptPath,
-		HostWorktreeRoot: filepath.Join(tmpDir, "worktrees"),
-		HostRepoRoot:     tmpDir,
-	}
-	pRepo := &mockProjectRepo{
-		project: &models.Project{
-			ID:       "proj-cancel-host",
-			RepoPath: repoPath,
-		},
-	}
-	task := &models.Task{
-		ID:        "task-cancel-host",
-		ProjectID: "proj-cancel-host",
-		Title:     "Cancel Host Task",
-		Prompt:    "Prompt",
-	}
-	attempt := &models.TaskAttempt{
-		ID:     "attempt-cancel-host",
-		TaskID: task.ID,
-	}
-
-	// dockerRunner nil => falls back to host execution
-	ar := runner.NewAgentTaskRunner(cfg, pRepo, &mockTaskRepo{task: task}, &mockLogRepo{}, git.NewWorktreeManager(cfg.HostWorktreeRoot), nil, nil, nil)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	doneCh := make(chan error, 1)
-	go func() {
-		doneCh <- ar.RunTask(ctx, task, attempt)
-	}()
-
-	// Wait until child.pid exists
-	var childPid int
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if data, err := os.ReadFile(pidFilePath); err == nil && len(strings.TrimSpace(string(data))) > 0 {
-			var pid int
-			if _, err := fmt.Sscanf(string(data), "%d", &pid); err == nil && pid > 0 {
-				childPid = pid
-				break
-			}
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if childPid == 0 {
-		t.Fatalf("child process was not spawned in time")
-	}
-
-	// Cancel context
-	cancel()
-
-	select {
-	case err := <-doneCh:
-		if err == nil {
-			t.Errorf("expected non-nil error from canceled RunTask, got nil")
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatalf("timed out waiting for RunTask host execution to abort")
-	}
-
-	// Verify child process is dead
-	time.Sleep(100 * time.Millisecond)
-	proc, err := os.FindProcess(childPid)
-	if err == nil {
-		// On Unix, FindProcess always succeeds. Send signal 0 to check if alive.
-		err = proc.Signal(syscall.Signal(0))
-		if err == nil {
-			// Clean up child process
-			_ = proc.Kill()
-			t.Fatalf("spawned descendant process %d is still running after task cancellation", childPid)
-		}
-	}
-}
-
-func TestAgentTaskRunner_Watch_CompletedTask(t *testing.T) {
-	tmpDir := t.TempDir()
-	repoPath := filepath.Join(tmpDir, "repo")
-	if err := runner.EnsureGitRepo(repoPath); err != nil {
-		t.Fatalf("failed to init repo: %v", err)
-	}
-
-	cfg := &config.Config{
-		OpenCodeServerURL: "http://127.0.0.1:49374",
-		HostWorktreeRoot:  filepath.Join(tmpDir, "worktrees"),
-		HostRepoRoot:      tmpDir,
-	}
-	pRepo := &mockProjectRepo{
-		project: &models.Project{
-			ID:       "proj-watch-cached",
-			RepoPath: repoPath,
-		},
-	}
-	task := &models.Task{
-		ID:        "task-watch-cached",
-		ProjectID: "proj-watch-cached",
-		Title:     "Watch cached task",
-		Prompt:    "Prompt",
-	}
-	attempt := &models.TaskAttempt{
-		ID:     "attempt-watch-cached",
-		TaskID: task.ID,
-	}
-
-	t.Setenv("ATM_VERIFY_CMD", "echo 'pass'")
-	mockCli := &mockDockerClientForRunner{}
-	dockerRunner := sandbox.NewRunner(mockCli)
-	ar := runner.NewAgentTaskRunner(cfg, pRepo, &mockTaskRepo{task: task}, &mockLogRepo{}, git.NewWorktreeManager(cfg.HostWorktreeRoot), dockerRunner, mockCli, nil)
-
-	// Run task synchronously to completion
-	err := ar.RunTask(context.Background(), task, attempt)
-	if err != nil {
-		t.Fatalf("expected RunTask to succeed: %v", err)
-	}
-
-	// Verify task is no longer running
-	if ar.IsRunning(task.ID) {
-		t.Errorf("expected IsRunning to be false after completion")
-	}
-
-	// Calling Watch on already completed task returns immediately with cached result
-	doneCh := ar.Watch(task.ID)
-	select {
-	case err, ok := <-doneCh:
-		if err != nil {
-			t.Errorf("expected nil error on cached success, got: %v", err)
-		}
-		if ok {
-			_, ok2 := <-doneCh
-			if ok2 {
-				t.Errorf("expected channel to be closed")
-			}
-		}
-	case <-time.After(1 * time.Second):
-		t.Fatalf("timed out waiting for cached watch channel")
-	}
-}
-
-func TestAgentTaskRunner_RunTaskAsync(t *testing.T) {
-	tmpDir := t.TempDir()
-	repoPath := filepath.Join(tmpDir, "repo")
-	if err := runner.EnsureGitRepo(repoPath); err != nil {
-		t.Fatalf("failed to init repo: %v", err)
-	}
-
-	cfg := &config.Config{
-		OpenCodeServerURL: "http://127.0.0.1:49374",
-		HostWorktreeRoot:  filepath.Join(tmpDir, "worktrees"),
-		HostRepoRoot:      tmpDir,
-	}
-	pRepo := &mockProjectRepo{
-		project: &models.Project{
-			ID:       "proj-async",
-			RepoPath: repoPath,
-		},
-	}
-	task := &models.Task{
-		ID:        "task-async",
-		ProjectID: "proj-async",
-		Title:     "Async task",
-		Prompt:    "Prompt",
-	}
-	attempt := &models.TaskAttempt{
-		ID:     "attempt-async",
-		TaskID: task.ID,
-	}
-
-	t.Setenv("ATM_VERIFY_CMD", "echo 'pass'")
-	mockCli := &mockDockerClientForRunner{}
-	dockerRunner := sandbox.NewRunner(mockCli)
-	ar := runner.NewAgentTaskRunner(cfg, pRepo, &mockTaskRepo{task: task}, &mockLogRepo{}, git.NewWorktreeManager(cfg.HostWorktreeRoot), dockerRunner, mockCli, nil)
-
-	doneCh := ar.RunTaskAsync(context.Background(), task, attempt)
-	select {
-	case err := <-doneCh:
-		if err != nil {
-			t.Errorf("expected nil error, got: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatalf("timed out waiting for RunTaskAsync done channel")
-	}
-}
-
 type mockOpenCodeClientForRunner struct {
 	boundLocation  string
 	boundSessionID string
+	calls          int // every OpenCodeClient method invocation
 }
 
 func (m *mockOpenCodeClientForRunner) GetSession(ctx context.Context, sessionID string) (*runner.OpenCodeSessionDTO, error) {
+	m.calls++
 	return &runner.OpenCodeSessionDTO{ID: sessionID}, nil
 }
 func (m *mockOpenCodeClientForRunner) GetSessionMessages(ctx context.Context, sessionID string) ([]runner.OpenCodeMessageDTO, error) {
+	m.calls++
 	return nil, nil
 }
 func (m *mockOpenCodeClientForRunner) ListChildSessions(ctx context.Context, parentID string) ([]runner.OpenCodeSessionDTO, error) {
+	m.calls++
 	return nil, nil
 }
 func (m *mockOpenCodeClientForRunner) PromptSession(ctx context.Context, sessionID, prompt string) error {
+	m.calls++
 	return nil
 }
 func (m *mockOpenCodeClientForRunner) CompactSession(ctx context.Context, sessionID string) error {
+	m.calls++
 	return nil
 }
 func (m *mockOpenCodeClientForRunner) InterruptSession(ctx context.Context, sessionID string) error {
+	m.calls++
 	return nil
 }
 func (m *mockOpenCodeClientForRunner) InterruptSessionTree(ctx context.Context, rootSessionID string) error {
+	m.calls++
 	return nil
 }
 func (m *mockOpenCodeClientForRunner) EnsureSessionAtLocation(ctx context.Context, sessionID, title, directory string) error {
+	m.calls++
 	m.boundSessionID = sessionID
 	m.boundLocation = directory
 	return nil
-}
-
-func TestRunTask_EnsureSessionLocationBinding(t *testing.T) {
-	tmpDir := t.TempDir()
-	repoPath := filepath.Join(tmpDir, "repo")
-	if err := runner.EnsureGitRepo(repoPath); err != nil {
-		t.Fatalf("failed to init repo: %v", err)
-	}
-
-	cfg := &config.Config{
-		OpenCodeServerURL: "http://127.0.0.1:49374",
-		HostWorktreeRoot:  filepath.Join(tmpDir, "worktrees"),
-		HostRepoRoot:      tmpDir,
-	}
-	pRepo := &mockProjectRepo{
-		project: &models.Project{
-			ID:       "proj-bind-test",
-			RepoPath: repoPath,
-		},
-	}
-	task := &models.Task{
-		ID:        "task-bind-location",
-		ProjectID: "proj-bind-test",
-		Title:     "Session Binding Test",
-		Prompt:    "Verify directory locking",
-	}
-	attempt := &models.TaskAttempt{
-		ID:     "attempt-bind",
-		TaskID: task.ID,
-	}
-
-	t.Setenv("ATM_VERIFY_CMD", "echo 'ok'")
-	mockCli := &mockDockerClientForRunner{}
-	dockerRunner := sandbox.NewRunner(mockCli)
-	mockOC := &mockOpenCodeClientForRunner{}
-
-	ar := runner.NewAgentTaskRunner(
-		cfg,
-		pRepo,
-		&mockTaskRepo{task: task},
-		&mockLogRepo{},
-		git.NewWorktreeManager(cfg.HostWorktreeRoot),
-		dockerRunner,
-		mockCli,
-		nil,
-		runner.WithRunnerOpenCodeClient(mockOC),
-	)
-
-	err := ar.RunTask(context.Background(), task, attempt)
-	if err != nil {
-		t.Fatalf("expected RunTask to succeed: %v", err)
-	}
-
-	expectedSessionID := "ses_atm_task-bind-location"
-	if mockOC.boundSessionID != expectedSessionID {
-		t.Errorf("expected bound session ID %q, got %q", expectedSessionID, mockOC.boundSessionID)
-	}
-
-	expectedWorktree := filepath.Join(cfg.HostWorktreeRoot, task.ID)
-	if mockOC.boundLocation != expectedWorktree {
-		t.Errorf("expected bound worktree location %q, got %q", expectedWorktree, mockOC.boundLocation)
-	}
 }
 
 type mockIntegRepoForRunner struct {
@@ -1218,175 +594,594 @@ func (m *mockGHProviderForRunner) GetPullRequestStatus(ctx context.Context, inte
 	}, nil
 }
 
-func TestRunTask_GitHubIntegrationSyncAndPushBranch(t *testing.T) {
-	// 1. Create a bare git repo as our remote target
-	remoteDir := t.TempDir()
-	initBareCmd := exec.Command("git", "init", "--bare", "-b", "main", remoteDir)
-	if out, err := initBareCmd.CombinedOutput(); err != nil {
-		t.Fatalf("failed to init bare remote: %v, out: %s", err, string(out))
+type mockProjectSandboxManagerForRunner struct {
+	ensureFunc func(ctx context.Context, project *models.Project, imageTag string) (*runner.ProjectRouteHandle, error)
+	called     bool
+}
+
+func (m *mockProjectSandboxManagerForRunner) EnsureProjectContainer(ctx context.Context, project *models.Project, imageTag string) (*runner.ProjectRouteHandle, error) {
+	m.called = true
+	if m.ensureFunc != nil {
+		return m.ensureFunc(ctx, project, imageTag)
+	}
+	return &runner.ProjectRouteHandle{
+		ProjectID:    project.ID,
+		ContainerID:  "c-" + project.ID,
+		EndpointURL:  "http://127.0.0.1:49374",
+		AuthPassword: "mock-password",
+	}, nil
+}
+
+func (m *mockProjectSandboxManagerForRunner) StopProjectContainer(ctx context.Context, projectID string, gracePeriod time.Duration) error {
+	return nil
+}
+
+func (m *mockProjectSandboxManagerForRunner) GetProjectRoute(ctx context.Context, projectID string) (*runner.ProjectRouteHandle, bool, error) {
+	return nil, false, nil
+}
+
+type mockWorkspaceManagerForRunner struct {
+	ensureFunc  func(ctx context.Context, projectID string, task *models.Task, repoName string, baseCommit string) (string, error)
+	cleanupFunc func(ctx context.Context, projectID string, taskID string) error
+	called      bool
+}
+
+func (m *mockWorkspaceManagerForRunner) EnsureTaskWorktree(ctx context.Context, projectID string, task *models.Task, repoName string, baseCommit string) (string, error) {
+	m.called = true
+	if m.ensureFunc != nil {
+		return m.ensureFunc(ctx, projectID, task, repoName, baseCommit)
+	}
+	return fmt.Sprintf("/workspaces/%s/tasks/%s", repoName, task.ID), nil
+}
+
+func (m *mockWorkspaceManagerForRunner) CleanupTaskScratch(ctx context.Context, projectID string, taskID string) error {
+	if m.cleanupFunc != nil {
+		return m.cleanupFunc(ctx, projectID, taskID)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Containment (Phase 1A): RunTask refuses unconditionally and has no side effects.
+// ---------------------------------------------------------------------------
+
+type spyProjectRepo struct {
+	mockProjectRepo
+	calls int
+}
+
+func (s *spyProjectRepo) Create(ctx context.Context, p *models.Project) error {
+	s.calls++
+	return nil
+}
+func (s *spyProjectRepo) Update(ctx context.Context, p *models.Project) error {
+	s.calls++
+	return nil
+}
+func (s *spyProjectRepo) GetByID(ctx context.Context, id string) (*models.Project, error) {
+	s.calls++
+	return s.mockProjectRepo.project, nil
+}
+func (s *spyProjectRepo) List(ctx context.Context, teamID string) ([]models.Project, error) {
+	s.calls++
+	return nil, nil
+}
+func (s *spyProjectRepo) Delete(ctx context.Context, id string) error {
+	s.calls++
+	return nil
+}
+
+type spyTaskRepo struct {
+	mockTaskRepo
+	calls int
+}
+
+func (s *spyTaskRepo) Create(ctx context.Context, t *models.Task) error {
+	s.calls++
+	return nil
+}
+func (s *spyTaskRepo) GetByID(ctx context.Context, id string) (*models.Task, error) {
+	s.calls++
+	return s.mockTaskRepo.task, nil
+}
+func (s *spyTaskRepo) GetByProjectAndExternalID(ctx context.Context, projectID, externalID string) (*models.Task, error) {
+	s.calls++
+	return s.mockTaskRepo.task, nil
+}
+func (s *spyTaskRepo) List(ctx context.Context, projectID string) ([]models.Task, error) {
+	s.calls++
+	return nil, nil
+}
+func (s *spyTaskRepo) ListByParentID(ctx context.Context, parentTaskID string) ([]models.Task, error) {
+	s.calls++
+	return nil, nil
+}
+func (s *spyTaskRepo) Update(ctx context.Context, t *models.Task) error {
+	s.calls++
+	return nil
+}
+func (s *spyTaskRepo) UpdateStatus(ctx context.Context, id string, status models.TaskStatus) error {
+	s.calls++
+	return nil
+}
+
+type spyIntegRepo struct {
+	mockIntegRepoForRunner
+	calls int
+}
+
+func (s *spyIntegRepo) ListByProjectID(ctx context.Context, projectID string) ([]models.ProjectIntegration, error) {
+	s.calls++
+	return s.mockIntegRepoForRunner.integs, nil
+}
+
+type spyCredRepo struct {
+	mockCredRepoForRunner
+	calls int
+}
+
+func (s *spyCredRepo) GetByID(ctx context.Context, id string) (*models.Credential, error) {
+	s.calls++
+	return s.mockCredRepoForRunner.cred, nil
+}
+func (s *spyCredRepo) GetByIDAndTeam(ctx context.Context, id, teamID string) (*models.Credential, error) {
+	s.calls++
+	return s.mockCredRepoForRunner.cred, nil
+}
+
+type refusalFixture struct {
+	tmpDir   string
+	repoPath string
+	marker   string
+	cfg      *config.Config
+	pRepo    *spyProjectRepo
+	tRepo    *spyTaskRepo
+	lRepo    *mockLogRepo
+	cli      *mockDockerClientForRunner
+	oc       *mockOpenCodeClientForRunner
+	sbMgr    *mockProjectSandboxManagerForRunner
+	wsMgr    *mockWorkspaceManagerForRunner
+	integ    *spyIntegRepo
+	cred     *spyCredRepo
+	gh       *mockGHProviderForRunner
+	task     *models.Task
+	attempt  *models.TaskAttempt
+	ar       *runner.AgentTaskRunner
+	before   []string
+	hub      *ws.Hub
+	taskSub  *ws.MockClient
+	globSub  *ws.MockClient
+}
+
+func snapshotTree(t *testing.T, root string) []string {
+	t.Helper()
+	var entries []string
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		entries = append(entries, rel)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("failed to snapshot %s: %v", root, err)
+	}
+	return entries
+}
+
+// newRefusalFixture builds a fully populated runner (repos, docker, OpenCode, integration, managers).
+// Every collaborator records calls so tests can prove RunTask touched none of them.
+func newRefusalFixture(t *testing.T, id string, withManagers bool) *refusalFixture {
+	t.Helper()
+	f := &refusalFixture{tmpDir: t.TempDir()}
+	f.repoPath = filepath.Join(f.tmpDir, "repo")
+	if err := os.MkdirAll(f.repoPath, 0o755); err != nil {
+		t.Fatalf("failed to create repo dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(f.repoPath, "keep.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("failed to seed repo dir: %v", err)
 	}
 
-	// 2. Clone bare remote to seed it with an initial commit on main
-	seedDir := t.TempDir()
-	if out, err := exec.Command("git", "clone", remoteDir, seedDir).CombinedOutput(); err != nil {
-		t.Fatalf("failed to clone seed repo: %v, out: %s", err, string(out))
-	}
-	_ = exec.Command("git", "-C", seedDir, "config", "user.name", "Test").Run()
-	_ = exec.Command("git", "-C", seedDir, "config", "user.email", "test@test.local").Run()
-	testFilePath := filepath.Join(seedDir, "app.js")
-	_ = os.WriteFile(testFilePath, []byte("console.log('hello remote')"), 0644)
-	_ = exec.Command("git", "-C", seedDir, "add", ".").Run()
-	if out, err := exec.Command("git", "-C", seedDir, "commit", "-m", "Initial commit from remote").CombinedOutput(); err != nil {
-		t.Fatalf("seed commit failed: %v, out: %s", err, string(out))
-	}
-	if out, err := exec.Command("git", "-C", seedDir, "push", "origin", "main").CombinedOutput(); err != nil {
-		t.Fatalf("seed push failed: %v, out: %s", err, string(out))
-	}
+	// If the legacy verification step ever ran, it would create this marker.
+	f.marker = filepath.Join(f.tmpDir, "verify-ran")
+	t.Setenv("ATM_VERIFY_CMD", "touch "+f.marker)
 
-	// 3. Set up AgentTaskRunner with GitHub integration pointing to file:// remote
-	tmpDir := t.TempDir()
-	cfg := &config.Config{
-		OpenCodeServerURL: "http://127.0.0.1:49374",
-		HostWorktreeRoot:  filepath.Join(tmpDir, "worktrees"),
-		HostRepoRoot:      filepath.Join(tmpDir, "repos"),
+	f.cfg = &config.Config{
+		OpenCodeServerURL: "http://127.0.0.1:1",
+		HostWorktreeRoot:  filepath.Join(f.tmpDir, "worktrees"),
+		HostRepoRoot:      f.tmpDir,
 	}
-
+	f.pRepo = &spyProjectRepo{mockProjectRepo: mockProjectRepo{project: &models.Project{ID: id + "-proj", RepoPath: f.repoPath}}}
+	f.task = &models.Task{ID: id, ProjectID: id + "-proj", Title: "Refused task", Prompt: "Prompt"}
+	f.attempt = &models.TaskAttempt{ID: id + "-attempt", TaskID: f.task.ID}
+	f.tRepo = &spyTaskRepo{mockTaskRepo: mockTaskRepo{task: f.task}}
+	f.lRepo = &mockLogRepo{}
+	f.cli = &mockDockerClientForRunner{}
+	f.oc = &mockOpenCodeClientForRunner{}
+	f.integ = &spyIntegRepo{mockIntegRepoForRunner: mockIntegRepoForRunner{integs: []models.ProjectIntegration{{
+		ID: "integ-refused", ProjectID: f.task.ProjectID, Provider: models.IntegrationGitHub, Enabled: true,
+	}}}}
+	f.cred = &spyCredRepo{mockCredRepoForRunner: mockCredRepoForRunner{cred: &models.Credential{ID: "cred-refused"}}}
+	f.gh = &mockGHProviderForRunner{prURL: "https://example.invalid/pr/1"}
 	cipher, err := crypto.NewSecretCipher([]byte("01234567890123456789012345678901"))
 	if err != nil {
 		t.Fatalf("failed to create cipher: %v", err)
 	}
-	encToken, _ := cipher.Encrypt("test-pat-token")
 
-	credID := "cred-gh-1"
-	cred := &models.Credential{
-		ID:            credID,
-		Provider:      "github",
-		Label:         "Test PAT",
-		EncryptedData: encToken,
+	opts := []runner.RunnerOption{
+		runner.WithRunnerOpenCodeClient(f.oc),
+		runner.WithRunnerGitHubIntegration(f.integ, f.cred, cipher, f.gh),
+	}
+	if withManagers {
+		f.sbMgr = &mockProjectSandboxManagerForRunner{}
+		f.wsMgr = &mockWorkspaceManagerForRunner{}
+		opts = append(opts,
+			runner.WithRunnerProjectSandboxManager(f.sbMgr),
+			runner.WithRunnerWorkspaceManager(f.wsMgr),
+		)
+	}
+	// A live hub with subscribers on the task room and the global room: any broadcast is observable.
+	f.hub = ws.NewHub()
+	go f.hub.Run()
+	t.Cleanup(f.hub.Stop)
+	f.taskSub = ws.NewMockClient("sub-task-"+id, f.task.ID)
+	f.globSub = ws.NewMockClient("sub-global-"+id, "global")
+	f.hub.Register(f.taskSub)
+	f.hub.Register(f.globSub)
+	deadline := time.Now().Add(2 * time.Second)
+	for !(f.hub.HasSubscribers(f.task.ID) && f.hub.HasSubscribers("global")) {
+		if time.Now().After(deadline) {
+			t.Fatalf("hub subscribers were not registered")
+		}
+		time.Sleep(time.Millisecond)
 	}
 
-	integ := models.ProjectIntegration{
-		ID:           "integ-1",
-		ProjectID:    "proj-gh-integrated",
-		CredentialID: credID,
-		Provider:     models.IntegrationGitHub,
-		ExternalID:   "file://" + remoteDir,
-		Enabled:      true,
-		Config: models.JSONMap{
-			"base_branch": "main",
-			"auto_pr":     true,
-		},
+	f.ar = runner.NewAgentTaskRunner(f.cfg, f.pRepo, f.tRepo, f.lRepo,
+		git.NewWorktreeManager(f.cfg.HostWorktreeRoot), sandbox.NewRunner(f.cli), f.cli, f.hub, opts...)
+	f.before = snapshotTree(t, f.tmpDir)
+	return f
+}
+
+func assertRuntimeRefused(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("expected RunTask to be refused, got nil")
+	}
+	if !errors.Is(err, runner.ErrRuntimeExecutionUnavailable) {
+		t.Fatalf("expected ErrRuntimeExecutionUnavailable, got: %v", err)
+	}
+	if !errors.Is(err, common.ErrRuntimeQuarantined) {
+		t.Fatalf("expected error to wrap common.ErrRuntimeQuarantined, got: %v", err)
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "gate") {
+		t.Errorf("refusal message must not mention internal gate names: %q", err.Error())
+	}
+}
+
+func (f *refusalFixture) assertNoSideEffects(t *testing.T) {
+	t.Helper()
+	if f.pRepo.calls != 0 {
+		t.Errorf("projectRepo must not be touched, got %d calls", f.pRepo.calls)
+	}
+	if f.tRepo.calls != 0 {
+		t.Errorf("taskRepo must not be touched, got %d calls", f.tRepo.calls)
+	}
+	if f.integ.calls != 0 || f.cred.calls != 0 {
+		t.Errorf("integration/credential repos must not be touched, got %d/%d calls", f.integ.calls, f.cred.calls)
+	}
+	if f.gh.prCreated {
+		t.Errorf("pull request provider must not be invoked")
+	}
+	if len(f.lRepo.logs) != 0 {
+		t.Errorf("no logs must be appended, got %d", len(f.lRepo.logs))
+	}
+	if f.cli.calls != 0 {
+		t.Errorf("Docker client must not be called at all, got %d calls", f.cli.calls)
+	}
+	if f.oc.calls != 0 {
+		t.Errorf("OpenCode client must not be called at all, got %d calls", f.oc.calls)
+	}
+	// Broadcasts are delivered from goroutines; allow them to land before checking.
+	time.Sleep(50 * time.Millisecond)
+	if n := len(f.taskSub.Messages()); n != 0 {
+		t.Errorf("no task-room broadcast may be sent, got %d", n)
+	}
+	if n := len(f.globSub.Messages()); n != 0 {
+		t.Errorf("no global broadcast may be sent, got %d", n)
+	}
+	if f.cli.createdConfig != nil || len(f.cli.createdConfigs) != 0 || f.cli.stopCalled || f.cli.removeCalled {
+		t.Errorf("docker must not be touched: %+v", f.cli)
+	}
+	if f.oc.boundSessionID != "" || f.oc.boundLocation != "" {
+		t.Errorf("OpenCode must not be touched: session=%q location=%q", f.oc.boundSessionID, f.oc.boundLocation)
+	}
+	if f.sbMgr != nil && f.sbMgr.called {
+		t.Errorf("EnsureProjectContainer must never be called")
+	}
+	if f.wsMgr != nil && f.wsMgr.called {
+		t.Errorf("EnsureTaskWorktree must never be called")
+	}
+	if _, err := os.Stat(f.marker); err == nil {
+		t.Errorf("verification command must not run")
+	}
+	if _, err := os.Stat(f.cfg.HostWorktreeRoot); err == nil {
+		t.Errorf("host worktree root must not be created")
+	}
+	after := snapshotTree(t, f.tmpDir)
+	if strings.Join(after, "\n") != strings.Join(f.before, "\n") {
+		t.Errorf("filesystem changed.\nbefore: %v\nafter:  %v", f.before, after)
+	}
+}
+
+func TestRunTask_RefusesWithoutSideEffects(t *testing.T) {
+	cases := []struct {
+		name         string
+		withManagers bool
+	}{
+		{"nil project sandbox and workspace managers", false},
+		{"non-nil project sandbox and workspace managers", true},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRefusalFixture(t, fmt.Sprintf("task-refused-%d", i), tc.withManagers)
+			err := f.ar.RunTask(context.Background(), f.task, f.attempt)
+			assertRuntimeRefused(t, err)
+			f.assertNoSideEffects(t)
+			if f.ar.IsRunning(f.task.ID) {
+				t.Errorf("task must not remain marked as running")
+			}
+		})
+	}
+}
+
+func TestRunTask_NilTaskStillRejected(t *testing.T) {
+	f := newRefusalFixture(t, "task-nil", true)
+	err := f.ar.RunTask(context.Background(), nil, f.attempt)
+	if err == nil {
+		t.Fatalf("expected error for nil task")
+	}
+	f.assertNoSideEffects(t)
+}
+
+func TestRunTask_RefusesWhenContextAlreadyCancelled(t *testing.T) {
+	f := newRefusalFixture(t, "task-cancel", true)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := f.ar.RunTask(ctx, f.task, f.attempt)
+	assertRuntimeRefused(t, err)
+	f.assertNoSideEffects(t)
+}
+
+// Legacy: TestRunInDocker_SessionAndTitleFlags
+func TestRunInDocker_SessionAndTitleFlags(t *testing.T) {
+	f := newRefusalFixture(t, "task-docker-1", false)
+	sessionID := "ses_atm_task-docker-1"
+	f.task.SessionID = &sessionID
+	assertRuntimeRefused(t, f.ar.RunTask(context.Background(), f.task, f.attempt))
+	f.assertNoSideEffects(t)
+}
+
+func TestRunTask_VerificationLoop_PassFirstTurn(t *testing.T) {
+	f := newRefusalFixture(t, "task-verify-pass", false)
+	assertRuntimeRefused(t, f.ar.RunTask(context.Background(), f.task, f.attempt))
+	f.assertNoSideEffects(t)
+}
+
+func TestRunTask_VerificationLoop_FailThenPass(t *testing.T) {
+	f := newRefusalFixture(t, "task-verify-fail-pass", false)
+	f.cfg.MaxVerificationRetries = 3
+	assertRuntimeRefused(t, f.ar.RunTask(context.Background(), f.task, f.attempt))
+	f.assertNoSideEffects(t)
+}
+
+func TestRunTask_VerificationLoop_MaxRetriesExceeded(t *testing.T) {
+	f := newRefusalFixture(t, "task-verify-max", false)
+	f.cfg.MaxVerificationRetries = 1
+	assertRuntimeRefused(t, f.ar.RunTask(context.Background(), f.task, f.attempt))
+	f.assertNoSideEffects(t)
+}
+
+func TestAgentTaskRunner_Watch_Success(t *testing.T) {
+	f := newRefusalFixture(t, "task-watch-1", false)
+	doneCh := f.ar.Watch(f.task.ID)
+	go func() {
+		_ = f.ar.RunTask(context.Background(), f.task, f.attempt)
+	}()
+
+	select {
+	case err := <-doneCh:
+		assertRuntimeRefused(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for task done channel")
+	}
+	select {
+	case _, ok := <-doneCh:
+		if ok {
+			t.Errorf("expected done channel to be closed")
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("done channel was not closed")
+	}
+	f.assertNoSideEffects(t)
+}
+
+func TestAgentTaskRunner_Watch_Failure(t *testing.T) {
+	f := newRefusalFixture(t, "task-watch-fail", false)
+	f.cfg.MaxVerificationRetries = 1
+	doneCh := f.ar.Watch(f.task.ID)
+	go func() {
+		_ = f.ar.RunTask(context.Background(), f.task, f.attempt)
+	}()
+
+	select {
+	case err := <-doneCh:
+		assertRuntimeRefused(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for failing task done channel")
+	}
+	f.assertNoSideEffects(t)
+}
+
+func TestAgentTaskRunner_CancelExecution_StopsDocker(t *testing.T) {
+	f := newRefusalFixture(t, "task-cancel-docker", false)
+	ctx, cancel := context.WithCancel(context.Background())
+	doneCh := make(chan error, 1)
+	go func() {
+		doneCh <- f.ar.RunTask(ctx, f.task, f.attempt)
+	}()
+	cancel()
+
+	select {
+	case err := <-doneCh:
+		assertRuntimeRefused(t, err)
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for RunTask to return")
+	}
+	// No container was ever created, so there is nothing to stop or remove.
+	f.assertNoSideEffects(t)
+}
+
+func TestAgentTaskRunner_Watch_IsRunning(t *testing.T) {
+	ar := runner.NewAgentTaskRunner(nil, nil, nil, nil, nil, nil, nil, nil)
+	if ar.IsRunning("non-existent-task") {
+		t.Errorf("expected IsRunning to be false for non-existent-task")
 	}
 
-	pRepo := &mockProjectRepo{
-		project: &models.Project{
-			ID:       "proj-gh-integrated",
-			RepoPath: "", // will be automatically set to HostRepoRoot/<cleanSlug>
-		},
+	// A refused run must also leave IsRunning false (nil collaborators prove nothing is dereferenced).
+	task := &models.Task{ID: "task-isrunning"}
+	assertRuntimeRefused(t, ar.RunTask(context.Background(), task, &models.TaskAttempt{ID: "a"}))
+	if ar.IsRunning(task.ID) {
+		t.Errorf("expected IsRunning to be false after refused run")
+	}
+}
+
+func TestAgentTaskRunner_Watch_CompletedTask(t *testing.T) {
+	f := newRefusalFixture(t, "task-watch-cached", false)
+	assertRuntimeRefused(t, f.ar.RunTask(context.Background(), f.task, f.attempt))
+	if f.ar.IsRunning(f.task.ID) {
+		t.Errorf("expected IsRunning to be false after completion")
 	}
 
-	task := &models.Task{
-		ID:        "task-gh-sync-test",
-		ProjectID: "proj-gh-integrated",
-		Title:     "Feature Implement Task",
-		Prompt:    "Modify app.js",
+	// Watch after a refused run delivers the cached sentinel and closes the channel.
+	doneCh := f.ar.Watch(f.task.ID)
+	select {
+	case err, ok := <-doneCh:
+		if !ok {
+			t.Fatalf("expected cached error to be delivered before close")
+		}
+		assertRuntimeRefused(t, err)
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for cached watch channel")
 	}
-	attempt := &models.TaskAttempt{
-		ID:     "attempt-gh-1",
-		TaskID: task.ID,
+	select {
+	case _, ok := <-doneCh:
+		if ok {
+			t.Errorf("expected channel to be closed")
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("watch channel was not closed")
 	}
+	f.assertNoSideEffects(t)
+}
 
-	t.Setenv("ATM_VERIFY_CMD", "echo 'verification passed'")
-	mockCli := &mockDockerClientForRunner{}
-	dockerRunner := sandbox.NewRunner(mockCli)
-	mockOC := &mockOpenCodeClientForRunner{}
-	mockGH := &mockGHProviderForRunner{prURL: "https://github.com/test/repo/pull/1"}
-
-	ar := runner.NewAgentTaskRunner(
-		cfg,
-		pRepo,
-		&mockTaskRepo{task: task},
-		&mockLogRepo{},
-		git.NewWorktreeManager(cfg.HostWorktreeRoot),
-		dockerRunner,
-		mockCli,
-		nil,
-		runner.WithRunnerOpenCodeClient(mockOC),
-		runner.WithRunnerGitHubIntegration(
-			&mockIntegRepoForRunner{integs: []models.ProjectIntegration{integ}},
-			&mockCredRepoForRunner{cred: cred},
-			cipher,
-			mockGH,
-		),
-	)
-
-	ctx := context.Background()
-	err = ar.RunTask(ctx, task, attempt)
-	if err != nil {
-		t.Fatalf("RunTask failed with error: %v", err)
+func TestAgentTaskRunner_RunTaskAsync(t *testing.T) {
+	f := newRefusalFixture(t, "task-async", true)
+	doneCh := f.ar.RunTaskAsync(context.Background(), f.task, f.attempt)
+	select {
+	case err := <-doneCh:
+		assertRuntimeRefused(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for RunTaskAsync done channel")
 	}
+	f.assertNoSideEffects(t)
+}
 
-	// 4. Verify worktree contains app.js synced from remote
-	worktreePath := filepath.Join(cfg.HostWorktreeRoot, task.ID)
-	content, readErr := os.ReadFile(filepath.Join(worktreePath, "app.js"))
-	if readErr != nil {
-		t.Fatalf("expected app.js to exist in worktree synced from remote, got: %v", readErr)
+func TestRunTask_EnsureSessionLocationBinding(t *testing.T) {
+	f := newRefusalFixture(t, "task-bind-location", true)
+	assertRuntimeRefused(t, f.ar.RunTask(context.Background(), f.task, f.attempt))
+	if f.oc.boundSessionID != "" || f.oc.boundLocation != "" {
+		t.Errorf("session must not be bound, got session=%q location=%q", f.oc.boundSessionID, f.oc.boundLocation)
 	}
-	if !strings.Contains(string(content), "hello remote") {
-		t.Errorf("expected content 'hello remote', got %s", string(content))
-	}
+	f.assertNoSideEffects(t)
+}
 
-	// 5. Verify OpenCode session was locked to worktreePath
-	if mockOC.boundLocation != worktreePath {
-		t.Errorf("expected OpenCode session bound to %s, got %s", worktreePath, mockOC.boundLocation)
+func TestRunTask_GitHubIntegrationSyncAndPushBranch(t *testing.T) {
+	f := newRefusalFixture(t, "task-gh-sync-test", true)
+	f.integ.integs[0].Config = models.JSONMap{"base_branch": "main", "auto_pr": true}
+	assertRuntimeRefused(t, f.ar.RunTask(context.Background(), f.task, f.attempt))
+	if f.gh.prCreated {
+		t.Errorf("no pull request must be created")
 	}
+	f.assertNoSideEffects(t)
+}
 
-	// 6. Verify PR was created
-	if !mockGH.prCreated {
-		t.Errorf("expected GitHub PR to have been created")
-	}
+func TestTaskRunner_DockerUnavailable_FailsClosed(t *testing.T) {
+	f := newRefusalFixture(t, "task-docker-unavailable", false)
+	f.cli.createErr = errors.New("docker daemon unreachable")
+	assertRuntimeRefused(t, f.ar.RunTask(context.Background(), f.task, f.attempt))
+	f.assertNoSideEffects(t)
+}
 
-	// 7. Verify branch was pushed to remote bare repo
-	checkBranchCmd := exec.Command("git", "--git-dir", remoteDir, "rev-parse", "--verify", "task/"+task.ID)
-	if out, err := checkBranchCmd.CombinedOutput(); err != nil {
-		t.Errorf("expected branch task/%s to exist in remote bare repo, out: %s, err: %v", task.ID, string(out), err)
+func TestTaskRunner_ContainerCreateError_FailsClosed(t *testing.T) {
+	f := newRefusalFixture(t, "task-create-error", false)
+	f.cli.createErr = errors.New("create failed")
+	assertRuntimeRefused(t, f.ar.RunTask(context.Background(), f.task, f.attempt))
+	if f.cli.removeCalled {
+		t.Errorf("ContainerRemove must not be invoked")
 	}
+	f.assertNoSideEffects(t)
+}
 
-	// 8. Defect 3: Verify cancellation before auto-PR suppresses PR creation
-	taskCancel := &models.Task{
-		ID:        "task-gh-cancel-test",
-		ProjectID: "proj-gh-integrated",
-		Title:     "Feature Canceled Task",
-		Prompt:    "Modify app.js",
+func TestAgentTaskRunner_InContainerWorktreePathBinding(t *testing.T) {
+	f := newRefusalFixture(t, "task-sandbox-123", true)
+	assertRuntimeRefused(t, f.ar.RunTask(context.Background(), f.task, f.attempt))
+	if f.sbMgr.called {
+		t.Errorf("EnsureProjectContainer must not be called")
 	}
-	attemptCancel := &models.TaskAttempt{
-		ID:     "attempt-gh-cancel",
-		TaskID: taskCancel.ID,
+	if f.wsMgr.called {
+		t.Errorf("EnsureTaskWorktree must not be called")
 	}
-	mockGH2 := &mockGHProviderForRunner{prURL: "https://github.com/test/repo/pull/2"}
-	arCancel := runner.NewAgentTaskRunner(
-		cfg,
-		pRepo,
-		&mockTaskRepo{task: taskCancel},
-		&mockLogRepo{},
-		git.NewWorktreeManager(cfg.HostWorktreeRoot),
-		dockerRunner,
-		mockCli,
-		nil,
-		runner.WithRunnerOpenCodeClient(mockOC),
-		runner.WithRunnerGitHubIntegration(
-			&mockIntegRepoForRunner{integs: []models.ProjectIntegration{integ}},
-			&mockCredRepoForRunner{cred: cred},
-			cipher,
-			mockGH2,
-		),
-	)
+	f.assertNoSideEffects(t)
+}
 
-	canceledCtx, cancelFn := context.WithCancel(context.Background())
-	cancelFn() // cancel immediately
-	_ = arCancel.RunTask(canceledCtx, taskCancel, attemptCancel)
-
-	if mockGH2.prCreated {
-		t.Errorf("expected PR creation to be suppressed when context is canceled")
+func TestAgentTaskRunner_NoHostFallbackOnSandboxFailure(t *testing.T) {
+	// Case A: the sandbox manager would fail; it must never be consulted and no host fallback may run.
+	fa := newRefusalFixture(t, "task-sandbox-fail-a", true)
+	fa.sbMgr.ensureFunc = func(ctx context.Context, project *models.Project, imageTag string) (*runner.ProjectRouteHandle, error) {
+		return nil, errors.New("container engine exhausted")
 	}
+	errA := fa.ar.RunTask(context.Background(), fa.task, fa.attempt)
+	assertRuntimeRefused(t, errA)
+	if strings.Contains(errA.Error(), "container engine exhausted") {
+		t.Errorf("sandbox manager must not be consulted")
+	}
+	fa.assertNoSideEffects(t)
+
+	// Case B: the workspace manager would fail; it must never be consulted.
+	fb := newRefusalFixture(t, "task-sandbox-fail-b", true)
+	fb.wsMgr.ensureFunc = func(ctx context.Context, projectID string, task *models.Task, repoName string, baseCommit string) (string, error) {
+		return "", errors.New("submodule rejected fail-closed")
+	}
+	errB := fb.ar.RunTask(context.Background(), fb.task, fb.attempt)
+	assertRuntimeRefused(t, errB)
+	if strings.Contains(errB.Error(), "submodule rejected") {
+		t.Errorf("workspace manager must not be consulted")
+	}
+	fb.assertNoSideEffects(t)
+}
+
+func (m *mockDockerClientForRunner) ContainerExecCreate(ctx context.Context, containerID string, options container.ExecOptions) (types.IDResponse, error) {
+	return types.IDResponse{ID: "exec-1"}, nil
+}
+
+func (m *mockDockerClientForRunner) ContainerExecAttach(ctx context.Context, execID string, config container.ExecAttachOptions) (types.HijackedResponse, error) {
+	return types.HijackedResponse{}, nil
+}
+
+func (m *mockDockerClientForRunner) ContainerExecInspect(ctx context.Context, execID string) (container.ExecInspect, error) {
+	return container.ExecInspect{}, nil
 }

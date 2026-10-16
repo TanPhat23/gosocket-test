@@ -103,6 +103,26 @@ export const TaskInspectorModal: React.FC<TaskInspectorModalProps> = ({
     ? (propTaskId ? tasks[propTaskId] ?? null : null)
     : selectedTask;
 
+  // The list payload carries no failure reason; the single-task read adds it for failed tasks.
+  const failedTaskId = task?.status === 'failed' ? task.id : '';
+  const [failure, setFailure] = useState<{ id: string; reason: string } | null>(null);
+  React.useEffect(() => {
+    if (!failedTaskId) return;
+    let cancelled = false;
+    taskApi
+      .getTask(failedTaskId)
+      .then((detail) => {
+        if (!cancelled && detail.failure_reason) {
+          setFailure({ id: failedTaskId, reason: detail.failure_reason });
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [failedTaskId]);
+  const failureReason = failure?.id === failedTaskId ? failure.reason : null;
+
   const [activeTab, setActiveTab] = useState<string>('overview');
 
   const [isCreatingPR, setIsCreatingPR] = useState(false);
@@ -447,6 +467,12 @@ export const TaskInspectorModal: React.FC<TaskInspectorModalProps> = ({
 
           {/* Overview Tab */}
           <TabsContent value="overview" className="flex-1 overflow-y-auto mt-4 space-y-4 pr-1">
+            {failureReason && (
+              <div role="alert" className="p-3 rounded-lg border border-destructive/30 bg-destructive/10 text-xs text-destructive">
+                <span className="font-semibold">Failure reason: </span>
+                {failureReason}
+              </div>
+            )}
             {/* Prompt block */}
             <div className="space-y-1.5">
               <h4 className="text-xs font-semibold text-foreground uppercase tracking-wider">

@@ -30,7 +30,15 @@ type SessionClaims struct {
 	UserID    string    `json:"uid"`
 	Issuer    string    `json:"iss"`
 	Subject   string    `json:"sub"`
+	IssuedAt  time.Time `json:"iat"`
 	ExpiresAt time.Time `json:"exp"`
+}
+
+// RevokedBy reports whether the session was issued before validAfter, the user's
+// SessionsValidAfter (nil means no revocation). Tokens without an IssuedAt are rejected earlier, by
+// VerifyPayload.
+func (c *SessionClaims) RevokedBy(validAfter *time.Time) bool {
+	return validAfter != nil && c.IssuedAt.Before(*validAfter)
 }
 
 // SessionManager manages signed session cookies.
@@ -101,17 +109,23 @@ func (sm *SessionManager) VerifyPayload(token string) (*SessionClaims, error) {
 	if time.Now().After(claims.ExpiresAt) {
 		return nil, ErrExpiredSession
 	}
+	// Tokens minted before iat was recorded cannot be checked against SessionsValidAfter.
+	if claims.IssuedAt.IsZero() {
+		return nil, ErrInvalidSession
+	}
 
 	return &claims, nil
 }
 
 // CreateSession creates a signed session token and sets the cookie on an http.ResponseWriter.
 func (sm *SessionManager) CreateSession(w http.ResponseWriter, userID, issuer, subject string) (string, error) {
+	now := time.Now()
 	claims := SessionClaims{
 		UserID:    userID,
 		Issuer:    issuer,
 		Subject:   subject,
-		ExpiresAt: time.Now().Add(sm.ttl),
+		IssuedAt:  now,
+		ExpiresAt: now.Add(sm.ttl),
 	}
 
 	token, err := sm.SignPayload(claims)
@@ -158,11 +172,13 @@ func IsSecureCookie(configuredSecure bool, c fiber.Ctx) bool {
 
 // CreateSessionFiber creates a signed session token and sets the cookie on a Fiber context.
 func (sm *SessionManager) CreateSessionFiber(c fiber.Ctx, userID, issuer, subject string) (string, error) {
+	now := time.Now()
 	claims := SessionClaims{
 		UserID:    userID,
 		Issuer:    issuer,
 		Subject:   subject,
-		ExpiresAt: time.Now().Add(sm.ttl),
+		IssuedAt:  now,
+		ExpiresAt: now.Add(sm.ttl),
 	}
 
 	token, err := sm.SignPayload(claims)

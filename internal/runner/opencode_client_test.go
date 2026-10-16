@@ -462,3 +462,80 @@ func BenchmarkResponseBodyReader_PooledBuffer(b *testing.B) {
 		}
 	}
 }
+
+func TestProjectOpenCodeClient_AuthenticationAndSecurityHardening(t *testing.T) {
+	// 1. Rejection of invalid schemes or empty host
+	invalidURLs := []string{
+		"file:///etc/passwd",
+		"ftp://example.com/repo",
+		"unix:///tmp/opencode.sock",
+		"",
+		"not-a-url",
+		"http://",
+		"https://",
+	}
+	for _, badURL := range invalidURLs {
+		c, err := runner.NewProjectOpenCodeClient(badURL, "secret-pass", nil)
+		if err == nil || c != nil {
+			t.Errorf("expected error for endpointURL %q, got client: %v, err: %v", badURL, c, err)
+		}
+	}
+
+	// 2. Verified HTTP Basic Auth and redirect rejection
+	receivedAuth := ""
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuth = r.Header.Get("Authorization")
+		if r.URL.Path == "/redirect" {
+			http.Redirect(w, r, "/target", http.StatusFound)
+			return
+		}
+		if r.URL.Path == "/target" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"data":{"id":"target-ok"}}`))
+			return
+		}
+		if r.URL.Path == "/api/session/ses_test" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"data":{"id":"ses_test","title":"Test Session","location":{"directory":"/workspaces/repo/tasks/task1"}}}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	password := "container-opencode-pass-1234"
+	client, err := runner.NewProjectOpenCodeClient(server.URL, password, nil)
+	if err != nil {
+		t.Fatalf("unexpected error creating ProjectOpenCodeClient: %v", err)
+	}
+
+	// Make request and verify Basic Auth header: base64("opencode:" + password)
+	sess, err := client.GetSession(context.Background(), "ses_test")
+	if err != nil {
+		t.Fatalf("failed to get session: %v", err)
+	}
+	if sess.ID != "ses_test" {
+		t.Errorf("expected session ID ses_test, got %s", sess.ID)
+	}
+
+	expectedAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("opencode:"+password))
+	if receivedAuth != expectedAuth {
+		t.Errorf("expected Basic Auth %q, got %q", expectedAuth, receivedAuth)
+	}
+
+	// 3. Verify zero unix socket fallback: ensure transport does not dial unix sockets
+	// Pass an endpoint URL pointing to an unreachable port, ensure error is sanitized and no unix socket stat/dial occurs
+	offlineClient, err := runner.NewProjectOpenCodeClient("http://127.0.0.1:59998", password, nil)
+	if err != nil {
+		t.Fatalf("unexpected error creating offline client: %v", err)
+	}
+	_, err = offlineClient.GetSession(context.Background(), "ses_test")
+	if !errors.Is(err, common.ErrServiceUnavailable) {
+		t.Errorf("expected ErrServiceUnavailable, got %v", err)
+	}
+	if strings.Contains(err.Error(), password) {
+		t.Errorf("password leaked in error: %v", err)
+	}
+}
+
+

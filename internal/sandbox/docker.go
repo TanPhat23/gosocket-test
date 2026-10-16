@@ -7,21 +7,40 @@ import (
 	"io"
 	"strings"
 
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/volume"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // DockerClient abstracts the required Docker Engine client operations for mocking in tests.
 type DockerClient interface {
+	// Container operations
 	ContainerCreate(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *ocispec.Platform, containerName string) (container.CreateResponse, error)
 	ContainerStart(ctx context.Context, containerID string, options container.StartOptions) error
+	ContainerAttach(ctx context.Context, containerID string, options container.AttachOptions) (types.HijackedResponse, error)
 	ContainerWait(ctx context.Context, containerID string, condition container.WaitCondition) (<-chan container.WaitResponse, <-chan error)
 	ContainerLogs(ctx context.Context, containerID string, options container.LogsOptions) (io.ReadCloser, error)
 	ContainerStop(ctx context.Context, containerID string, options container.StopOptions) error
 	ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error
+	ContainerInspect(ctx context.Context, containerID string) (types.ContainerJSON, error)
+	ContainerExecCreate(ctx context.Context, containerID string, options container.ExecOptions) (types.IDResponse, error)
+	ContainerExecAttach(ctx context.Context, execID string, config container.ExecAttachOptions) (types.HijackedResponse, error)
+	ContainerExecInspect(ctx context.Context, execID string) (container.ExecInspect, error)
+
+	// Image, network, volume operations
 	ImagePull(ctx context.Context, refStr string, options image.PullOptions) (io.ReadCloser, error)
+	ImageBuild(ctx context.Context, buildContext io.Reader, options types.ImageBuildOptions) (types.ImageBuildResponse, error)
+	ImageList(ctx context.Context, options image.ListOptions) ([]image.Summary, error)
+	ImageInspectWithRaw(ctx context.Context, imageID string) (types.ImageInspect, []byte, error)
+	NetworkCreate(ctx context.Context, name string, options network.CreateOptions) (network.CreateResponse, error)
+	NetworkInspect(ctx context.Context, networkID string, options network.InspectOptions) (network.Inspect, error)
+	NetworkRemove(ctx context.Context, networkID string) error
+	VolumeCreate(ctx context.Context, options volume.CreateOptions) (volume.Volume, error)
+	VolumeInspect(ctx context.Context, volumeID string) (volume.Volume, error)
+	VolumeRemove(ctx context.Context, volumeID string, force bool) error
 }
 
 // NewDefaultHostConfig creates a security-hardened HostConfig for sandboxes.

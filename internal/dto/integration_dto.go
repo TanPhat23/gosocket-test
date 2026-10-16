@@ -13,6 +13,8 @@ type CreateIntegrationRequest struct {
 	BaseBranch    string `json:"base_branch,omitempty"`
 	AutoPR        *bool  `json:"auto_pr,omitempty"`
 	WebhookSecret string `json:"webhook_secret,omitempty"`
+	// WebhookCallbackURL is the public URL registered with the provider; Trello signs it into each delivery.
+	WebhookCallbackURL string `json:"webhook_callback_url,omitempty"`
 	FilterLabel   string `json:"filter_label,omitempty"`
 }
 
@@ -22,6 +24,7 @@ type UpdateIntegrationRequest struct {
 	BaseBranch    *string `json:"base_branch,omitempty"`
 	AutoPR        *bool   `json:"auto_pr,omitempty"`
 	WebhookSecret *string `json:"webhook_secret,omitempty"`
+	WebhookCallbackURL *string `json:"webhook_callback_url,omitempty"`
 	FilterLabel   *string `json:"filter_label,omitempty"`
 }
 

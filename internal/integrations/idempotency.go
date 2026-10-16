@@ -5,13 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
-	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/models"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+// StaleReceivedAfter is how long an event may sit in "received" before a redelivery reclaims it. Webhook
+// processing is short, so an event this old belongs to a process that died before recording an outcome.
+const StaleReceivedAfter = 10 * time.Minute
 
 // IdempotencyStore tracks and deduplicates incoming webhook events.
 type IdempotencyStore interface {
@@ -35,13 +39,19 @@ type memoryEventRecord struct {
 
 // MemoryIdempotencyStore provides an in-memory implementation for tests using common.SafeMap.
 type MemoryIdempotencyStore struct {
-	// Value (not pointer) so the zero MemoryIdempotencyStore stays usable.
-	events common.SafeMap[memoryEventKey, *memoryEventRecord]
+	mu     sync.Mutex
+	events map[memoryEventKey]*memoryEventRecord
+	now    func() time.Time
 }
 
 // NewMemoryIdempotencyStore creates an in-memory IdempotencyStore.
 func NewMemoryIdempotencyStore() IdempotencyStore {
-	return &MemoryIdempotencyStore{}
+	return NewMemoryIdempotencyStoreWithClock(time.Now)
+}
+
+// NewMemoryIdempotencyStoreWithClock is NewMemoryIdempotencyStore with an injectable clock.
+func NewMemoryIdempotencyStoreWithClock(now func() time.Time) IdempotencyStore {
+	return &MemoryIdempotencyStore{events: make(map[memoryEventKey]*memoryEventRecord), now: now}
 }
 
 func (m *MemoryIdempotencyStore) RecordEvent(ctx context.Context, provider string, projectID string, providerEventID string) (bool, error) {
@@ -51,13 +61,31 @@ func (m *MemoryIdempotencyStore) RecordEvent(ctx context.Context, provider strin
 		providerEventID: providerEventID,
 	}
 
-	record := &memoryEventRecord{
-		status:     models.WebhookReceived,
-		receivedAt: time.Now().UTC(),
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.events == nil {
+		m.events = make(map[memoryEventKey]*memoryEventRecord) // zero value stays usable
 	}
-
-	_, loaded := m.events.LoadOrStore(key, record)
-	return !loaded, nil
+	clock := m.now
+	if clock == nil {
+		clock = time.Now
+	}
+	now := clock().UTC()
+	if existing, ok := m.events[key]; ok {
+		// A failed event, or one stuck in received past StaleReceivedAfter, is reclaimed by the
+		// redelivery so the provider's retry is processed.
+		stale := existing.status == models.WebhookReceived && now.Sub(existing.receivedAt) >= StaleReceivedAfter
+		if existing.status != models.WebhookFailed && !stale {
+			return false, nil
+		}
+		existing.status = models.WebhookReceived
+		existing.errorMessage = nil
+		existing.processedAt = nil
+		existing.receivedAt = now
+		return true, nil
+	}
+	m.events[key] = &memoryEventRecord{status: models.WebhookReceived, receivedAt: now}
+	return true, nil
 }
 
 func (m *MemoryIdempotencyStore) MarkProcessed(ctx context.Context, provider string, projectID string, providerEventID string) error {
@@ -67,12 +95,12 @@ func (m *MemoryIdempotencyStore) MarkProcessed(ctx context.Context, provider str
 		providerEventID: providerEventID,
 	}
 
-	val, exists := m.events.Load(key)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec, exists := m.events[key]
 	if !exists {
 		return fmt.Errorf("webhook event not found: %s/%s/%s", provider, projectID, providerEventID)
 	}
-
-	rec := val
 	now := time.Now().UTC()
 	rec.status = models.WebhookProcessed
 	rec.processedAt = &now
@@ -86,12 +114,12 @@ func (m *MemoryIdempotencyStore) MarkFailed(ctx context.Context, provider string
 		providerEventID: providerEventID,
 	}
 
-	val, exists := m.events.Load(key)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec, exists := m.events[key]
 	if !exists {
 		return fmt.Errorf("webhook event not found: %s/%s/%s", provider, projectID, providerEventID)
 	}
-
-	rec := val
 	now := time.Now().UTC()
 	rec.status = models.WebhookFailed
 	rec.processedAt = &now
@@ -101,12 +129,18 @@ func (m *MemoryIdempotencyStore) MarkFailed(ctx context.Context, provider string
 
 // DBIdempotencyStore implements IdempotencyStore using GORM and models.WebhookEvent.
 type DBIdempotencyStore struct {
-	db *gorm.DB
+	db  *gorm.DB
+	now func() time.Time
 }
 
 // NewDBIdempotencyStore creates a new DB-backed IdempotencyStore.
 func NewDBIdempotencyStore(db *gorm.DB) IdempotencyStore {
-	return &DBIdempotencyStore{db: db}
+	return NewDBIdempotencyStoreWithClock(db, time.Now)
+}
+
+// NewDBIdempotencyStoreWithClock is NewDBIdempotencyStore with an injectable clock.
+func NewDBIdempotencyStoreWithClock(db *gorm.DB, now func() time.Time) IdempotencyStore {
+	return &DBIdempotencyStore{db: db, now: now}
 }
 
 func (d *DBIdempotencyStore) RecordEvent(ctx context.Context, provider string, projectID string, providerEventID string) (bool, error) {
@@ -119,7 +153,7 @@ func (d *DBIdempotencyStore) RecordEvent(ctx context.Context, provider string, p
 		ProjectID:       projectID,
 		ProviderEventID: providerEventID,
 		Status:          models.WebhookReceived,
-		ReceivedAt:      time.Now().UTC(),
+		ReceivedAt:      d.now().UTC(),
 	}
 
 	// Clauses OnConflict DoNothing allows detecting if a new row was inserted or ignored due to PK conflict
@@ -130,7 +164,7 @@ func (d *DBIdempotencyStore) RecordEvent(ctx context.Context, provider string, p
 	if res.Error != nil {
 		// If driver doesn't support OnConflict DoNothing or fails with duplicate error
 		if isUniqueConstraintViolation(res.Error) {
-			return false, nil
+			return d.reclaimFailed(ctx, provider, projectID, providerEventID)
 		}
 		return false, res.Error
 	}
@@ -138,10 +172,29 @@ func (d *DBIdempotencyStore) RecordEvent(ctx context.Context, provider string, p
 	// RowsAffected == 1 means it was inserted (first seen).
 	// RowsAffected == 0 means it collided with existing PK and was skipped (duplicate).
 	if res.RowsAffected == 0 {
-		return false, nil
+		return d.reclaimFailed(ctx, provider, projectID, providerEventID)
 	}
 
 	return true, nil
+}
+
+// reclaimFailed atomically flips a failed event, or one stuck in received past StaleReceivedAfter, back
+// to received. Only one concurrent redelivery sees RowsAffected == 1, so the event is retried exactly once.
+func (d *DBIdempotencyStore) reclaimFailed(ctx context.Context, provider, projectID, providerEventID string) (bool, error) {
+	now := d.now().UTC()
+	res := d.db.WithContext(ctx).Model(&models.WebhookEvent{}).
+		Where("provider = ? AND project_id = ? AND provider_event_id = ?", provider, projectID, providerEventID).
+		Where("status = ? OR (status = ? AND received_at <= ?)", models.WebhookFailed, models.WebhookReceived, now.Add(-StaleReceivedAfter)).
+		Updates(map[string]any{
+			"status":        models.WebhookReceived,
+			"received_at":   now,
+			"processed_at":  nil,
+			"error_message": nil,
+		})
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected == 1, nil
 }
 
 func (d *DBIdempotencyStore) MarkProcessed(ctx context.Context, provider string, projectID string, providerEventID string) error {
