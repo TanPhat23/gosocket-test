@@ -81,6 +81,9 @@ type projectSandboxManager struct {
 	egressPolicy *sandbox.EgressPolicy
 	gatewayURL   string
 	gw           *GatewayAccess
+	// egressVerify, when set, proves the operator's firewall on the project's own sandbox network before any
+	// sandbox container is created there (Gate 0D fail-closed contract). An error aborts provisioning.
+	egressVerify func(ctx context.Context, network string) error
 
 	mu     sync.RWMutex
 	routes map[string]*ProjectRouteHandle
@@ -181,6 +184,13 @@ func (m *projectSandboxManager) ensureProjectContainerDisabledDraft(ctx context.
 			return nil, fmt.Errorf("failed to create/inspect project network %s: %w", netName, err)
 		}
 		networkID = inspect.ID
+	}
+
+	// 1b. Gate 0D: no sandbox starts on a network whose firewall has not been proven from inside it.
+	if m.egressVerify != nil {
+		if err := m.egressVerify(ctx, netName); err != nil {
+			return nil, err
+		}
 	}
 
 	// 2. Ensure volumes exist
