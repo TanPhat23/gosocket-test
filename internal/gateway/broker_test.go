@@ -9,7 +9,7 @@ import (
 
 func newTestBroker(t *testing.T) (*Broker, *Service) {
 	t.Helper()
-	svc, err := ServiceFromEnv(goodEnv(nil), noFiles, func(string, ...any) {})
+	svc, err := ServiceFromEnv(goodEnv(nil), goodFiles(t), func(string, ...any) {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,7 +21,7 @@ func newTestBroker(t *testing.T) (*Broker, *Service) {
 }
 
 func TestNewBroker_RejectsBadConfig(t *testing.T) {
-	svc, _ := ServiceFromEnv(goodEnv(nil), noFiles, func(string, ...any) {})
+	svc, _ := ServiceFromEnv(goodEnv(nil), goodFiles(t), func(string, ...any) {})
 	for name, c := range map[string]struct {
 		url string
 		ttl time.Duration

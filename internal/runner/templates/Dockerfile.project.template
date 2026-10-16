@@ -34,6 +34,12 @@ RUN addgroup -g 1000 opencode && \
 RUN printf '%s\n' 'unset OPENCODE_PASSWORD OPENCODE_SERVER_PASSWORD OPENCODE_CONFIG_CONTENT' > /usr/local/lib/atm-scrub.sh && \
     chmod 0444 /usr/local/lib/atm-scrub.sh
 
+{{if .GatewayCASHA256}}
+# Trust anchor for the TLS-only LLM gateway (Gate 0G). Public certificate only; the private key never enters an image.
+COPY --chmod=0444 atm-gateway-ca.crt /usr/local/share/atm/gateway-ca.crt
+ENV NODE_EXTRA_CA_CERTS=/usr/local/share/atm/gateway-ca.crt
+LABEL io.atm.gateway-ca.sha256="{{.GatewayCASHA256}}"
+{{end}}
 {{range .Toolchains}}{{$layout := requireInstallLayout .InstallLayout}}
 # Toolchain: {{.Runtime}} {{.Version}}
 RUN set -eu; \

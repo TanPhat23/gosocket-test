@@ -4,6 +4,11 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/hex"
+	"encoding/pem"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -49,6 +54,8 @@ type runtimeImageBuilder struct {
 	expectedSHA   string
 	resolver      RuntimeResolver
 	buildTimeout  time.Duration
+	gatewayCA     []byte // optional PEM of the gateway's CA certificate, baked into the image trust path
+	gatewayCASHA  string
 
 	mu       sync.Mutex
 	inFlight map[string]*inFlightBuild
@@ -59,6 +66,47 @@ type runtimeImageBuilder struct {
 // before every build.
 func NewRuntimeImageBuilder(dockerCli sandbox.DockerClient, catalog RuntimeCatalog) RuntimeImageBuilder {
 	return newRuntimeImageBuilder(dockerCli, catalog, embeddedTemplate, ExpectedTemplateSHA256)
+}
+
+// NewRuntimeImageBuilderWithGatewayCA is NewRuntimeImageBuilder plus the PEM certificate of the CA that
+// signs the LLM gateway's TLS certificate (Gate 0G). The certificate is baked into every image and
+// exported as NODE_EXTRA_CA_CERTS, and its hash is part of the image identity, so rotating the CA builds
+// a new image rather than reusing a stale one. It fails closed on anything that is not CERTIFICATE PEM
+// blocks, so a private key can never be baked in.
+func NewRuntimeImageBuilderWithGatewayCA(dockerCli sandbox.DockerClient, catalog RuntimeCatalog, caPEM []byte) (RuntimeImageBuilder, error) {
+	if err := validateGatewayCA(caPEM); err != nil {
+		return nil, err
+	}
+	b := newRuntimeImageBuilder(dockerCli, catalog, embeddedTemplate, ExpectedTemplateSHA256)
+	sum := sha256.Sum256(caPEM)
+	b.gatewayCA = append([]byte(nil), caPEM...)
+	b.gatewayCASHA = hex.EncodeToString(sum[:])
+	return b, nil
+}
+
+// validateGatewayCA accepts only one or more well-formed X.509 CERTIFICATE PEM blocks and nothing else.
+func validateGatewayCA(pemBytes []byte) error {
+	rest := bytes.TrimSpace(pemBytes)
+	if len(rest) == 0 {
+		return errors.New("gateway CA is empty")
+	}
+	n := 0
+	for len(rest) > 0 {
+		var blk *pem.Block
+		blk, rest = pem.Decode(rest)
+		if blk == nil || blk.Type != "CERTIFICATE" || len(blk.Headers) != 0 {
+			return errors.New("gateway CA must contain only CERTIFICATE PEM blocks")
+		}
+		if _, err := x509.ParseCertificate(blk.Bytes); err != nil {
+			return errors.New("gateway CA contains an invalid certificate")
+		}
+		rest = bytes.TrimSpace(rest)
+		n++
+	}
+	if n == 0 {
+		return errors.New("gateway CA contains no certificate")
+	}
+	return nil
 }
 
 func newRuntimeImageBuilder(dockerCli sandbox.DockerClient, catalog RuntimeCatalog, templateBytes []byte, expectedSHA string) *runtimeImageBuilder {
@@ -80,6 +128,7 @@ type TemplateData struct {
 	BaseImageRef     string
 	OpenCodeImageRef string
 	Toolchains       []RuntimeCatalogEntry
+	GatewayCASHA256  string // empty when no gateway CA is baked in
 }
 
 // Image label keys and value. The scheme label value is the short literal "v3". It names the
@@ -262,6 +311,7 @@ func (b *runtimeImageBuilder) renderDockerfile(verifiedTemplate []byte, profile 
 		BaseImageRef:     profile.BaseImageRef,
 		OpenCodeImageRef: openCodeImageRef(profile.OpenCodeDigest),
 		Toolchains:       toolchains,
+		GatewayCASHA256:  b.gatewayCASHA,
 	})
 }
 
@@ -296,6 +346,14 @@ func (b *runtimeImageBuilder) executeBuild(ctx context.Context, dockerfileBytes 
 	}
 	if _, err := tw.Write(entrypoint); err != nil {
 		return "", fmt.Errorf("failed to write entrypoint into tar: %w", err)
+	}
+	if len(b.gatewayCA) > 0 {
+		if err := tw.WriteHeader(&tar.Header{Name: "atm-gateway-ca.crt", Mode: 0644, Size: int64(len(b.gatewayCA))}); err != nil {
+			return "", fmt.Errorf("failed to write gateway CA tar header: %w", err)
+		}
+		if _, err := tw.Write(b.gatewayCA); err != nil {
+			return "", fmt.Errorf("failed to write gateway CA into tar: %w", err)
+		}
 	}
 	if err := tw.Close(); err != nil {
 		return "", fmt.Errorf("failed to close tar writer: %w", err)
