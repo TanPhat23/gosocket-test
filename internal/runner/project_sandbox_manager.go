@@ -317,6 +317,11 @@ func (m *projectSandboxManager) ensureProjectContainer(ctx context.Context, proj
 		secOpt = []string{"no-new-privileges:true"}
 	}
 
+	dnsServers := []string{sandboxDNS}
+	if m.devHostAuth.Enabled {
+		dnsServers = []string{"8.8.8.8", "1.1.1.1"}
+	}
+
 	hostCfg := &container.HostConfig{
 		ReadonlyRootfs: true,
 		CapDrop:        []string{"ALL"},
@@ -331,7 +336,7 @@ func (m *projectSandboxManager) ensureProjectContainer(ctx context.Context, proj
 		PortBindings:    nil,
 		PublishAllPorts: false,
 		NetworkMode:     container.NetworkMode(netName),
-		DNS:             []string{sandboxDNS},
+		DNS:             dnsServers,
 	}
 
 	netConfig := &network.NetworkingConfig{
