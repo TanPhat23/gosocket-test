@@ -785,20 +785,32 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
           <div className="flex-1 min-h-0 flex flex-col rounded-lg border border-border bg-card/60 overflow-hidden relative">
             {session?.children && session.children.length > 0 && (
               <div
-                className="flex flex-wrap items-center gap-1.5 px-3 py-1.5 border-b border-border text-[11px] font-mono text-muted-foreground"
+                className="flex flex-col gap-1 px-3 py-1.5 border-b border-border text-[11px] font-mono text-muted-foreground shrink-0"
                 data-testid="session-children"
               >
-                <span>Subagents:</span>
-                {session.children.map((child) => (
-                  <span
-                    key={child.id}
-                    className="rounded border border-border px-1.5 py-0.5 text-foreground"
-                    title={child.id}
-                  >
-                    {child.title || child.id}
-                    {child.status ? ` · ${child.status}` : ''}
+                <div className="flex items-center gap-2">
+                  <span>Subagents:</span>
+                  <span>
+                    {session.children.filter((c) => c.status === 'running').length} running
+                    {' · '}
+                    {session.children.filter((c) => c.status !== 'running').length} finished
                   </span>
-                ))}
+                </div>
+                <div
+                  className="flex flex-wrap items-center gap-1.5 max-h-16 overflow-y-auto"
+                  data-testid="session-children-list"
+                >
+                  {session.children.map((child) => (
+                    <span
+                      key={child.id}
+                      className="max-w-full truncate rounded border border-border px-1.5 py-0.5 text-foreground"
+                      title={child.id}
+                    >
+                      {child.title || child.id}
+                      {child.status ? ` · ${child.status}` : ''}
+                    </span>
+                  ))}
+                </div>
               </div>
             )}
             {loading && !session ? (

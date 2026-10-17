@@ -330,6 +330,25 @@ describe('AgentSessionView Split Two-Pane Inspector', () => {
     });
   });
 
+  it('keeps a long subagent list from taking over the panel', async () => {
+    const children = [
+      { id: 'c0', title: 'Implement Task 3: HTTP Server Integration, Origin Checks, & Graceful OS Signal Handling', status: 'running' },
+      ...Array.from({ length: 7 }, (_, i) => ({ id: `c${i + 1}`, title: `Verify Task ${i + 1}`, status: 'succeeded' })),
+    ];
+    vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue({ ...mockSessionData, children });
+
+    render(<AgentSessionView taskId={mockTaskId} />);
+
+    const strip = await screen.findByTestId('session-children');
+    expect(strip).toHaveTextContent('1 running');
+    expect(strip).toHaveTextContent('7 finished');
+    const list = screen.getByTestId('session-children-list');
+    expect(list.className).toMatch(/max-h-/);
+    expect(list.className).toMatch(/overflow-y-auto/);
+    const chip = screen.getByTitle('c0');
+    expect(chip.className).toMatch(/truncate/);
+  });
+
   it('applies snapshots pushed over the session stream', async () => {
     vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue(mockSessionData);
     const sockets: Array<{ url: string; onmessage?: (e: { data: string }) => void; close: () => void }> = [];

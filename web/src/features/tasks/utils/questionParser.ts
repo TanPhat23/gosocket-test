@@ -141,5 +141,72 @@ export function extractQuestionsFromText(text: string): QuestionItemData[] {
   flushCurrent();
 
   // If questions were found, return them
-  return questions;
+  if (questions.length > 0) return questions;
+
+  return extractNumberedChoice(lines);
+}
+
+const NUMBERED_ITEM = /^\s*(\d+)[.)]\s+(\S.*)$/;
+
+const stripMarkdown = (s: string) => s.replace(/\*\*|__/g, '').trim();
+
+/**
+ * Handles the common "question, then a numbered list of choices" shape that
+ * the bullet-oriented parsing above does not see. A numbered list only counts
+ * as a choice when a question (a line ending in "?") sits right before or
+ * right after it, so ordinary step lists stay plain text.
+ */
+function extractNumberedChoice(lines: string[]): QuestionItemData[] {
+  let runStart = -1;
+  let runEnd = -1;
+  let i = 0;
+  while (i < lines.length) {
+    const first = lines[i].match(NUMBERED_ITEM);
+    if (!first || Number(first[1]) !== 1) {
+      i++;
+      continue;
+    }
+    let j = i + 1;
+    let expected = 2;
+    while (j < lines.length) {
+      const m = lines[j].match(NUMBERED_ITEM);
+      if (m && Number(m[1]) === expected) {
+        expected++;
+        j++;
+      } else {
+        break;
+      }
+    }
+    if (j - i >= 2) {
+      runStart = i;
+      runEnd = j;
+    }
+    i = j;
+  }
+  if (runStart < 0) return [];
+
+  const neighbour = (from: number, step: number) => {
+    for (let k = from; k >= 0 && k < lines.length; k += step) {
+      if (lines[k].trim()) return stripMarkdown(lines[k]);
+    }
+    return '';
+  };
+  const intro = neighbour(runStart - 1, -1);
+  const trailing = neighbour(runEnd, 1);
+  const introIsQuestion = intro.endsWith('?');
+  const trailingIsQuestion = trailing.endsWith('?');
+  if (!introIsQuestion && !trailingIsQuestion) return [];
+
+  const options: QuestionOption[] = lines.slice(runStart, runEnd).map((line) => {
+    const label = stripMarkdown(line.match(NUMBERED_ITEM)![2]);
+    return { label, value: label };
+  });
+
+  return [
+    {
+      question: introIsQuestion ? intro : trailing,
+      options,
+      multiple: false,
+    },
+  ];
 }

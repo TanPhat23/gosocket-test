@@ -81,6 +81,55 @@ Here is our execution plan:
     expect(questions).toHaveLength(0);
   });
 
+  it('turns a plain numbered list under a question into a single-choice question', () => {
+    const text = `Implementation complete. What would you like to do?
+
+1. Merge back to main locally
+2. Push and create a Pull Request
+3. Keep the branch as-is (I'll handle it later)
+
+Which option?`;
+
+    const questions = extractQuestionsFromText(text);
+    expect(questions).toHaveLength(1);
+    expect(questions[0].question).toBe('Implementation complete. What would you like to do?');
+    expect(questions[0].multiple).toBe(false);
+    expect(questions[0].options?.map((o) => o.label)).toEqual([
+      'Merge back to main locally',
+      'Push and create a Pull Request',
+      "Keep the branch as-is (I'll handle it later)",
+    ]);
+    expect(questions[0].options?.[1].value).toBe('Push and create a Pull Request');
+  });
+
+  it('accepts a numbered list whose only question cue comes after it', () => {
+    const questions = extractQuestionsFromText(`Here are the options:
+1. Squash and merge
+2. Rebase and merge
+
+Which one should I use?`);
+    expect(questions).toHaveLength(1);
+    expect(questions[0].question).toBe('Which one should I use?');
+    expect(questions[0].options).toHaveLength(2);
+  });
+
+  it('does not treat a lone numbered item or a question-less list as a choice', () => {
+    expect(extractQuestionsFromText('Should I continue?\n1. Yes')).toHaveLength(0);
+    expect(extractQuestionsFromText('What happened:\n1. We built it\n2. We shipped it')).toHaveLength(0);
+  });
+
+  it('only uses the last numbered list when several appear', () => {
+    const questions = extractQuestionsFromText(`Steps done:
+1. Built
+2. Tested
+
+What next?
+1. Merge
+2. Open a PR`);
+    expect(questions).toHaveLength(1);
+    expect(questions[0].options?.map((o) => o.label)).toEqual(['Merge', 'Open a PR']);
+  });
+
   it('handles null, undefined or empty strings safely', () => {
     expect(extractQuestionsFromText('')).toEqual([]);
     expect(extractQuestionsFromText(null as unknown as string)).toEqual([]);
