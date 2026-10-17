@@ -1,5 +1,6 @@
 import React from 'react';
 import { UserNav } from '@/features/auth/components/UserNav';
+import { ProviderKeyDialog } from '@/features/auth/components/ProviderKeyDialog';
 import { ThemeSettingsDialog } from '@/components/theme/ThemeSettingsDialog';
 import {
   useTeamsList,
@@ -32,6 +33,7 @@ export const Header: React.FC = () => {
       </div>
 
       <div className="flex items-center gap-3">
+        <ProviderKeyDialog />
         <ThemeSettingsDialog />
         <UserNav />
       </div>

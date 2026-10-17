@@ -11,10 +11,14 @@ services:
   control-plane:
     environment:
       ATM_DEV_FAKE_RUNTIME: "false"
+      # Comma-separated account emails allowed to rotate the provider key from the web UI (empty: nobody).
+      ATM_OPERATOR_EMAILS: "${ATM_OPERATOR_EMAILS:-}"
     env_file:
       - data/runtime/runtime.env
     volumes:
       - "./data/runtime:/etc/atm:ro"
+      # The one writable file: lets an operator rotate the provider key from the UI (the gateway re-reads it per request).
+      - "./data/runtime/provider.key:/etc/atm/provider.key:rw"
     networks:
       # Fixed IP: the sandbox firewall allows exactly this address and port (GATEWAY_IP in atm.nft), and the
       # gateway certificate carries it as its only SAN. This network also gives the gateway a route to the LLM
