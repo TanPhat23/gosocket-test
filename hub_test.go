@@ -22,10 +22,14 @@ func TestHubRegisterAndBroadcast(t *testing.T) {
 	hub.register <- client1
 	hub.register <- client2
 
+	// Wait for both clients to be confirmed registered before broadcasting
+	time.Sleep(20 * time.Millisecond)
+
 	testMsg := []byte("broadcast to all")
 	hub.broadcast <- testMsg
 
 	// Both clients should receive the message
+	clientConn1.SetReadDeadline(time.Now().Add(2 * time.Second))
 	_, msg1, err := clientConn1.ReadMessage()
 	if err != nil {
 		t.Fatalf("client1 ReadMessage failed: %v", err)
@@ -34,6 +38,7 @@ func TestHubRegisterAndBroadcast(t *testing.T) {
 		t.Errorf("client1 expected %q, got %q", string(testMsg), string(msg1))
 	}
 
+	clientConn2.SetReadDeadline(time.Now().Add(2 * time.Second))
 	_, msg2, err := clientConn2.ReadMessage()
 	if err != nil {
 		t.Fatalf("client2 ReadMessage failed: %v", err)
