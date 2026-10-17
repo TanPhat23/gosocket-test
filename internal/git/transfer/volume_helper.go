@@ -115,7 +115,7 @@ git -C "$REPO_DIR" -c core.hooksPath=/dev/null -c core.fsmonitor=false worktree 
 		NetworkMode:    "none",
 		CapDrop:        []string{"ALL"},
 		ReadonlyRootfs: true,
-		SecurityOpt:    []string{"no-new-privileges:true"},
+		SecurityOpt:    defaultSecurityOpt(),
 		Mounts: []mount.Mount{
 			{
 				Type:   mount.TypeVolume,
@@ -236,7 +236,7 @@ git -C "$REPO_DIR" -c core.hooksPath=/dev/null -c core.fsmonitor=false bundle cr
 		NetworkMode:    "none",
 		CapDrop:        []string{"ALL"},
 		ReadonlyRootfs: true,
-		SecurityOpt:    []string{"no-new-privileges:true"},
+		SecurityOpt:    defaultSecurityOpt(),
 		Mounts: []mount.Mount{
 			{
 				Type:     mount.TypeVolume,

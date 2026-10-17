@@ -87,7 +87,7 @@ printf "protocol=https\nhost=github.com\nusername=x-access-token\n\n" | git cred
 	hostCfg := &container.HostConfig{
 		CapDrop:        []string{"ALL"},
 		ReadonlyRootfs: true,
-		SecurityOpt:    []string{"no-new-privileges:true"},
+		SecurityOpt:    defaultSecurityOpt(),
 		Mounts: []mount.Mount{
 			{
 				Type:   mount.TypeTmpfs,
@@ -221,7 +221,7 @@ printf "protocol=https\nhost=github.com\nusername=x-access-token\n\n" | git cred
 	hostCfg := &container.HostConfig{
 		CapDrop:        []string{"ALL"},
 		ReadonlyRootfs: true,
-		SecurityOpt:    []string{"no-new-privileges:true"},
+		SecurityOpt:    defaultSecurityOpt(),
 		Mounts: []mount.Mount{
 			{
 				Type:   mount.TypeTmpfs,
