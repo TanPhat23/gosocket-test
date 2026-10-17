@@ -69,6 +69,14 @@ type GatewayAccess struct {
 	OutputTokens  int
 }
 
+// DevHostAuthOptions configures developer mode host-authenticated OpenCode mounting into project sandboxes.
+type DevHostAuthOptions struct {
+	Enabled     bool
+	OpenCodeBin string
+	ConfigDir   string
+	DataDir     string
+}
+
 // ProjectSandboxManager manages project sandbox container lifecycle, isolation, and routing.
 type ProjectSandboxManager interface {
 	EnsureProjectContainer(ctx context.Context, project *models.Project, imageTag string) (*ProjectRouteHandle, error)
@@ -81,6 +89,7 @@ type projectSandboxManager struct {
 	egressPolicy *sandbox.EgressPolicy
 	gatewayURL   string
 	gw           *GatewayAccess
+	devHostAuth  DevHostAuthOptions
 	// egressVerify, when set, proves the operator's firewall on the project's own sandbox network before any
 	// sandbox container is created there (Gate 0D fail-closed contract). An error aborts provisioning.
 	egressVerify func(ctx context.Context, network string) error
@@ -117,6 +126,18 @@ func NewProjectSandboxManagerWithGateway(
 		gatewayURL:   gatewayURL,
 		gw:           gw,
 		routes:       make(map[string]*ProjectRouteHandle),
+	}
+}
+
+// NewProjectSandboxManagerWithDevHostAuth returns a ProjectSandboxManager configured with developer host authentication.
+func NewProjectSandboxManagerWithDevHostAuth(
+	dockerCli sandbox.DockerClient,
+	opts DevHostAuthOptions,
+) ProjectSandboxManager {
+	return &projectSandboxManager{
+		dockerCli:   dockerCli,
+		devHostAuth: opts,
+		routes:      make(map[string]*ProjectRouteHandle),
 	}
 }
 
@@ -220,6 +241,9 @@ func (m *projectSandboxManager) ensureProjectContainer(ctx context.Context, proj
 	// The root filesystem is read-only: OpenCode's data, config, cache and logs (XDG dirs under $HOME) must
 	// land on the state volume, otherwise it exits at startup with a FileSystem.makeDirectory error.
 	env = append(env, "OPENCODE_SERVER_PORT=4096", "HOME="+opencodeStateDir, "BASH_ENV="+taskShellScrubFile)
+	if m.devHostAuth.Enabled {
+		env = append(env, "OPENCODE_SERVER_HOST=0.0.0.0")
+	}
 
 	// 5. Container & Host Configuration
 	containerCfg := &container.Config{
@@ -228,18 +252,36 @@ func (m *projectSandboxManager) ensureProjectContainer(ctx context.Context, proj
 	}
 
 	pidsLimit := int64(256)
+	binds := []string{
+		fmt.Sprintf("%s:/workspaces:rw", dataVolume),
+		fmt.Sprintf("%s:%s:rw", stateVolume, opencodeStateDir),
+	}
+	tmpfs := map[string]string{
+		"/tmp":         "rw,noexec,nosuid,size=512m",
+		"/run/secrets": "rw,noexec,nosuid,size=1m,uid=1000,gid=1000,mode=0700",
+	}
+
+	if m.devHostAuth.Enabled {
+		if m.devHostAuth.OpenCodeBin != "" {
+			binds = append(binds, fmt.Sprintf("%s:/usr/local/bin/opencode:ro", m.devHostAuth.OpenCodeBin))
+		}
+		if m.devHostAuth.ConfigDir != "" {
+			binds = append(binds, fmt.Sprintf("%s:%s/.config/opencode:ro", m.devHostAuth.ConfigDir, opencodeStateDir))
+		}
+		if m.devHostAuth.DataDir != "" {
+			binds = append(binds, fmt.Sprintf("%s:%s/.local/share/opencode:rw", m.devHostAuth.DataDir, opencodeStateDir))
+		}
+
+		tmpfs[fmt.Sprintf("%s/.local/state", opencodeStateDir)] = "rw,noexec,nosuid,size=64m,uid=1000,gid=1000,mode=0700"
+		tmpfs[fmt.Sprintf("%s/.cache", opencodeStateDir)] = "rw,noexec,nosuid,size=128m,uid=1000,gid=1000,mode=0700"
+	}
+
 	hostCfg := &container.HostConfig{
 		ReadonlyRootfs: true,
 		CapDrop:        []string{"ALL"},
 		SecurityOpt:    []string{"no-new-privileges:true"},
-		Binds: []string{
-			fmt.Sprintf("%s:/workspaces:rw", dataVolume),
-			fmt.Sprintf("%s:%s:rw", stateVolume, opencodeStateDir),
-		},
-		Tmpfs: map[string]string{
-			"/tmp":         "rw,noexec,nosuid,size=512m",
-			"/run/secrets": "rw,noexec,nosuid,size=1m,uid=1000,gid=1000,mode=0700",
-		},
+		Binds:          binds,
+		Tmpfs:          tmpfs,
 		Resources: container.Resources{
 			Memory:    4 * 1024 * 1024 * 1024, // 4GB
 			NanoCPUs:  2 * 1e9,                // 2 CPUs
