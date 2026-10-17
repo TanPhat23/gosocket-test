@@ -1,8 +1,10 @@
 package runner_test
 
 import (
+	"bufio"
 	"context"
 	"io"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -224,12 +226,108 @@ func TestProjectSandboxManager(t *testing.T) {
 
 }
 
+func TestProjectSandboxManager_HostAuth(t *testing.T) {
+	mockCli := &mockDockerClientForSandboxManager{}
+	opts := runner.DevHostAuthOptions{
+		Enabled:     true,
+		OpenCodeBin: "/host/opencode",
+		ConfigDir:   "/host/config",
+		DataDir:     "/host/data",
+	}
+	mgr := runner.NewProjectSandboxManagerWithDevHostAuth(mockCli, opts)
+
+	project := &models.Project{
+		ID:   "p-host-auth",
+		Name: "Host Auth Project",
+	}
+
+	route, err := mgr.EnsureProjectContainer(context.Background(), project, "atm-project-runtime:test")
+	if err != nil {
+		t.Fatalf("EnsureProjectContainer failed: %v", err)
+	}
+	if route == nil {
+		t.Fatal("expected non-nil route handle")
+	}
+
+	if mockCli.createdHostConfig == nil {
+		t.Fatal("expected ContainerCreate to be called with HostConfig")
+	}
+
+	// Verify bind mounts
+	expectedBinds := []string{
+		"/host/opencode:/usr/local/bin/opencode:ro",
+		"/host/config:/var/lib/opencode/.config/opencode:ro",
+		"/host/data:/var/lib/opencode/.local/share/opencode:rw",
+	}
+	for _, expected := range expectedBinds {
+		found := false
+		for _, b := range mockCli.createdHostConfig.Binds {
+			if b == expected {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("missing expected bind mount %q in binds: %v", expected, mockCli.createdHostConfig.Binds)
+		}
+	}
+
+	// Verify tmpfs mounts
+	expectedTmpfs := map[string]string{
+		"/var/lib/opencode/.local/state": "rw,noexec,nosuid,size=64m,uid=1000,gid=1000,mode=0700",
+		"/var/lib/opencode/.cache":       "rw,noexec,nosuid,size=128m,uid=1000,gid=1000,mode=0700",
+	}
+	for path, expectedOpt := range expectedTmpfs {
+		opt, ok := mockCli.createdHostConfig.Tmpfs[path]
+		if !ok {
+			t.Errorf("missing expected tmpfs mount %q", path)
+		} else if opt != expectedOpt {
+			t.Errorf("tmpfs mount %q options mismatch: got %q, want %q", path, opt, expectedOpt)
+		}
+	}
+
+	// Verify environment variables
+	if mockCli.createdConfig == nil {
+		t.Fatal("expected ContainerCreate to be called with Config")
+	}
+	expectedEnv := []string{
+		"OPENCODE_SERVER_HOST=0.0.0.0",
+		"OPENCODE_SERVER_PORT=4096",
+	}
+	for _, expected := range expectedEnv {
+		found := false
+		for _, e := range mockCli.createdConfig.Env {
+			if e == expected {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("missing expected env var %q in config env: %v", expected, mockCli.createdConfig.Env)
+		}
+	}
+}
+
+type mockConn struct {
+	net.Conn
+	written strings.Builder
+}
+
+func (c *mockConn) Write(b []byte) (int, error) { return c.written.Write(b) }
+func (c *mockConn) CloseWrite() error           { return nil }
+func (c *mockConn) Close() error                { return nil }
+func (c *mockConn) SetDeadline(time.Time) error { return nil }
+
 func (m *mockDockerClientForSandboxManager) ContainerExecCreate(ctx context.Context, containerID string, options container.ExecOptions) (types.IDResponse, error) {
 	return types.IDResponse{ID: "exec-1"}, nil
 }
 
 func (m *mockDockerClientForSandboxManager) ContainerExecAttach(ctx context.Context, execID string, config container.ExecAttachOptions) (types.HijackedResponse, error) {
-	return types.HijackedResponse{}, nil
+	conn := &mockConn{}
+	return types.HijackedResponse{
+		Conn:   conn,
+		Reader: bufio.NewReader(strings.NewReader("")),
+	}, nil
 }
 
 func (m *mockDockerClientForSandboxManager) ContainerExecInspect(ctx context.Context, execID string) (container.ExecInspect, error) {

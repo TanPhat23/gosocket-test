@@ -177,6 +177,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
+	if cfg.DevHostAuth && os.Getenv("ATM_DEV_FAKE_RUNTIME") == "" {
+		fakeRuntime = false
+	}
 	// Gate 0G: the credential gateway is off unless ATM_GATEWAY_ENABLED=true. It only serves; no sandbox
 	// receives a token until the project sandbox manager is built with a broker.
 	gatewaySvc, err := gateway.ServiceFromEnv(os.Getenv, os.ReadFile, log.Printf)
@@ -276,6 +279,23 @@ func main() {
 			runner.WithRunnerRuntimeImage(runner.NewRuntimeResolver(runtimeCatalog), projectRuntime.Builder),
 		)
 		log.Printf("project runtime configured (gateway CA baked into images, firewall proof before sandbox start)")
+	} else if cfg.DevHostAuth && dockerCli != nil {
+		hostAuthSandboxMgr := runner.NewProjectSandboxManagerWithDevHostAuth(
+			dockerCli,
+			runner.DevHostAuthOptions{
+				Enabled:     true,
+				OpenCodeBin: cfg.OpenCodeBinPath,
+				ConfigDir:   cfg.OpenCodeConfigDir,
+				DataDir:     cfg.OpenCodeDataDir,
+			},
+		)
+		sessionSandboxMgr = hostAuthSandboxMgr
+		builder := runner.NewRuntimeImageBuilder(dockerCli, runtimeCatalog)
+		runnerOpts = append(runnerOpts,
+			runner.WithRunnerProjectSandboxManager(hostAuthSandboxMgr),
+			runner.WithRunnerRuntimeImage(runner.NewRuntimeResolver(runtimeCatalog), builder),
+		)
+		log.Printf("dev host-auth project runtime configured (host OpenCode authentication mounted into container sandboxes)")
 	}
 
 	// Concrete Agent Task Runner (orchestrating worktrees, OpenCode, and diff snapshots)
