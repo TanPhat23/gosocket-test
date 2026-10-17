@@ -4,7 +4,15 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 )
+
+func defaultSecurityOpt() []string {
+	if os.Getenv("ATM_DISABLE_NO_NEW_PRIVS") == "true" || os.Getenv("ATM_DEV_HOST_AUTH") == "true" {
+		return nil
+	}
+	return []string{"no-new-privileges:true"}
+}
 
 var (
 	ErrInvalidIdentifier     = errors.New("invalid identifier: must be alphanumeric, hyphen, or underscore")

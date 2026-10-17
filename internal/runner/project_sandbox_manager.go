@@ -276,10 +276,15 @@ func (m *projectSandboxManager) ensureProjectContainer(ctx context.Context, proj
 		tmpfs[fmt.Sprintf("%s/.cache", opencodeStateDir)] = "rw,noexec,nosuid,size=128m,uid=1000,gid=1000,mode=0700"
 	}
 
+	var secOpt []string
+	if !m.devHostAuth.Enabled {
+		secOpt = []string{"no-new-privileges:true"}
+	}
+
 	hostCfg := &container.HostConfig{
 		ReadonlyRootfs: true,
 		CapDrop:        []string{"ALL"},
-		SecurityOpt:    []string{"no-new-privileges:true"},
+		SecurityOpt:    secOpt,
 		Binds:          binds,
 		Tmpfs:          tmpfs,
 		Resources: container.Resources{
