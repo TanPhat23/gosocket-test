@@ -108,7 +108,10 @@ services:
         condition: service_started
     environment:
       APP_ENV: ${APP_ENV:-development}
-      ATM_DEV_FAKE_RUNTIME: ${ATM_DEV_FAKE_RUNTIME:-true}
+      ATM_DEV_FAKE_RUNTIME: ${ATM_DEV_FAKE_RUNTIME:-false}
+      ATM_DEV_HOST_AUTH: ${ATM_DEV_HOST_AUTH:-true}
+      ATM_GIT_TRANSFER_ENABLED: ${ATM_GIT_TRANSFER_ENABLED:-true}
+      ATM_GIT_TRANSFER_IMAGE: ${ATM_GIT_TRANSFER_IMAGE:-localhost:5000/atm-git-transfer:dev@sha256:a40faf639143d818b5dd2ca076e70f9b3c3f39bc24646b7264b75325798bed74}
       ATM_ENABLE_LOCAL_LOGIN: ${ATM_ENABLE_LOCAL_LOGIN:-true}
       PORT: "8080"
       DATABASE_HOST: postgres
@@ -138,9 +141,9 @@ services:
       - "/var/run/docker.sock:/var/run/docker.sock"
       - "${HOST_WORKTREE_ROOT:-/home/ghug/Code/Go/agent-task-manager/data/worktrees}:${HOST_WORKTREE_ROOT:-/home/ghug/Code/Go/agent-task-manager/data/worktrees}"
       - "${HOST_REPO_ROOT:-/home/ghug/Code/Go/agent-task-manager/data/repos}:${HOST_REPO_ROOT:-/home/ghug/Code/Go/agent-task-manager/data/repos}"
-      - "/home/ghug/.opencode:/home/ghug/.opencode:ro"
-      - "/home/ghug/.config/opencode:/home/ghug/.config/opencode:ro"
-      - "/home/ghug/.local/share/opencode:/home/ghug/.local/share/opencode:rw"
+      - "${HOME}/.config/opencode:/home/ghug/.config/opencode:ro"
+      - "${HOME}/.local/share/opencode:/home/ghug/.local/share/opencode:rw"
+      - "${HOME}/.opencode:/home/ghug/.opencode:ro"
     networks:
       - ingress
       - backend
