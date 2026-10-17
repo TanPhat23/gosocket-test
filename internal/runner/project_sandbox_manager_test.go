@@ -229,10 +229,10 @@ func TestProjectSandboxManager(t *testing.T) {
 func TestProjectSandboxManager_HostAuth(t *testing.T) {
 	mockCli := &mockDockerClientForSandboxManager{}
 	opts := runner.DevHostAuthOptions{
-		Enabled:     true,
-		OpenCodeBin: "/host/opencode",
-		ConfigDir:   "/host/config",
-		DataDir:     "/host/data",
+		Enabled:       true,
+		ConfigDir:     "/host/config",
+		DataDir:       "/host/data",
+		SkipReadiness: true,
 	}
 	mgr := runner.NewProjectSandboxManagerWithDevHostAuth(mockCli, opts)
 

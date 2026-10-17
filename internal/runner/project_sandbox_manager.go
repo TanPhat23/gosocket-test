@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -72,10 +73,11 @@ type GatewayAccess struct {
 
 // DevHostAuthOptions configures developer mode host-authenticated OpenCode mounting into project sandboxes.
 type DevHostAuthOptions struct {
-	Enabled     bool
-	OpenCodeBin string
-	ConfigDir   string
-	DataDir     string
+	Enabled       bool
+	OpenCodeBin   string
+	ConfigDir     string
+	DataDir       string
+	SkipReadiness bool
 }
 
 // ProjectSandboxManager manages project sandbox container lifecycle, isolation, and routing.
@@ -91,12 +93,40 @@ type projectSandboxManager struct {
 	gatewayURL   string
 	gw           *GatewayAccess
 	devHostAuth  DevHostAuthOptions
+	readyProbe   func(ctx context.Context, endpointURL, password string) error
 	// egressVerify, when set, proves the operator's firewall on the project's own sandbox network before any
 	// sandbox container is created there (Gate 0D fail-closed contract). An error aborts provisioning.
 	egressVerify func(ctx context.Context, network string) error
 
 	mu     sync.RWMutex
 	routes map[string]*ProjectRouteHandle
+}
+
+func defaultReadyProbe(ctx context.Context, endpointURL, password string) error {
+	readyCtx, readyCancel := context.WithTimeout(ctx, 25*time.Second)
+	defer readyCancel()
+
+	probeURL := strings.TrimRight(endpointURL, "/") + "/global/health"
+	client := &http.Client{Timeout: 1 * time.Second}
+	for readyCtx.Err() == nil {
+		req, err := http.NewRequestWithContext(readyCtx, http.MethodGet, probeURL, nil)
+		if err == nil {
+			req.SetBasicAuth("opencode", password)
+			resp, err := client.Do(req)
+			if err == nil {
+				_ = resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					return nil
+				}
+			}
+		}
+		select {
+		case <-readyCtx.Done():
+			return readyCtx.Err()
+		case <-time.After(150 * time.Millisecond):
+		}
+	}
+	return readyCtx.Err()
 }
 
 // NewProjectSandboxManager returns a new instance of ProjectSandboxManager.
@@ -135,9 +165,14 @@ func NewProjectSandboxManagerWithDevHostAuth(
 	dockerCli sandbox.DockerClient,
 	opts DevHostAuthOptions,
 ) ProjectSandboxManager {
+	var probe func(ctx context.Context, endpointURL, password string) error
+	if !opts.SkipReadiness {
+		probe = defaultReadyProbe
+	}
 	return &projectSandboxManager{
 		dockerCli:   dockerCli,
 		devHostAuth: opts,
+		readyProbe:  probe,
 		routes:      make(map[string]*ProjectRouteHandle),
 	}
 }
@@ -375,6 +410,12 @@ func (m *projectSandboxManager) ensureProjectContainer(ctx context.Context, proj
 		EndpointURL:  endpointURL,
 		AuthPassword: opencodePassword,
 		Generation:   time.Now().UnixNano(),
+	}
+
+	if m.readyProbe != nil {
+		if err := m.readyProbe(ctx, endpointURL, opencodePassword); err != nil {
+			return rollback(fmt.Errorf("opencode server failed readiness probe at %s: %w", endpointURL, err))
+		}
 	}
 
 	m.routes[project.ID] = routeHandle
