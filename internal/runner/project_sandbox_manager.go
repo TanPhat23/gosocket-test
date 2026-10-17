@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -265,9 +266,6 @@ func (m *projectSandboxManager) ensureProjectContainer(ctx context.Context, proj
 	}
 
 	if m.devHostAuth.Enabled {
-		if m.devHostAuth.OpenCodeBin != "" {
-			binds = append(binds, fmt.Sprintf("%s:/usr/local/bin/opencode:ro", m.devHostAuth.OpenCodeBin))
-		}
 		if m.devHostAuth.ConfigDir != "" {
 			binds = append(binds, fmt.Sprintf("%s:%s/.config/opencode:ro", m.devHostAuth.ConfigDir, opencodeStateDir))
 		}
@@ -310,7 +308,13 @@ func (m *projectSandboxManager) ensureProjectContainer(ctx context.Context, proj
 	// 6. Create container
 	createResp, err := m.dockerCli.ContainerCreate(ctx, containerCfg, hostCfg, netConfig, nil, containerName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create project container %s: %w", containerName, err)
+		if strings.Contains(err.Error(), "Conflict") || strings.Contains(err.Error(), "already in use") {
+			_ = m.dockerCli.ContainerRemove(ctx, containerName, container.RemoveOptions{Force: true})
+			createResp, err = m.dockerCli.ContainerCreate(ctx, containerCfg, hostCfg, netConfig, nil, containerName)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to create project container %s: %w", containerName, err)
+		}
 	}
 	containerID := createResp.ID
 
