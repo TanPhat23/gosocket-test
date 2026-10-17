@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"agent-task-manager/internal/config"
@@ -420,5 +421,40 @@ func TestConfigToRaw(t *testing.T) {
 		raw.OpenCodeAuthMode != "legacy_static" {
 		t.Errorf("unexpected raw config values: %+v", raw)
 	}
+}
+
+func TestConfig_DevHostAuth_Validation(t *testing.T) {
+	// 1. When APP_ENV=production and ATM_DEV_HOST_AUTH=true, config.Load() fails
+	t.Run("rejected in production", func(t *testing.T) {
+		os.Setenv("APP_ENV", "production")
+		os.Setenv("ATM_DEV_HOST_AUTH", "true")
+		defer os.Unsetenv("APP_ENV")
+		defer os.Unsetenv("ATM_DEV_HOST_AUTH")
+
+		cfg, err := config.Load()
+		if err == nil {
+			t.Fatalf("expected error when ATM_DEV_HOST_AUTH=true in production, got nil (cfg=%+v)", cfg)
+		}
+		expectedErrSubstr := "only permitted when APP_ENV=development"
+		if !strings.Contains(err.Error(), expectedErrSubstr) {
+			t.Fatalf("expected error to contain %q, got %q", expectedErrSubstr, err.Error())
+		}
+	})
+
+	// 2. When APP_ENV=development and ATM_DEV_HOST_AUTH=true, config.Load() succeeds and cfg.DevHostAuth == true
+	t.Run("permitted in development", func(t *testing.T) {
+		os.Setenv("APP_ENV", "development")
+		os.Setenv("ATM_DEV_HOST_AUTH", "true")
+		defer os.Unsetenv("APP_ENV")
+		defer os.Unsetenv("ATM_DEV_HOST_AUTH")
+
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("expected nil error when ATM_DEV_HOST_AUTH=true in development, got: %v", err)
+		}
+		if !cfg.DevHostAuth {
+			t.Errorf("expected cfg.DevHostAuth to be true, got %v", cfg.DevHostAuth)
+		}
+	})
 }
 

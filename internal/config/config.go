@@ -100,6 +100,8 @@ type Config struct {
 	OpenCodeBinPath   string
 	OpenCodeHomePath  string
 	OpenCodeConfigDir string
+	DevHostAuth       bool
+	OpenCodeDataDir   string
 }
 
 // Load loads the configuration from environment variables with sensible defaults.
@@ -130,6 +132,13 @@ func Load() (*Config, error) {
 		OpenCodeBinPath:                 getEnv("OPENCODE_BIN_PATH", "/home/ghug/.opencode/bin/opencode"),
 		OpenCodeHomePath:                getEnv("OPENCODE_HOME_PATH", "/home/ghug/.opencode"),
 		OpenCodeConfigDir:               getEnv("OPENCODE_CONFIG_DIR", "/home/ghug/.config/opencode"),
+	}
+
+	cfg.DevHostAuth = getEnv("ATM_DEV_HOST_AUTH", "false") == "true"
+	cfg.OpenCodeDataDir = getEnv("OPENCODE_DATA_DIR", "/home/ghug/.local/share/opencode")
+
+	if cfg.DevHostAuth && cfg.AppEnv != "development" {
+		return nil, fmt.Errorf("ATM_DEV_HOST_AUTH=true is only permitted when APP_ENV=development (current: %s)", cfg.AppEnv)
 	}
 
 	if cfg.OpenCodePassword == "" {
