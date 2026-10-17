@@ -78,6 +78,14 @@ OpenCode every ~1.5 s and pushing only changed snapshots; it is not a native Ope
 unverified). If the project container is not running the calls fail with "service unavailable". None of this has been run
 against a real OpenCode yet.
 
+## Rotating the provider key from the UI (operators)
+Set `ATM_OPERATOR_EMAILS=you@example.com` (comma-separated) when running compose. Those accounts, signed in with a
+session (a personal access token never counts), see a "Provider key" button in the header. It writes the key to
+`data/runtime/provider.key`, which the override mounts read-write as the one writable file under `/etc/atm`; the gateway
+re-reads it on every request, so no restart is needed. The key is write-only: the server never returns or logs it. The
+provider URL, model list and prices are still read at startup, so changing those means rerunning
+`scripts/runtime-dev-setup.sh` and restarting. The file must already exist (the endpoint never creates it).
+
 ## Back to the simulated runtime
 `docker compose up -d` without the override. Known limits: the model comes from the gateway config (no per-task
 model); the dev proxy has no SNI or private-address checks; `EnsureTaskWorktree` still refuses.

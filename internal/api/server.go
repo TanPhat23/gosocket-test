@@ -1,6 +1,7 @@
 package api
 
 import (
+	"os"
 	"agent-task-manager/internal/auth"
 	"agent-task-manager/internal/config"
 	"agent-task-manager/internal/models"
@@ -164,6 +165,11 @@ func (s *Server) setupRoutes() {
 	// Model discovery endpoint
 	modelHandlers := NewModelHandlers(s.Config)
 	v1.Get("/models", RequireAuth(s.AuthService, s.SessionManager), modelHandlers.ListModels)
+
+	// Operator-only site settings (gateway provider key). Writes need a trusted same-origin session.
+	operatorHandlers := NewOperatorHandlers(os.Getenv("ATM_GATEWAY_PROVIDER_KEY_FILE"), s.Security.OperatorEmails)
+	v1.Get("/operator/provider-key", RequireAuth(s.AuthService, s.SessionManager), operatorHandlers.GetProviderKeyStatus)
+	v1.Put("/operator/provider-key", trustedOrigin, RequireAuth(s.AuthService, s.SessionManager), operatorHandlers.SetProviderKey)
 
 	// Task routes
 	if s.TaskService != nil {

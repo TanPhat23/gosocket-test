@@ -16,6 +16,9 @@ type SecurityConfig struct {
 	AllowedOrigins []string
 	// EnableLocalLogin enables the built-in development credential login. Never true in production.
 	EnableLocalLogin bool
+	// OperatorEmails lists the (lowercase) account emails allowed to change site-wide runtime settings such as the
+	// LLM gateway provider key. Empty means nobody can.
+	OperatorEmails []string
 }
 
 // LoadSecurityConfig reads ATM_ALLOWED_ORIGINS (comma-separated origins) and ATM_ENABLE_LOCAL_LOGIN.
@@ -45,6 +48,12 @@ func LoadSecurityConfig(appEnv string) (SecurityConfig, error) {
 			return SecurityConfig{}, errors.New("ATM_ENABLE_LOCAL_LOGIN=true is not allowed when APP_ENV=production")
 		}
 		cfg.EnableLocalLogin = enabled
+	}
+
+	for _, e := range strings.Split(os.Getenv("ATM_OPERATOR_EMAILS"), ",") {
+		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
+			cfg.OperatorEmails = append(cfg.OperatorEmails, e)
+		}
 	}
 
 	return cfg, nil
