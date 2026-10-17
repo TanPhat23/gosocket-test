@@ -858,6 +858,20 @@ func (r *AgentTaskRunner) openTaskPullRequest(
 	token, branchName string,
 	filesChanged, additions, deletions int,
 ) {
+	logf := func(s string) { r.broadcastLog(ctx, task.ID, attempt.ID, s) }
+	_, _ = r.createTaskPullRequest(ctx, task, ghInteg, token, branchName, filesChanged, additions, deletions, logf)
+}
+
+// createTaskPullRequest opens the pull request, records its URL on the task and syncs the linked issue.
+// Progress and failures go to logf; the error is also returned so a caller can report it.
+func (r *AgentTaskRunner) createTaskPullRequest(
+	ctx context.Context,
+	task *models.Task,
+	ghInteg *models.ProjectIntegration,
+	token, branchName string,
+	filesChanged, additions, deletions int,
+	logf func(string),
+) (string, error) {
 	// Construct PR title & body
 	prTitle := task.Title
 	if prTitle == "" {
@@ -872,18 +886,18 @@ func (r *AgentTaskRunner) openTaskPullRequest(
 		prBody.WriteString(fmt.Sprintf("Resolves #%s\n", *task.ExternalID))
 	}
 
-	r.broadcastLog(ctx, task.ID, attempt.ID, "\x1b[36m[Agent Control Plane]\x1b[0m Creating GitHub Pull Request...\r\n")
+	logf("\x1b[36m[Agent Control Plane]\x1b[0m Creating GitHub Pull Request...\r\n")
 	prURL, err := r.ghProvider.CreatePullRequest(ctx, ghInteg, token, branchName, prTitle, prBody.String())
 	if err != nil {
-		r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[31m[Agent Control Plane] Failed to create Pull Request: %v\x1b[0m\r\n", err))
-		return
+		logf(fmt.Sprintf("\x1b[31m[Agent Control Plane] Failed to create Pull Request: %v\x1b[0m\r\n", err))
+		return "", err
 	}
 
 	task.PRURL = &prURL
 	task.PullRequestURL = &prURL
 	_ = r.taskRepo.Update(ctx, task)
 
-	r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[32m✔ Pull Request created: %s\x1b[0m\r\n", prURL))
+	logf(fmt.Sprintf("\x1b[32m✔ Pull Request created: %s\x1b[0m\r\n", prURL))
 
 	// If linked to an issue, post comment and update label
 	if task.ExternalID != nil && *task.ExternalID != "" {
@@ -893,6 +907,7 @@ func (r *AgentTaskRunner) openTaskPullRequest(
 			_ = syncProv.UpdateIssueStatus(ctx, ghInteg, token, *task.ExternalID, "review:agent")
 		}
 	}
+	return prURL, nil
 }
 
 // BuildProcessEnv returns the process environment variables for an agent run.

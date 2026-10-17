@@ -214,12 +214,32 @@ func integrationAutoPR(integ *models.ProjectIntegration) bool {
 // resolveGitHubIntegration returns the task's enabled GitHub integration and its decrypted token. It is
 // DB and crypto only, with no network, git or container access.
 func (r *AgentTaskRunner) resolveGitHubIntegration(ctx context.Context, task *models.Task) (*models.ProjectIntegration, string, error) {
-	if r.integRepo == nil || r.credRepo == nil || r.cipher == nil {
+	integ, err := r.findGitHubIntegration(ctx, task)
+	if err != nil {
+		return nil, "", err
+	}
+	if r.credRepo == nil || r.cipher == nil {
 		return nil, "", errors.New("GitHub integration is not configured")
+	}
+	cred, err := r.credRepo.GetByID(ctx, integ.CredentialID)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to load GitHub credential: %w", err)
+	}
+	token, err := r.cipher.Decrypt(cred.EncryptedData)
+	if err != nil || token == "" {
+		return nil, "", errors.New("failed to decrypt GitHub credential")
+	}
+	return integ, token, nil
+}
+
+// findGitHubIntegration returns the task's enabled GitHub integration without touching its credential.
+func (r *AgentTaskRunner) findGitHubIntegration(ctx context.Context, task *models.Task) (*models.ProjectIntegration, error) {
+	if r.integRepo == nil {
+		return nil, errors.New("GitHub integration is not configured")
 	}
 	list, err := r.integRepo.ListByProjectID(ctx, task.ProjectID)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to list integrations: %w", err)
+		return nil, fmt.Errorf("failed to list integrations: %w", err)
 	}
 	var integ *models.ProjectIntegration
 	if task.IntegrationID != nil && *task.IntegrationID != "" {
@@ -239,17 +259,9 @@ func (r *AgentTaskRunner) resolveGitHubIntegration(ctx context.Context, task *mo
 		}
 	}
 	if integ == nil {
-		return nil, "", errors.New("project has no enabled GitHub integration")
+		return nil, errors.New("project has no enabled GitHub integration")
 	}
-	cred, err := r.credRepo.GetByID(ctx, integ.CredentialID)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to load GitHub credential: %w", err)
-	}
-	token, err := r.cipher.Decrypt(cred.EncryptedData)
-	if err != nil || token == "" {
-		return nil, "", errors.New("failed to decrypt GitHub credential")
-	}
-	return integ, token, nil
+	return integ, nil
 }
 
 // projectRuntimeImage returns the image to run the project in: built or reused from the project's resolved
