@@ -406,6 +406,8 @@ func (r *AgentTaskRunner) runTaskInProjectContainer(ctx context.Context, task *m
 
 	r.broadcastLog(ctx, task.ID, attempt.ID, "\x1b[36m[Agent Control Plane]\x1b[0m Starting autonomous task execution in the project container...\r\n")
 	prompt := task.Prompt
+	streamSince := time.Now()
+	streamSeen := map[string]bool{}
 	for iteration := 1; iteration <= maxIterations; iteration++ {
 		if iteration > 1 {
 			r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\r\n\x1b[33m[Agent Control Plane] Starting self-repair turn (Iteration %d/%d)...\x1b[0m\r\n", iteration, maxIterations))
@@ -416,12 +418,15 @@ func (r *AgentTaskRunner) runTaskInProjectContainer(ctx context.Context, task *m
 		}
 		subCtx, subCancel := context.WithCancel(ctx)
 		go r.watchChildSubagents(subCtx, oc, task.ID, attempt.ID, sessionID)
+		stopStream := r.startSessionStream(ctx, oc, task.ID, attempt.ID, sessionID, streamSince, streamSeen)
 		if err := oc.PromptSession(ctx, sessionID, prompt); err != nil {
 			subCancel()
+			stopStream()
 			return fmt.Errorf("failed to prompt session: %w", err)
 		}
 		waitErr := r.waitForSessionOutcome(ctx, oc, sessionID, before)
 		subCancel()
+		stopStream()
 		if err := waitErr; err != nil {
 			r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\r\n\x1b[31m[Agent Control Plane] Execution failed in iteration %d: %v\x1b[0m\r\n", iteration, err))
 			return err

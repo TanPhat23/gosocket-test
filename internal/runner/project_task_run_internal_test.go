@@ -160,6 +160,7 @@ type ptrOC struct {
 
 	mu         sync.Mutex
 	childPolls int
+	msgs       []OpenCodeMessageDTO
 }
 
 func (o *ptrOC) EnsureSessionAtLocation(_ context.Context, _, _, dir string) error {
