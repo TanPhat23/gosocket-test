@@ -97,8 +97,11 @@ fi
 
 # Provision task worktree with --no-checkout
 mkdir -p "$(dirname "$TASK_DIR")"
+rm -rf "$TASK_DIR"
+git -C "$REPO_DIR" -c core.hooksPath=/dev/null worktree prune 2>/dev/null || true
+git -C "$REPO_DIR" -c core.hooksPath=/dev/null branch -D "task/%s" 2>/dev/null || true
 git -C "$REPO_DIR" -c core.hooksPath=/dev/null -c core.fsmonitor=false worktree add --no-checkout -b "task/%s" "$TASK_DIR" "%s"
-`, repoID, repoID, taskID, ExitCodeVolumeNotWritable, refName, refName, branchName, ExitCodeSubmoduleDetected, branchName, ExitCodeSubmoduleDetected, branchName, ExitCodeLFSDetected, branchName, ExitCodeLFSDetected, taskID, branchName)
+`, repoID, repoID, taskID, ExitCodeVolumeNotWritable, refName, refName, branchName, ExitCodeSubmoduleDetected, branchName, ExitCodeSubmoduleDetected, branchName, ExitCodeLFSDetected, branchName, ExitCodeLFSDetected, taskID, taskID, branchName)
 
 	containerCfg := &container.Config{
 		Image:        h.imageTag,

@@ -189,6 +189,9 @@ func (m *projectSandboxManager) ensureProjectContainer(ctx context.Context, proj
 
 	containerName := "atm-project-" + project.ID
 	netName := "atm-net-" + project.ID
+	if m.devHostAuth.Enabled {
+		netName = "agent_ingress"
+	}
 	dataVolume := sandbox.ProjectDataVolumeName(project.ID)
 	stateVolume := "atm-project-state-" + project.ID
 
@@ -355,6 +358,9 @@ func (m *projectSandboxManager) ensureProjectContainer(ctx context.Context, proj
 
 	port := 4096
 	endpointURL := fmt.Sprintf("http://%s:%d", ipAddress, port)
+	if m.devHostAuth.Enabled {
+		endpointURL = fmt.Sprintf("http://%s:%d", containerName, port)
+	}
 
 	routeHandle := &ProjectRouteHandle{
 		ProjectID:    project.ID,
