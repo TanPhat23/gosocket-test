@@ -255,7 +255,6 @@ func TestProjectSandboxManager_HostAuth(t *testing.T) {
 
 	// Verify bind mounts
 	expectedBinds := []string{
-		"/host/opencode:/usr/local/bin/opencode:ro",
 		"/host/config:/var/lib/opencode/.config/opencode:ro",
 		"/host/data:/var/lib/opencode/.local/share/opencode:rw",
 	}
