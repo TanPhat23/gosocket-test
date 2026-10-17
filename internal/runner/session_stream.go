@@ -41,7 +41,7 @@ func (r *AgentTaskRunner) startSessionStream(ctx context.Context, oc OpenCodeCli
 			case <-sctx.Done():
 				return
 			case <-ticker.C:
-				r.relaySessionMessages(sctx, oc, taskID, attemptID, sessionID, since, seen)
+				r.relaySession(sctx, oc, taskID, attemptID, sessionID, since, seen)
 			}
 		}
 	}()
@@ -50,12 +50,42 @@ func (r *AgentTaskRunner) startSessionStream(ctx context.Context, oc OpenCodeCli
 		<-done
 		flushCtx, flushCancel := context.WithTimeout(context.WithoutCancel(ctx), streamFlushTimeout)
 		defer flushCancel()
-		r.relaySessionMessages(flushCtx, oc, taskID, attemptID, sessionID, since, seen)
+		r.relaySession(flushCtx, oc, taskID, attemptID, sessionID, since, seen)
 	}
 }
 
-func (r *AgentTaskRunner) relaySessionMessages(ctx context.Context, oc OpenCodeClient, taskID, attemptID, sessionID string, since time.Time, seen map[string]bool) {
-	msgs, err := oc.GetSessionMessages(ctx, sessionID)
+// streamSource identifies whose output is being relayed: the root session, or a child (subagent) of it.
+type streamSource struct {
+	sessionID string
+	parentID  string // empty for the root session
+	label     string // subagent name; empty for the root session
+}
+
+func (s streamSource) prefix() string {
+	if s.parentID == "" {
+		return ""
+	}
+	return fmt.Sprintf("\x1b[35m[subagent: %s]\x1b[0m ", s.label)
+}
+
+// relaySession relays the root session, then every child session spawned from it.
+func (r *AgentTaskRunner) relaySession(ctx context.Context, oc OpenCodeClient, taskID, attemptID, sessionID string, since time.Time, seen map[string]bool) {
+	r.relaySessionMessages(ctx, oc, taskID, attemptID, streamSource{sessionID: sessionID}, since, seen)
+	children, err := oc.ListChildSessions(ctx, sessionID)
+	if err != nil {
+		return
+	}
+	for _, child := range children {
+		label := child.Model
+		if label == "" {
+			label = "subagent"
+		}
+		r.relaySessionMessages(ctx, oc, taskID, attemptID, streamSource{sessionID: child.ID, parentID: sessionID, label: label}, since, seen)
+	}
+}
+
+func (r *AgentTaskRunner) relaySessionMessages(ctx context.Context, oc OpenCodeClient, taskID, attemptID string, src streamSource, since time.Time, seen map[string]bool) {
+	msgs, err := oc.GetSessionMessages(ctx, src.sessionID)
 	if err != nil {
 		return
 	}
@@ -79,7 +109,7 @@ func (r *AgentTaskRunner) relaySessionMessages(ctx context.Context, oc OpenCodeC
 			partID := fmt.Sprintf("%s_%d", msg.ID, idx)
 			switch part["type"] {
 			case "tool":
-				r.relayToolPart(ctx, taskID, attemptID, sessionID, partID, part, seen)
+				r.relayToolPart(ctx, taskID, attemptID, src, partID, part, seen)
 			case "text":
 				text, _ := part["text"].(string)
 				key := partID + "_text"
@@ -92,20 +122,19 @@ func (r *AgentTaskRunner) relaySessionMessages(ctx context.Context, oc OpenCodeC
 					agent = "agent"
 				}
 				if r.hub != nil {
-					_ = r.hub.BroadcastTaskEvent(taskID, map[string]any{
+					_ = r.hub.BroadcastTaskEvent(taskID, src.event(map[string]any{
 						"eventType": "text",
-						"sessionID": sessionID,
 						"text":      text,
 						"agent":     agent,
-					})
+					}))
 				}
-				r.broadcastLog(ctx, taskID, attemptID, fmt.Sprintf("\r\n\x1b[36m> %s\x1b[0m\r\n%s\r\n", agent, text))
+				r.broadcastLog(ctx, taskID, attemptID, fmt.Sprintf("\r\n%s\x1b[36m> %s\x1b[0m\r\n%s\r\n", src.prefix(), agent, text))
 			}
 		}
 	}
 }
 
-func (r *AgentTaskRunner) relayToolPart(ctx context.Context, taskID, attemptID, sessionID, partID string, part map[string]any, seen map[string]bool) {
+func (r *AgentTaskRunner) relayToolPart(ctx context.Context, taskID, attemptID string, src streamSource, partID string, part map[string]any, seen map[string]bool) {
 	name, _ := part["name"].(string)
 	if id, _ := part["id"].(string); id != "" {
 		partID = id
@@ -131,21 +160,20 @@ func (r *AgentTaskRunner) relayToolPart(ctx context.Context, taskID, attemptID, 
 			}
 		}
 		if r.hub != nil {
-			_ = r.hub.BroadcastTaskEvent(taskID, map[string]any{
+			_ = r.hub.BroadcastTaskEvent(taskID, src.event(map[string]any{
 				"eventType":  "tool_use",
-				"sessionID":  sessionID,
 				"toolName":   name,
 				"toolStatus": "running",
 				"toolInput":  input,
-			})
+			}))
 		}
 		if len(summary) > streamToolCmdMax {
 			summary = summary[:streamToolCmdMax-3] + "..."
 		}
 		if summary != "" {
-			r.broadcastLog(ctx, taskID, attemptID, fmt.Sprintf("\x1b[33m→ [%s]\x1b[0m \x1b[90m%s\x1b[0m\r\n", name, summary))
+			r.broadcastLog(ctx, taskID, attemptID, fmt.Sprintf("%s\x1b[33m→ [%s]\x1b[0m \x1b[90m%s\x1b[0m\r\n", src.prefix(), name, summary))
 		} else {
-			r.broadcastLog(ctx, taskID, attemptID, fmt.Sprintf("\x1b[33m→ [%s]\x1b[0m\r\n", name))
+			r.broadcastLog(ctx, taskID, attemptID, fmt.Sprintf("%s\x1b[33m→ [%s]\x1b[0m\r\n", src.prefix(), name))
 		}
 	}
 
@@ -159,13 +187,12 @@ func (r *AgentTaskRunner) relayToolPart(ctx context.Context, taskID, attemptID, 
 		output = state["output"]
 	}
 	if r.hub != nil {
-		_ = r.hub.BroadcastTaskEvent(taskID, map[string]any{
+		_ = r.hub.BroadcastTaskEvent(taskID, src.event(map[string]any{
 			"eventType":  "tool_use",
-			"sessionID":  sessionID,
 			"toolName":   name,
 			"toolStatus": status,
 			"toolOutput": output,
-		})
+		}))
 	}
 	if out, _ := output.(string); strings.TrimSpace(out) != "" {
 		lines := strings.Split(strings.TrimSpace(out), "\n")
@@ -181,8 +208,18 @@ func (r *AgentTaskRunner) relayToolPart(ctx context.Context, taskID, attemptID, 
 		}
 	}
 	if status == "completed" {
-		r.broadcastLog(ctx, taskID, attemptID, fmt.Sprintf("\x1b[32m✔ Completed tool: %s\x1b[0m\r\n", name))
+		r.broadcastLog(ctx, taskID, attemptID, fmt.Sprintf("%s\x1b[32m✔ Completed tool: %s\x1b[0m\r\n", src.prefix(), name))
 	} else {
-		r.broadcastLog(ctx, taskID, attemptID, fmt.Sprintf("\x1b[31m✖ Tool failed: %s\x1b[0m\r\n", name))
+		r.broadcastLog(ctx, taskID, attemptID, fmt.Sprintf("%s\x1b[31m✖ Tool failed: %s\x1b[0m\r\n", src.prefix(), name))
 	}
+}
+
+// event stamps a hub event with the session it came from, and its parent and name when it is a subagent's.
+func (s streamSource) event(e map[string]any) map[string]any {
+	e["sessionID"] = s.sessionID
+	if s.parentID != "" {
+		e["parentSessionID"] = s.parentID
+		e["subagent"] = s.label
+	}
+	return e
 }

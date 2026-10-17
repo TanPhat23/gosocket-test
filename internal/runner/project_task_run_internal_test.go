@@ -161,6 +161,8 @@ type ptrOC struct {
 	mu         sync.Mutex
 	childPolls int
 	msgs       []OpenCodeMessageDTO
+	children   []OpenCodeSessionDTO
+	childMsgs  map[string][]OpenCodeMessageDTO
 }
 
 func (o *ptrOC) EnsureSessionAtLocation(_ context.Context, _, _, dir string) error {
@@ -417,8 +419,8 @@ func TestExecInContainer_ReturnsExitCodeAndCapsOutput(t *testing.T) {
 func (o *ptrOC) ListChildSessions(context.Context, string) ([]OpenCodeSessionDTO, error) {
 	o.mu.Lock()
 	o.childPolls++
-	o.mu.Unlock()
-	return nil, nil
+	defer o.mu.Unlock()
+	return o.children, nil
 }
 
 type ptrResolver struct {

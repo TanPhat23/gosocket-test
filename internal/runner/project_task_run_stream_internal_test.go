@@ -11,9 +11,12 @@ import (
 	"agent-task-manager/internal/repository"
 )
 
-func (o *ptrOC) GetSessionMessages(context.Context, string) ([]OpenCodeMessageDTO, error) {
+func (o *ptrOC) GetSessionMessages(_ context.Context, id string) ([]OpenCodeMessageDTO, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if m, ok := o.childMsgs[id]; ok {
+		return append([]OpenCodeMessageDTO(nil), m...), nil
+	}
 	return append([]OpenCodeMessageDTO(nil), o.msgs...), nil
 }
 
@@ -87,5 +90,29 @@ func TestProjectTaskRun_DoesNotReplayMessagesFromBeforeThisRun(t *testing.T) {
 	}
 	if got := logs.all(); strings.Contains(got, "I added the thing") {
 		t.Fatalf("a previous attempt's output leaked into this attempt's log:\n%q", got)
+	}
+}
+
+func TestProjectTaskRun_StreamsSubagentToolCallsAndTextWithALabel(t *testing.T) {
+	f := newPtrFixture(t, []string{"succeeded"}, []int{0}, true)
+	logs := &ptrLogRepo{}
+	f.r.logRepo = logs
+	f.oc.children = []OpenCodeSessionDTO{{ID: "child1", ParentID: "s", Model: "explore"}}
+	f.oc.childMsgs = map[string][]OpenCodeMessageDTO{"child1": {assistantTurn("c1", time.Now())}}
+
+	if err := f.run(t); err != nil {
+		t.Fatal(err)
+	}
+	got := logs.all()
+	for _, want := range []string{"[subagent: explore]", "[bash]", "go build ./...", "I added the thing"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("subagent output is missing %q:\n%q", want, got)
+		}
+	}
+	if n := strings.Count(got, "I added the thing"); n != 1 {
+		t.Fatalf("subagent text relayed %d times, want once", n)
+	}
+	if strings.Index(got, "I added the thing") > strings.Index(got, "Snapshot captured") {
+		t.Fatalf("subagent output must be flushed before the turn is reported finished:\n%q", got)
 	}
 }

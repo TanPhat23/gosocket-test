@@ -416,16 +416,12 @@ func (r *AgentTaskRunner) runTaskInProjectContainer(ctx context.Context, task *m
 		if sess, err := oc.GetSession(ctx, sessionID); err == nil {
 			before = sess.UpdatedAt
 		}
-		subCtx, subCancel := context.WithCancel(ctx)
-		go r.watchChildSubagents(subCtx, oc, task.ID, attempt.ID, sessionID)
 		stopStream := r.startSessionStream(ctx, oc, task.ID, attempt.ID, sessionID, streamSince, streamSeen)
 		if err := oc.PromptSession(ctx, sessionID, prompt); err != nil {
-			subCancel()
 			stopStream()
 			return fmt.Errorf("failed to prompt session: %w", err)
 		}
 		waitErr := r.waitForSessionOutcome(ctx, oc, sessionID, before)
-		subCancel()
 		stopStream()
 		if err := waitErr; err != nil {
 			r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\r\n\x1b[31m[Agent Control Plane] Execution failed in iteration %d: %v\x1b[0m\r\n", iteration, err))
