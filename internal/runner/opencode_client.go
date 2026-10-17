@@ -68,6 +68,7 @@ type OpenCodeSessionDTO struct {
 	Tokens    *dto.SessionTokensDTO `json:"tokens,omitempty"`
 	CreatedAt *time.Time            `json:"created_at,omitempty"`
 	UpdatedAt *time.Time            `json:"updated_at,omitempty"`
+	IdleAt    *time.Time            `json:"idle_at,omitempty"`
 }
 
 // OpenCodeMessageDTO aliases dto.OpenCodeMessageDTO for runner consumers.
@@ -307,6 +308,7 @@ func (c *openCodeClient) GetSession(ctx context.Context, sessionID string) (*Ope
 			Time struct {
 				Created int64 `json:"created"`
 				Updated int64 `json:"updated"`
+				Idle    int64 `json:"idle"`
 			} `json:"time"`
 			Location struct {
 				Directory string `json:"directory"`
@@ -317,9 +319,16 @@ func (c *openCodeClient) GetSession(ctx context.Context, sessionID string) (*Ope
 	if err := json.Unmarshal(respBody, &wrapper); err == nil && wrapper.Data.ID != "" {
 		createdAt := millisToTimePtr(wrapper.Data.Time.Created)
 		updatedAt := millisToTimePtr(wrapper.Data.Time.Updated)
+		idleAt := millisToTimePtr(wrapper.Data.Time.Idle)
 
 		status := wrapper.Data.Outcome
-		if status == "" {
+		if wrapper.Data.Time.Idle > 0 && wrapper.Data.Time.Idle >= wrapper.Data.Time.Updated {
+			if status == "" {
+				status = "idle"
+			}
+		} else if wrapper.Data.Time.Updated > 0 && (wrapper.Data.Time.Idle == 0 && wrapper.Data.Time.Updated > wrapper.Data.Time.Created || wrapper.Data.Time.Updated > wrapper.Data.Time.Idle) {
+			status = "running"
+		} else if status == "" {
 			status = "idle"
 		}
 
@@ -348,6 +357,7 @@ func (c *openCodeClient) GetSession(ctx context.Context, sessionID string) (*Ope
 			Tokens:    tokens,
 			CreatedAt: createdAt,
 			UpdatedAt: updatedAt,
+			IdleAt:    idleAt,
 		}, nil
 	}
 
@@ -495,6 +505,11 @@ func (c *openCodeClient) ListChildSessions(ctx context.Context, parentID string)
 			Title    string `json:"title"`
 			Agent    string `json:"agent"`
 			Outcome  string `json:"outcome"`
+			Time     struct {
+				Created int64 `json:"created"`
+				Updated int64 `json:"updated"`
+				Idle    int64 `json:"idle"`
+			} `json:"time"`
 		} `json:"data"`
 	}
 
@@ -505,12 +520,23 @@ func (c *openCodeClient) ListChildSessions(ctx context.Context, parentID string)
 	var childSessions []OpenCodeSessionDTO
 	for _, s := range wrapper.Data {
 		if s.ParentID == escapedID {
+			childStatus := s.Outcome
+			if s.Time.Idle > 0 && s.Time.Idle >= s.Time.Updated {
+				if childStatus == "" {
+					childStatus = "idle"
+				}
+			} else if s.Time.Updated > 0 && (s.Time.Idle == 0 && s.Time.Updated > s.Time.Created || s.Time.Updated > s.Time.Idle) {
+				childStatus = "running"
+			} else if childStatus == "" {
+				childStatus = "idle"
+			}
+
 			childSessions = append(childSessions, OpenCodeSessionDTO{
 				ID:       s.ID,
 				ParentID: s.ParentID,
 				Title:    s.Title,
 				Model:    s.Agent,
-				Status:   s.Outcome,
+				Status:   childStatus,
 			})
 		}
 	}

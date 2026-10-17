@@ -295,8 +295,12 @@ func (m *projectSandboxManager) ensureProjectContainer(ctx context.Context, proj
 		fmt.Sprintf("%s:/workspaces:rw", dataVolume),
 		fmt.Sprintf("%s:%s:rw", stateVolume, opencodeStateDir),
 	}
+	tmpMount := "rw,noexec,nosuid,size=512m"
+	if m.devHostAuth.Enabled {
+		tmpMount = "rw,nosuid,size=512m"
+	}
 	tmpfs := map[string]string{
-		"/tmp":         "rw,noexec,nosuid,size=512m",
+		"/tmp":         tmpMount,
 		"/run/secrets": "rw,noexec,nosuid,size=1m,uid=1000,gid=1000,mode=0700",
 	}
 

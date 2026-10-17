@@ -154,7 +154,16 @@ func (r *AgentTaskRunner) waitForSessionOutcome(ctx context.Context, oc OpenCode
 		if err != nil {
 			return fmt.Errorf("failed to poll session: %w", err)
 		}
-		if before != nil && (sess.UpdatedAt == nil || !sess.UpdatedAt.After(*before)) {
+		if before != nil {
+			if sess.IdleAt != nil {
+				if !sess.IdleAt.After(*before) {
+					continue
+				}
+			} else if sess.UpdatedAt == nil || !sess.UpdatedAt.After(*before) {
+				continue
+			}
+		}
+		if sess.Status == "running" {
 			continue
 		}
 		switch sess.Status {
