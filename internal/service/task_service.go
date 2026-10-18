@@ -62,6 +62,8 @@ type taskService struct {
 	openCodeClient  runner.OpenCodeClient
 	sessionClients  SessionClientResolver
 	steerFinalizer  SteerFinalizer
+	publishPR       PullRequestPublisher
+	readTaskDiff    TaskDiffReader
 	logRepo         repository.LogRepository
 	simulated       bool
 
@@ -94,6 +96,22 @@ type SteerFinalizer func(ctx context.Context, task *models.Task, before *time.Ti
 // WithTaskSteerFinalizer wires the post-turn work for steering. Without it a steer only delivers the prompt.
 func WithTaskSteerFinalizer(fin SteerFinalizer) TaskServiceOption {
 	return func(s *taskService) { s.steerFinalizer = fin }
+}
+
+// PullRequestPublisher pushes a finished task's branch and opens its pull request, returning the PR URL.
+// It runs in the project container's runtime; logf receives terminal-formatted progress lines.
+type PullRequestPublisher func(ctx context.Context, task *models.Task, logf func(string)) (string, error)
+
+// TaskDiffReader returns the task's unified diff, read in the project container.
+type TaskDiffReader func(ctx context.Context, task *models.Task) (string, error)
+
+// WithTaskPullRequestPublisher wires the manual pull request and diff paths to the task runner. Without it
+// both refuse with the runtime-unavailable error.
+func WithTaskPullRequestPublisher(publish PullRequestPublisher, diff TaskDiffReader) TaskServiceOption {
+	return func(s *taskService) {
+		s.publishPR = publish
+		s.readTaskDiff = diff
+	}
 }
 
 // steerTimeout bounds one steered turn including its commit and push.
@@ -535,16 +553,28 @@ func isNilTaskRunner(r TaskRunner) bool {
 	return false
 }
 
-// CreatePullRequestForTask manually pushes the task's worktree branch to remote origin and opens a Pull Request.
-//
-// Disabled pending Phase 1B/Gates 0C/0D/0G: after the read-only authorization check (RoleMember; empty userID is
-// forbidden), it refuses before any git/push, token decrypt, provider, or status access.
+// CreatePullRequestForTask pushes the task's branch and opens its pull request through the project container.
+// Requires RoleMember; an empty userID is forbidden. Only a finished task has a branch to publish. The simulated
+// runtime never pushes.
 func (s *taskService) CreatePullRequestForTask(ctx context.Context, taskID, userID string) (*models.Task, error) {
-	if _, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleMember); err != nil {
+	task, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleMember)
+	if err != nil {
 		return nil, err
 	}
+	if s.simulated || s.publishPR == nil {
+		return nil, runner.ErrRuntimeExecutionUnavailable
+	}
+	if task.Status != models.TaskStatusDone && task.Status != models.TaskStatusReview {
+		return nil, errors.New("only a finished task can have a pull request")
+	}
 
-	return nil, runner.ErrRuntimeExecutionUnavailable
+	prURL, err := s.publishPR(ctx, task, func(line string) { s.broadcastTaskLog(ctx, task.ID, line) })
+	if err != nil {
+		return nil, err
+	}
+	task.PRURL = &prURL
+	task.PullRequestURL = &prURL
+	return task, nil
 }
 
 // createPullRequestForTaskDisabledDraft is the original implementation, intentionally unreferenced.
@@ -1399,14 +1429,17 @@ func (s *taskService) compactTaskSessionDisabledDraft(ctx context.Context, taskI
 	return s.openCodeClient.CompactSession(ctx, *task.SessionID)
 }
 
-// GetTaskDiff retrieves the unified git diff between origin/main and the task branch or current worktree.
-// AC-SEC-02: Requires RoleViewer or higher; an empty userID is forbidden.
+// GetTaskDiff returns the task's unified diff against the integration's base branch, read in the project
+// container. AC-SEC-02: Requires RoleViewer or higher; an empty userID is forbidden.
 func (s *taskService) GetTaskDiff(ctx context.Context, taskID, userID string) (string, error) {
-	if _, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleViewer); err != nil {
+	task, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleViewer)
+	if err != nil {
 		return "", err
 	}
-
-	return "", runner.ErrRuntimeExecutionUnavailable
+	if s.readTaskDiff == nil {
+		return "", runner.ErrRuntimeExecutionUnavailable
+	}
+	return s.readTaskDiff(ctx, task)
 }
 
 // getTaskDiffDisabledDraft is the original implementation, intentionally unreferenced.
@@ -1455,15 +1488,113 @@ func (s *taskService) getTaskDiffDisabledDraft(ctx context.Context, taskID, user
 }
 
 // SyncTaskPRStatus checks the external PR status on GitHub and marks the task as done if merged.
-//
-// Disabled pending Phase 1B/Gates 0C/0D/0G: after authorization (RoleMember; an empty userID is forbidden),
-// it refuses before any credential lookup, token decrypt, GitHub call, or status update.
+// AC-SEC-02: Requires RoleMember or higher; an empty userID is forbidden. Without GitHub dependencies it
+// refuses with the runtime-unavailable error.
 func (s *taskService) SyncTaskPRStatus(ctx context.Context, taskID, userID string) (*models.Task, error) {
-	if _, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleMember); err != nil {
+	task, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleMember)
+	if err != nil {
 		return nil, err
 	}
+	if !s.hasGitHubSync() {
+		return nil, runner.ErrRuntimeExecutionUnavailable
+	}
+	return s.syncPRStatus(ctx, task)
+}
 
-	return nil, runner.ErrRuntimeExecutionUnavailable
+// hasGitHubSync reports whether the GitHub status and issue paths are wired.
+func (s *taskService) hasGitHubSync() bool {
+	return s.integRepo != nil && s.credRepo != nil && s.cipher != nil && s.ghProvider != nil
+}
+
+// syncPRStatus marks a review task done when GitHub reports its pull request merged, then closes the linked
+// issue. The caller must have authorized the request; the reconciler batches its own reads instead.
+func (s *taskService) syncPRStatus(ctx context.Context, task *models.Task) (*models.Task, error) {
+	if task.PRURL == nil || *task.PRURL == "" || task.Status == models.TaskStatusDone {
+		return task, nil
+	}
+
+	integrationsList, err := s.integRepo.ListByProjectID(ctx, task.ProjectID)
+	if err != nil {
+		return task, fmt.Errorf("failed to list project integrations: %w", err)
+	}
+	ghInteg := selectGitHubIntegration(task, integrationsList)
+	if ghInteg == nil {
+		return task, errors.New("no enabled GitHub integration for project")
+	}
+
+	token, err := s.gitHubToken(ctx, ghInteg)
+	if err != nil {
+		return task, err
+	}
+	prStatus, err := s.ghProvider.GetPullRequestStatus(ctx, ghInteg, token, *task.PRURL)
+	if err != nil {
+		return task, fmt.Errorf("failed to check PR status: %w", err)
+	}
+	if prStatus == nil || !prStatus.Merged {
+		return task, nil
+	}
+	if err := s.completeMergedTask(ctx, task, ghInteg, token); err != nil {
+		return nil, err
+	}
+	return task, nil
+}
+
+// gitHubToken decrypts the credential of a GitHub integration.
+func (s *taskService) gitHubToken(ctx context.Context, ghInteg *models.ProjectIntegration) (string, error) {
+	cred, err := s.credRepo.GetByID(ctx, ghInteg.CredentialID)
+	if err != nil {
+		return "", fmt.Errorf("failed to load GitHub credential: %w", err)
+	}
+	token, err := s.cipher.Decrypt(cred.EncryptedData)
+	if err != nil {
+		return "", fmt.Errorf("failed to decrypt GitHub credential: %w", err)
+	}
+	return token, nil
+}
+
+// completeMergedTask marks a task done after its pull request merged, and closes its linked issue.
+func (s *taskService) completeMergedTask(ctx context.Context, task *models.Task, ghInteg *models.ProjectIntegration, token string) error {
+	task.Status = models.TaskStatusDone
+	task.UpdatedAt = time.Now().UTC()
+	if err := s.taskRepo.Update(ctx, task); err != nil {
+		return fmt.Errorf("failed to update task status: %w", err)
+	}
+	if s.hub != nil {
+		_ = s.hub.BroadcastTaskStatus(task.ID, models.TaskStatusDone)
+	}
+
+	if task.ExternalID != nil && *task.ExternalID != "" {
+		if syncProv, ok := s.ghProvider.(integrations.SyncProvider); ok {
+			_ = syncProv.UpdateIssueStatus(ctx, ghInteg, token, *task.ExternalID, "closed")
+			_ = syncProv.AddComment(ctx, ghInteg, token, *task.ExternalID, fmt.Sprintf("Pull Request %s was merged. Task marked as completed.", *task.PRURL))
+		}
+	}
+	return nil
+}
+
+// selectGitHubIntegration picks the project's GitHub integration for a task: the one the task is linked to,
+// then the enabled one whose external ID appears in the PR URL, then any enabled GitHub integration.
+func selectGitHubIntegration(task *models.Task, list []models.ProjectIntegration) *models.ProjectIntegration {
+	if task.IntegrationID != nil && *task.IntegrationID != "" {
+		for i := range list {
+			if list[i].ID == *task.IntegrationID && list[i].Enabled {
+				return &list[i]
+			}
+		}
+	}
+	if task.PRURL != nil && *task.PRURL != "" {
+		for i := range list {
+			if list[i].Enabled && strings.Contains(*task.PRURL, list[i].ExternalID) {
+				return &list[i]
+			}
+		}
+	}
+	for i := range list {
+		if list[i].Provider == models.IntegrationGitHub && list[i].Enabled {
+			return &list[i]
+		}
+	}
+	return nil
 }
 
 // syncTaskPRStatusDisabledDraft is the original implementation, intentionally unreferenced.
@@ -1567,12 +1698,99 @@ func (s *taskService) syncTaskPRStatusDisabledDraft(ctx context.Context, taskID,
 	return task, nil
 }
 
-// ReconcileActivePRs inspects tasks in review status with a PR URL and marks them done if merged.
-//
-// Disabled pending Phase 1B/Gates 0C/0D/0G: a silent no-op, so the periodic reconciler neither
-// lists tasks nor contacts GitHub and does not log a quarantine error every tick.
+// ReconcileActivePRs inspects tasks in review status with a PR URL and marks them done if merged. A provider that
+// can batch reads gets one request per integration; any other provider is read one pull request at a time.
+// Without GitHub dependencies it does nothing. A task that fails to sync is logged and retried on the next tick.
 func (s *taskService) ReconcileActivePRs(ctx context.Context) error {
+	if !s.hasGitHubSync() {
+		return nil
+	}
+
+	tasks, err := s.taskRepo.List(ctx, "")
+	if err != nil {
+		return err
+	}
+	var pending []*models.Task
+	for i := range tasks {
+		if tasks[i].Status == models.TaskStatusReview && tasks[i].PRURL != nil && *tasks[i].PRURL != "" {
+			pending = append(pending, &tasks[i])
+		}
+	}
+
+	if batcher, ok := s.ghProvider.(integrations.PullRequestStatusBatcher); ok {
+		s.reconcileBatched(ctx, batcher, pending)
+		return nil
+	}
+	for _, task := range pending {
+		if _, err := s.syncPRStatus(ctx, task); err != nil {
+			log.Printf("warning: PR status sync failed for task %s: %v", task.ID, err)
+		}
+	}
 	return nil
+}
+
+// reconcileBatched reads the pending pull requests with one batched request per GitHub integration, then completes
+// the merged ones. Each task is attributed to the integration selected for it, so one token serves its whole batch.
+func (s *taskService) reconcileBatched(ctx context.Context, batcher integrations.PullRequestStatusBatcher, pending []*models.Task) {
+	type batch struct {
+		integ *models.ProjectIntegration
+		tasks []*models.Task
+	}
+	integrationsByProject := make(map[string][]models.ProjectIntegration)
+	batches := make(map[string]*batch)
+	var order []string
+	for _, task := range pending {
+		list, cached := integrationsByProject[task.ProjectID]
+		if !cached {
+			var err error
+			list, err = s.integRepo.ListByProjectID(ctx, task.ProjectID)
+			if err != nil {
+				log.Printf("warning: PR status sync for task %s: failed to list project integrations: %v", task.ID, err)
+			}
+			integrationsByProject[task.ProjectID] = list
+		}
+		integ := selectGitHubIntegration(task, list)
+		if integ == nil {
+			log.Printf("warning: PR status sync for task %s: no enabled GitHub integration for project", task.ID)
+			continue
+		}
+		b, ok := batches[integ.ID]
+		if !ok {
+			b = &batch{integ: integ}
+			batches[integ.ID] = b
+			order = append(order, integ.ID)
+		}
+		b.tasks = append(b.tasks, task)
+	}
+
+	for _, id := range order {
+		b := batches[id]
+		token, err := s.gitHubToken(ctx, b.integ)
+		if err != nil {
+			log.Printf("warning: PR status sync for integration %s: %v", id, err)
+			continue
+		}
+		urls := make([]string, 0, len(b.tasks))
+		for _, task := range b.tasks {
+			urls = append(urls, *task.PRURL)
+		}
+		results := batcher.GetPullRequestStatuses(ctx, token, urls)
+		for _, task := range b.tasks {
+			res, ok := results[*task.PRURL]
+			if !ok {
+				res.Err = errors.New("pull request was not read")
+			}
+			if res.Err != nil {
+				log.Printf("warning: PR status sync failed for task %s: %v", task.ID, res.Err)
+				continue
+			}
+			if res.Status != nil && res.Status.Merged {
+				if err := s.completeMergedTask(ctx, task, b.integ, token); err != nil {
+					log.Printf("warning: PR status sync failed for task %s: %v", task.ID, err)
+				}
+			}
+		}
+	}
 }
 
 // reconcileActivePRsDisabledDraft is the original implementation, intentionally unreferenced.

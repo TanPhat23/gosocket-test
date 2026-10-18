@@ -1104,19 +1104,18 @@ func TestSyncTaskPRStatus(t *testing.T) {
 		service.WithTaskGitHubIntegration(integRepo, credRepo, cipher, mockPR),
 	)
 
-	// PR sync is quarantined: it refuses after authorization, even though the PR is merged.
+	// The PR is merged on GitHub, so sync marks the task done.
 	syncedTask, err := taskSvc.SyncTaskPRStatus(ctx, task.ID, ownerUser.ID)
-	if !errors.Is(err, runner.ErrRuntimeExecutionUnavailable) {
-		t.Fatalf("expected ErrRuntimeExecutionUnavailable from SyncTaskPRStatus, got %v", err)
+	if err != nil {
+		t.Fatalf("SyncTaskPRStatus: %v", err)
 	}
-	if syncedTask != nil {
-		t.Fatalf("expected nil task, got %+v", syncedTask)
+	if syncedTask == nil || syncedTask.Status != models.TaskStatusDone {
+		t.Fatalf("expected synced task status %s, got %+v", models.TaskStatusDone, syncedTask)
 	}
 
-	// Verify the DB row is unchanged
 	reloaded, _ := taskRepo.GetByID(ctx, task.ID)
-	if reloaded.Status != models.TaskStatusReview {
-		t.Fatalf("expected persisted task status %s, got %s", models.TaskStatusReview, reloaded.Status)
+	if reloaded.Status != models.TaskStatusDone {
+		t.Fatalf("expected persisted task status %s, got %s", models.TaskStatusDone, reloaded.Status)
 	}
 }
 
