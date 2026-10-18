@@ -43,3 +43,7 @@ web/.vite/
 acme.json
 .playwright-mcp/
 data
+
+# Traefik dashboard credentials (generated locally, never committed)
+deploy/traefik/dashboard.htpasswd
+deploy/traefik/dashboard-credentials.txt

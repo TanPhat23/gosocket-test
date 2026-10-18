@@ -33,6 +33,7 @@ services:
     volumes:
       - "./deploy/traefik/traefik.yml:/etc/traefik/traefik.yml:ro"
       - "./deploy/traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro"
+      - "./deploy/traefik/dashboard.htpasswd:/etc/traefik/dashboard.htpasswd:ro"
       - "traefik_acme:/letsencrypt"
     networks:
       - ingress

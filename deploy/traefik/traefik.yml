@@ -33,3 +33,7 @@ providers:
   file:
     filename: /etc/traefik/dynamic.yml
     watch: true
+
+# Traefik dashboard, served through the router in dynamic.yml behind basic auth.
+api:
+  dashboard: true

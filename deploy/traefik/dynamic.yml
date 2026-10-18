@@ -12,6 +12,10 @@ http:
           Referrer-Policy: "strict-origin-when-cross-origin"
           Permissions-Policy: "camera=(), microphone=(), geolocation=()"
 
+    traefik-auth:
+      basicAuth:
+        usersFile: /etc/traefik/dashboard.htpasswd
+
   routers:
     web-ui:
       rule: 'Host(`{{ env "DOMAIN" }}`)'
@@ -37,6 +41,17 @@ http:
         - websecure
       priority: 100
       service: dex-service
+
+    traefik-dashboard:
+      # Above the web-ui catch-all (priority 10) and the control-plane router (100), so /dashboard reaches Traefik.
+      rule: 'Host(`{{ env "DOMAIN" }}`) && (PathPrefix(`/dashboard`) || (PathPrefix(`/api`) && !PathPrefix(`/api/v1`)))'
+      entryPoints:
+        - websecure
+      priority: 200
+      middlewares:
+        - security-headers
+        - traefik-auth
+      service: api@internal
 
   services:
     web-ui-service:
