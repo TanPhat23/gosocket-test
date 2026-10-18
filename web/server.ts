@@ -19,17 +19,16 @@ const server = Bun.serve({
       });
     }
 
-    // Serve static assets from dist
-    let filePath = `./dist${url.pathname}`;
-    let file = Bun.file(filePath);
-    if (await file.exists()) {
-      return new Response(file);
+    // Serve the TanStack Start client build (dist/client) for assets and files.
+    const asset = Bun.file(`./dist/client${url.pathname}`);
+    if (url.pathname !== '/' && (await asset.exists())) {
+      return new Response(asset);
     }
 
-    // SPA fallback to index.html for client routing
-    const indexFile = Bun.file('./dist/index.html');
-    if (await indexFile.exists()) {
-      return new Response(indexFile, {
+    // SPA fallback: every other path gets the Start shell, which boots the client router.
+    const shell = Bun.file('./dist/client/_shell.html');
+    if (await shell.exists()) {
+      return new Response(shell, {
         headers: {
           'Content-Type': 'text/html; charset=utf-8',
           'Cache-Control': 'no-cache',

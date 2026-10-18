@@ -97,3 +97,13 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
 if (typeof Element !== 'undefined' && typeof Element.prototype.scrollIntoView !== 'function') {
   Element.prototype.scrollIntoView = () => {};
 }
+
+// Monaco needs a real browser. Tests get a plain element that carries the same text, so the editor's content is
+// still checkable without loading the editor.
+vi.mock('@monaco-editor/react', async () => {
+  const React = await import('react');
+  return {
+    Editor: ({ value }: { value?: string }) => React.createElement('pre', { 'data-testid': 'monaco-editor' }, value ?? ''),
+  };
+});
+vi.mock('@/lib/monaco', () => ({ configureMonaco: () => {} }));

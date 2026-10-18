@@ -5,6 +5,24 @@ import {
   CreateTaskInput,
 } from '../schemas/taskSchemas';
 
+// TaskFilesResponse lists a task workspace. Source is "workspace" for the live worktree or "committed" for the branch.
+export interface TaskFilesResponse {
+  task_id: string;
+  source: string;
+  files: string[];
+}
+
+// TaskFileResponse is one file of a task workspace. Content is empty for binary files.
+export interface TaskFileResponse {
+  task_id: string;
+  path: string;
+  source: string;
+  size: number;
+  content: string;
+  binary: boolean;
+  truncated: boolean;
+}
+
 export const taskApi = {
   async getTasks(projectId?: string): Promise<TaskDTO[]> {
     const res = await axiosClient.get<unknown[]>('/tasks', {
@@ -62,6 +80,19 @@ export const taskApi = {
   async getTaskDiff(taskId: string): Promise<string> {
     const res = await axiosClient.get<{ diff?: string }>(`/tasks/${encodeURIComponent(taskId)}/diff`);
     return res.data?.diff ?? '';
+  },
+
+  async getTaskFiles(taskId: string): Promise<TaskFilesResponse> {
+    const res = await axiosClient.get<TaskFilesResponse>(`/tasks/${encodeURIComponent(taskId)}/files`);
+    return res.data;
+  },
+
+  async getTaskFile(taskId: string, path: string): Promise<TaskFileResponse> {
+    const res = await axiosClient.get<TaskFileResponse>(
+      `/tasks/${encodeURIComponent(taskId)}/files/content`,
+      { params: { path } }
+    );
+    return res.data;
   },
 
   async syncTaskPR(taskId: string): Promise<TaskDTO> {

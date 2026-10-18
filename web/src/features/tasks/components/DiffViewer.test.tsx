@@ -11,17 +11,16 @@ describe('DiffViewer', () => {
 +console.log("new");
 `;
 
-  it('renders diff with file names, additions, and deletions', () => {
+  it('renders diff with file names, additions, and deletions', async () => {
     render(<DiffViewer diff={sampleDiff} />);
 
     // File name
     expect(screen.getAllByText('src/hello.ts').length).toBeGreaterThanOrEqual(1);
 
-    // Deletion line content
-    expect(screen.getByText('console.log("old");')).toBeInTheDocument();
-
-    // Addition line content
-    expect(screen.getByText('console.log("new");')).toBeInTheDocument();
+    // The selected file's patch is shown in the editor, with its deletion and addition lines.
+    const editor = await screen.findByTestId('monaco-editor');
+    expect(editor).toHaveTextContent('-console.log("old");');
+    expect(editor).toHaveTextContent('+console.log("new");');
   });
 
   it('renders review action buttons when handlers provided', () => {

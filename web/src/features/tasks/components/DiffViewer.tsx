@@ -3,6 +3,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { FileCode2, GitPullRequest, RotateCcw, FileText, GitMerge, ExternalLink } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { CodeEditor } from './CodeEditor';
 
 export interface DiffViewerProps {
   diff?: string;
@@ -13,106 +14,39 @@ export interface DiffViewerProps {
   isMerged?: boolean;
 }
 
-interface DiffLine {
-  type: 'addition' | 'deletion' | 'header' | 'context';
-  content: string;
-  oldLineNumber?: number;
-  newLineNumber?: number;
-}
-
 interface DiffFile {
   oldPath: string;
   newPath: string;
-  lines: DiffLine[];
+  /** The file's own section of the unified diff, shown as-is in the editor. */
+  patch: string;
   additions: number;
   deletions: number;
 }
 
+// parseUnifiedDiff splits a unified diff into one entry per file. Each file keeps its raw section so the editor can
+// show it with diff highlighting.
 function parseUnifiedDiff(rawDiff: string): DiffFile[] {
   if (!rawDiff || rawDiff.trim() === '') {
     return [];
   }
-  const files: DiffFile[] = [];
-  const lines = rawDiff.split('\n');
-
-  let currentFile: DiffFile | null = null;
-  let oldLine = 0;
-  let newLine = 0;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-
-    if (line.startsWith('diff --git')) {
-      if (currentFile) {
-        files.push(currentFile);
-      }
-      const match = line.match(/diff --git a\/(.+) b\/(.+)/);
-      currentFile = {
-        oldPath: match ? match[1] : 'unknown',
-        newPath: match ? match[2] : 'unknown',
-        lines: [],
-        additions: 0,
-        deletions: 0,
-      };
-      continue;
+  const sections = rawDiff.split(/^(?=diff --git )/m).filter((section) => section.startsWith('diff --git '));
+  return sections.map((section) => {
+    const header = section.split('\n', 1)[0];
+    const match = header.match(/^diff --git a\/(.+) b\/(.+)$/);
+    let additions = 0;
+    let deletions = 0;
+    for (const line of section.split('\n')) {
+      if (line.startsWith('+') && !line.startsWith('+++')) additions++;
+      else if (line.startsWith('-') && !line.startsWith('---')) deletions++;
     }
-
-    if (!currentFile) {
-      if (line.startsWith('---') || line.startsWith('+++')) {
-        continue;
-      }
-    }
-
-    if (line.startsWith('--- ') || line.startsWith('+++ ')) {
-      continue;
-    }
-
-    if (line.startsWith('@@')) {
-      const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-      if (match) {
-        oldLine = parseInt(match[1], 10);
-        newLine = parseInt(match[2], 10);
-      }
-      if (currentFile) {
-        currentFile.lines.push({
-          type: 'header',
-          content: line,
-        });
-      }
-      continue;
-    }
-
-    if (!currentFile) continue;
-
-    if (line.startsWith('+')) {
-      currentFile.additions++;
-      currentFile.lines.push({
-        type: 'addition',
-        content: line.slice(1),
-        newLineNumber: newLine++,
-      });
-    } else if (line.startsWith('-')) {
-      currentFile.deletions++;
-      currentFile.lines.push({
-        type: 'deletion',
-        content: line.slice(1),
-        oldLineNumber: oldLine++,
-      });
-    } else {
-      currentFile.lines.push({
-        type: 'context',
-        content: line.startsWith(' ') ? line.slice(1) : line,
-        oldLineNumber: oldLine++,
-        newLineNumber: newLine++,
-      });
-    }
-  }
-
-  if (currentFile) {
-    files.push(currentFile);
-  }
-
-  return files;
+    return {
+      oldPath: match?.[1] ?? 'unknown',
+      newPath: match?.[2] ?? 'unknown',
+      patch: `${section.replace(/\n+$/, '')}\n`,
+      additions,
+      deletions,
+    };
+  });
 }
 
 export const DiffViewer: React.FC<DiffViewerProps> = ({
@@ -231,9 +165,9 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
         </div>
       </div>
 
-      {/* Main Diff Content: Sidebar + Code View */}
+      {/* Main Diff Content: Sidebar + Editor */}
       <div className="flex flex-1 min-h-[350px] overflow-hidden">
-        {/* Left: Files Tree/List */}
+        {/* Left: Changed files */}
         <div className="w-64 border-r border-border bg-muted/20 flex flex-col shrink-0">
           <div className="p-2 border-b border-border/50 text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
             Changed Files
@@ -266,11 +200,10 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
           </div>
         </div>
 
-        {/* Right: File Diff Viewer */}
-        <div className="flex-1 flex flex-col overflow-hidden bg-background">
+        {/* Right: the selected file's diff in the editor */}
+        <div className="flex-1 flex flex-col overflow-hidden bg-background min-w-0">
           {activeFile ? (
             <>
-              {/* File Header */}
               <div className="p-2.5 px-4 bg-muted/30 border-b border-border/50 flex items-center justify-between text-xs">
                 <span className="font-mono font-medium text-foreground">{activeFile.newPath}</span>
                 <div className="flex items-center gap-2 text-xs font-mono text-muted-foreground">
@@ -278,55 +211,10 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
                   <span className="text-rose-600 dark:text-rose-400">-{activeFile.deletions}</span>
                 </div>
               </div>
-
-              {/* Lines */}
-              <div className="flex-1 overflow-auto font-mono text-xs select-text">
-                <table className="w-full border-collapse">
-                  <tbody>
-                    {activeFile.lines.map((line, lIdx) => {
-                      if (line.type === 'header') {
-                        return (
-                          <tr key={lIdx} className="bg-primary/5 text-primary/80 font-medium">
-                            <td colSpan={3} className="py-1 px-4 text-[11px]">
-                              {line.content}
-                            </td>
-                          </tr>
-                        );
-                      }
-
-                      return (
-                        <tr
-                          key={lIdx}
-                          className={cn(
-                            'hover:bg-muted/30 transition-colors',
-                            line.type === 'addition' && 'bg-emerald-500/10 text-emerald-950 dark:text-emerald-200',
-                            line.type === 'deletion' && 'bg-rose-500/10 text-rose-950 dark:text-rose-200'
-                          )}
-                        >
-                          <td className="w-12 text-right pr-2 select-none text-[10px] text-muted-foreground/60 border-r border-border/30">
-                            {line.oldLineNumber ?? ''}
-                          </td>
-                          <td className="w-12 text-right pr-2 select-none text-[10px] text-muted-foreground/60 border-r border-border/30">
-                            {line.newLineNumber ?? ''}
-                          </td>
-                          <td className="px-3 whitespace-pre overflow-x-visible">
-                            <span
-                              className={cn(
-                                'inline-block w-4 select-none',
-                                line.type === 'addition' && 'text-emerald-600 dark:text-emerald-400 font-bold',
-                                line.type === 'deletion' && 'text-rose-600 dark:text-rose-400 font-bold',
-                                line.type === 'context' && 'text-transparent'
-                              )}
-                            >
-                              {line.type === 'addition' ? '+' : line.type === 'deletion' ? '-' : ' '}
-                            </span>
-                            {line.content}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+              <div className="relative flex-1 min-h-[300px]" data-testid="diff-editor">
+                <div className="absolute inset-0">
+                  <CodeEditor value={activeFile.patch} language="diff" />
+                </div>
               </div>
             </>
           ) : (

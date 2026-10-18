@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState } from 'react';
 import { useSelectedTask, useTaskStore } from '../store/useTaskStore';
 import {
   Dialog,
@@ -10,7 +10,10 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { TerminalView } from './TerminalView';
-import { DiffViewer } from './DiffViewer';
+import { DiffTab } from './inspector/DiffTab';
+import { TaskInspectorProvider } from './inspector/TaskInspectorContext';
+import { usePullRequestController } from './inspector/usePullRequestController';
+import { FileExplorer } from './FileExplorer';
 import { AgentSessionView } from './AgentSessionView';
 import { Markdown } from '@/components/ui/markdown';
 import {
@@ -38,6 +41,7 @@ import {
   RefreshCw,
   Database,
   DollarSign,
+  FolderTree,
   Zap,
 } from 'lucide-react';
 import { taskApi } from '../api/taskApi';
@@ -96,7 +100,6 @@ export const TaskInspectorModal: React.FC<TaskInspectorModalProps> = ({
 }) => {
   const selectedTask = useSelectedTask();
   const selectTask = useTaskStore((state) => state.selectTask);
-  const updateTask = useTaskStore((state) => state.updateTask);
   const tasks = useTaskStore((state) => state.tasks);
 
   const task = propTaskId !== undefined
@@ -125,14 +128,9 @@ export const TaskInspectorModal: React.FC<TaskInspectorModalProps> = ({
 
   const [activeTab, setActiveTab] = useState<string>('overview');
 
-  const [isCreatingPR, setIsCreatingPR] = useState(false);
-  const [prError, setPrError] = useState<string | null>(null);
-  const [prToast, setPrToast] = useState<{ message: string; url?: string } | null>(null);
   const [copiedSessionId, setCopiedSessionId] = useState(false);
-  const [taskDiff, setTaskDiff] = useState<string>('');
-  const [loadingDiff, setLoadingDiff] = useState(false);
-  const [isSyncingPR, setIsSyncingPR] = useState(false);
-  const syncedTasksRef = useRef<Set<string>>(new Set());
+  const pullRequest = usePullRequestController(task);
+  const { isCreatingPR, isSyncingPR, prError, prToast, handleCreatePR, handleSyncPR } = pullRequest;
   const [sessionData, setSessionData] = useState<TaskSessionResponse | null>(null);
 
   React.useEffect(() => {
@@ -154,63 +152,6 @@ export const TaskInspectorModal: React.FC<TaskInspectorModalProps> = ({
     };
   }, [task?.id]);
 
-  const handleSyncPR = React.useCallback(async () => {
-    if (!task) return;
-    setIsSyncingPR(true);
-    try {
-      const updated = await taskApi.syncTaskPR(task.id);
-      if (updated) {
-        updateTask(updated);
-        if (updated.status === 'done') {
-          setPrToast({
-            message: 'Pull request merged! Task marked as completed.',
-            url: updated.pull_request_url || updated.pr_url || undefined,
-          });
-          setTimeout(() => setPrToast(null), 5000);
-        }
-      }
-    } catch {
-      // ignore silently if offline or unmerged
-    } finally {
-      setIsSyncingPR(false);
-    }
-  }, [task?.id, updateTask]);
-
-  React.useEffect(() => {
-    if (
-      task &&
-      task.status === 'review' &&
-      (task.pull_request_url || task.pr_url) &&
-      !syncedTasksRef.current.has(task.id)
-    ) {
-      syncedTasksRef.current.add(task.id);
-      handleSyncPR();
-    }
-  }, [task?.id, task?.status, task?.pull_request_url, task?.pr_url, handleSyncPR]);
-
-  React.useEffect(() => {
-    if (!task) {
-      setTaskDiff('');
-      return;
-    }
-    let isMounted = true;
-    setLoadingDiff(true);
-    taskApi
-      .getTaskDiff(task.id)
-      .then((d) => {
-        if (isMounted) setTaskDiff(d || '');
-      })
-      .catch(() => {
-        if (isMounted) setTaskDiff('');
-      })
-      .finally(() => {
-        if (isMounted) setLoadingDiff(false);
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [task?.id, activeTab]);
 
   const isOpen = !!task;
 
@@ -245,34 +186,6 @@ export const TaskInspectorModal: React.FC<TaskInspectorModalProps> = ({
   const prLink = task ? task.pull_request_url || task.pr_url : null;
   const isCompleted = task ? ['done', 'review'].includes(task.status) : false;
 
-  const handleCreatePR = async () => {
-    if (!task) return;
-    setIsCreatingPR(true);
-    setPrError(null);
-    try {
-      const res = await taskApi.createTaskPR(task.id);
-      const updatedPrUrl = res.pull_request_url;
-      const updated: typeof task = {
-        ...task,
-        pull_request_url: updatedPrUrl,
-        pr_url: updatedPrUrl,
-        updated_at: new Date().toISOString(),
-      };
-      updateTask(updated);
-      setPrToast({
-        message: 'Pull request created successfully!',
-        url: updatedPrUrl,
-      });
-      setTimeout(() => {
-        setPrToast(null);
-      }, 5000);
-    } catch (err) {
-      setPrError(err instanceof Error ? err.message : 'Failed to create pull request');
-    } finally {
-      setIsCreatingPR(false);
-    }
-  };
-
   const formatDate = (isoString: string) => {
     try {
       return new Date(isoString).toLocaleString();
@@ -282,6 +195,7 @@ export const TaskInspectorModal: React.FC<TaskInspectorModalProps> = ({
   };
 
   return (
+    <TaskInspectorProvider task={task} pullRequest={pullRequest}>
     <Dialog open={isOpen} onOpenChange={handleOpenChange}>
       <DialogContent className="w-full h-full max-h-screen rounded-none p-3 sm:rounded-xl sm:p-6 sm:w-[96vw] sm:max-w-[1680px] sm:h-[92vh] sm:max-h-[94vh] flex flex-col">
         <DialogHeader className="pb-3 border-b border-border">
@@ -445,7 +359,7 @@ export const TaskInspectorModal: React.FC<TaskInspectorModalProps> = ({
           className="flex-1 flex flex-col mt-3 overflow-hidden min-h-0"
         >
           <div className="overflow-x-auto pb-1 max-w-full">
-            <TabsList className="inline-flex min-w-full sm:min-w-0 sm:grid sm:grid-cols-4 sm:w-full sm:max-w-xl">
+            <TabsList className="inline-flex min-w-full sm:min-w-0 sm:grid sm:grid-cols-5 sm:w-full sm:max-w-2xl">
               <TabsTrigger value="overview" className="text-xs flex items-center gap-1.5 shrink-0 sm:shrink">
                 <Info className="size-3.5" />
                 Overview
@@ -461,6 +375,10 @@ export const TaskInspectorModal: React.FC<TaskInspectorModalProps> = ({
               <TabsTrigger value="diff" className="text-xs flex items-center gap-1.5 shrink-0 sm:shrink">
                 <GitCompare className="size-3.5" />
                 Git Diff Review
+              </TabsTrigger>
+              <TabsTrigger value="files" className="text-xs flex items-center gap-1.5 shrink-0 sm:shrink" data-testid="tab-file-explorer">
+                <FolderTree className="size-3.5" />
+                File Explorer
               </TabsTrigger>
             </TabsList>
           </div>
@@ -736,24 +654,17 @@ export const TaskInspectorModal: React.FC<TaskInspectorModalProps> = ({
           {/* Diff Tab */}
           <TabsContent value="diff" className="flex-1 mt-4 overflow-hidden h-full">
             <div className="h-full w-full min-h-[380px]">
-              <DiffViewer
-                diff={taskDiff}
-                loading={loadingDiff}
-                prUrl={prLink}
-                isMerged={task.status === 'done'}
-                onApprove={task.status === 'review' && !prLink ? handleCreatePR : undefined}
-                onReject={
-                  task.status === 'review' && !prLink
-                    ? () => {
-                        alert(`Rejected changes for task ${task.id}. Prompting agent for fixes.`);
-                      }
-                    : undefined
-                }
-              />
+              <DiffTab />
             </div>
+          </TabsContent>
+
+          {/* File Explorer Tab */}
+          <TabsContent value="files" className="flex-1 mt-4 overflow-hidden h-full">
+            <FileExplorer taskId={task.id} active={activeTab === 'files'} />
           </TabsContent>
         </Tabs>
       </DialogContent>
     </Dialog>
+    </TaskInspectorProvider>
   );
 };

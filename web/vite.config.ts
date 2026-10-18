@@ -1,11 +1,19 @@
 import path from 'path';
-import { defineConfig } from 'vitest/config';
+import { defineConfig } from 'vite';
+import { tanstackStart } from '@tanstack/react-start/plugin/vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
-// https://vite.dev/config/
+// https://tanstack.com/start/latest/docs/framework/react/build-from-scratch
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    // TanStack Start must come before React. SPA mode keeps today's client-only behaviour: auth and data load in the
+    // browser, against the Go control plane.
+    tanstackStart({ spa: { enabled: true } }),
+    // The React Compiler runs through oxc (Rust), not Babel.
+    react({ compiler: true }),
+    tailwindcss(),
+  ],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
@@ -21,10 +29,5 @@ export default defineConfig({
         ws: true,
       },
     },
-  },
-  test: {
-    environment: 'jsdom',
-    globals: true,
-    setupFiles: ['./src/test/setup.ts'],
   },
 });

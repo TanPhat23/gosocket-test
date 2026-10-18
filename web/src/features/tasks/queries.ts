@@ -28,3 +28,26 @@ export const taskSessionQueryOptions = (taskId: string) =>
     queryFn: () => taskApi.getTaskSession(taskId),
     staleTime: 1000 * 5,
   });
+
+// The diff and the file explorer re-read the workspace, which changes while an agent works. They are cached briefly
+// so switching tabs or revisiting a file does not hit the server again.
+export const taskDiffQueryOptions = (taskId: string) =>
+  queryOptions({
+    queryKey: ['tasks', taskId, 'diff'],
+    queryFn: () => taskApi.getTaskDiff(taskId),
+    staleTime: 1000 * 15,
+  });
+
+export const taskFilesQueryOptions = (taskId: string) =>
+  queryOptions({
+    queryKey: ['tasks', taskId, 'files'],
+    queryFn: () => taskApi.getTaskFiles(taskId),
+    staleTime: 1000 * 15,
+  });
+
+export const taskFileQueryOptions = (taskId: string, path: string) =>
+  queryOptions({
+    queryKey: ['tasks', taskId, 'file', path],
+    queryFn: () => taskApi.getTaskFile(taskId, path),
+    staleTime: 1000 * 15,
+  });
