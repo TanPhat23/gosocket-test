@@ -1,7 +1,6 @@
 package transfer
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -26,9 +25,24 @@ const (
 	ExitCodeVolumeNotWritable = 103
 )
 
+const (
+	// helperRemoveTimeout bounds removing a helper container once its operation has ended.
+	helperRemoveTimeout = 30 * time.Second
+	// maxSyncCheckBytes caps the sync-age reply; a valid reply is a short integer or "missing".
+	maxSyncCheckBytes = 64
+)
+
 type volumeTransferHelper struct {
 	dockerCli sandbox.DockerClient
 	imageTag  string
+}
+
+// removeHelperContainer force-removes a helper container its operation started. It ignores the operation's
+// cancellation: a request cancelled while its helper runs must still remove that helper, or the container leaks.
+func removeHelperContainer(ctx context.Context, cli sandbox.DockerClient, id string) {
+	rmCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), helperRemoveTimeout)
+	defer cancel()
+	_ = cli.ContainerRemove(rmCtx, id, container.RemoveOptions{Force: true})
 }
 
 // NewVolumeTransferHelper creates an instance of VolumeHelper using DockerClient.
@@ -151,9 +165,7 @@ fi
 	if err != nil {
 		return "", fmt.Errorf("failed to create volume helper container: %w", err)
 	}
-	defer func() {
-		_ = h.dockerCli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
-	}()
+	defer removeHelperContainer(ctx, h.dockerCli, resp.ID)
 
 	// Attach to container stdin/stdout/stderr before ContainerStart
 	hijacked, err := h.dockerCli.ContainerAttach(ctx, resp.ID, container.AttachOptions{
@@ -170,6 +182,8 @@ fi
 	if err := h.dockerCli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
 		return "", fmt.Errorf("failed to start volume helper container: %w", err)
 	}
+	// Nothing reads the helper's output, so drain it: an unread attach stream can stall the helper.
+	go func() { _, _ = io.Copy(io.Discard, hijacked.Reader) }()
 
 	// Stream bundle bytes into container stdin via hijacked connection, then close write half
 	streamErrCh := make(chan error, 1)
@@ -431,11 +445,12 @@ echo $(( $(date +%%s) - $(cat "$STAMP") ))
 		},
 	}
 
-	var out bytes.Buffer
-	if err := h.runCapturedHelper(ctx, containerCfg, hostCfg, &out, "sync check"); err != nil {
+	// A reply past the cap is cut short, so it fails to parse below and the caller falls back to the full fetch.
+	out := &limitedBuffer{max: maxSyncCheckBytes}
+	if err := h.runCapturedHelper(ctx, containerCfg, hostCfg, out, "sync check"); err != nil {
 		return 0, false, err
 	}
-	reply := strings.TrimSpace(out.String())
+	reply := strings.TrimSpace(out.buf.String())
 	if reply == "missing" {
 		return 0, false, nil
 	}
@@ -517,9 +532,7 @@ func (h *volumeTransferHelper) runCapturedHelper(
 	if err != nil {
 		return fmt.Errorf("failed to create %s helper container: %w", label, err)
 	}
-	defer func() {
-		_ = h.dockerCli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
-	}()
+	defer removeHelperContainer(ctx, h.dockerCli, resp.ID)
 
 	// Attach to capture stdout (the payload) and stderr (diagnostics)
 	hijacked, err := h.dockerCli.ContainerAttach(ctx, resp.ID, container.AttachOptions{
@@ -538,14 +551,14 @@ func (h *volumeTransferHelper) runCapturedHelper(
 
 	streamErrCh := make(chan error, 1)
 	go func() {
-		var errBuf bytes.Buffer
 		var outDst io.Writer = outStream
 		if outDst == nil {
 			outDst = io.Discard
 		}
 		// In raw Docker attach stream without TTY, stream is multiplexed with stdout/stderr
-		// stdcopy.StdCopy demultiplexes into outDst and errBuf. If plain reader, fallback to io.Copy.
-		_, copyErr := stdcopy.StdCopy(outDst, &errBuf, hijacked.Reader)
+		// stdcopy.StdCopy demultiplexes into outDst, and stderr is discarded: it is never reported, and keeping it
+		// would grow without bound. If plain reader, fallback to io.Copy.
+		_, copyErr := stdcopy.StdCopy(outDst, io.Discard, hijacked.Reader)
 		if copyErr != nil {
 			// Fallback if raw un-multiplexed stream
 			_, copyErr = io.Copy(outDst, hijacked.Reader)

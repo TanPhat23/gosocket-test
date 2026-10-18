@@ -31,14 +31,27 @@ func ValidateWorkspacePath(p string) error {
 	return nil
 }
 
-// limitedBuffer keeps the first max bytes and reports every write as complete.
+// maxWorkspaceListingBytes caps the file listing of one task workspace. Past it the listing is refused rather than
+// cut, because a partial list would end in a half-written path.
+const maxWorkspaceListingBytes = 16 << 20
+
+// ErrWorkspaceListingTooLarge reports a workspace whose file listing exceeds maxWorkspaceListingBytes.
+var ErrWorkspaceListingTooLarge = errors.New("workspace file listing is too large")
+
+// limitedBuffer keeps the first max bytes and reports every write as complete. It records whether any bytes were
+// dropped, and keeps accepting writes so the helper's output is still drained.
 type limitedBuffer struct {
-	buf bytes.Buffer
-	max int
+	buf       bytes.Buffer
+	max       int
+	truncated bool
 }
 
 func (b *limitedBuffer) Write(p []byte) (int, error) {
-	if room := b.max - b.buf.Len(); room > 0 {
+	room := b.max - b.buf.Len()
+	if len(p) > room {
+		b.truncated = true
+	}
+	if room > 0 {
 		b.buf.Write(p[:min(len(p), room)])
 	}
 	return len(p), nil
@@ -67,11 +80,14 @@ else
 fi
 `, repoID, repoID, taskID, taskID)
 
-	var out bytes.Buffer
-	if err := h.runCapturedHelper(ctx, h.readOnlyConfig(listScript, nil), h.readOnlyHost(repoID), &out, "file listing"); err != nil {
+	out := &limitedBuffer{max: maxWorkspaceListingBytes}
+	if err := h.runCapturedHelper(ctx, h.readOnlyConfig(listScript, nil), h.readOnlyHost(repoID), out, "file listing"); err != nil {
 		return WorkspaceListing{}, err
 	}
-	header, rest, _ := strings.Cut(out.String(), "\n")
+	if out.truncated {
+		return WorkspaceListing{}, fmt.Errorf("%w: more than %d bytes", ErrWorkspaceListingTooLarge, maxWorkspaceListingBytes)
+	}
+	header, rest, _ := strings.Cut(out.buf.String(), "\n")
 	listing := WorkspaceListing{Source: strings.TrimPrefix(header, "source=")}
 	for _, name := range strings.Split(rest, "\x00") {
 		if name != "" {
@@ -92,6 +108,10 @@ func (h *volumeTransferHelper) ReadWorkspaceFile(ctx context.Context, repoID, ta
 	}
 	if err := ValidateWorkspacePath(relPath); err != nil {
 		return nil, err
+	}
+	// A negative cap would make the content slice below panic, so it is refused before any container starts.
+	if maxBytes < 0 {
+		return nil, fmt.Errorf("max bytes must not be negative: %d", maxBytes)
 	}
 
 	readScript := fmt.Sprintf(`

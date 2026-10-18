@@ -1,7 +1,6 @@
 package transfer
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -103,9 +102,7 @@ printf "protocol=https\nhost=github.com\nusername=x-access-token\n\n" | git cred
 	if err != nil {
 		return fmt.Errorf("failed to create credentialed worker container: %w", err)
 	}
-	defer func() {
-		_ = w.dockerCli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
-	}()
+	defer removeHelperContainer(ctx, w.dockerCli, resp.ID)
 
 	// Attach to container stdin/stdout/stderr before ContainerStart
 	hijacked, err := w.dockerCli.ContainerAttach(ctx, resp.ID, container.AttachOptions{
@@ -135,12 +132,12 @@ printf "protocol=https\nhost=github.com\nusername=x-access-token\n\n" | git cred
 		}
 		_ = hijacked.CloseWrite()
 
-		var errBuf bytes.Buffer
 		var outDst io.Writer = outStream
 		if outDst == nil {
 			outDst = io.Discard
 		}
-		_, copyErr := stdcopy.StdCopy(outDst, &errBuf, hijacked.Reader)
+		// Stderr is never reported; discarding it keeps a noisy fetch from growing a buffer.
+		_, copyErr := stdcopy.StdCopy(outDst, io.Discard, hijacked.Reader)
 		if copyErr != nil {
 			_, copyErr = io.Copy(outDst, hijacked.Reader)
 		}
@@ -237,9 +234,7 @@ printf "protocol=https\nhost=github.com\nusername=x-access-token\n\n" | git cred
 	if err != nil {
 		return fmt.Errorf("failed to create worker push container: %w", err)
 	}
-	defer func() {
-		_ = w.dockerCli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
-	}()
+	defer removeHelperContainer(ctx, w.dockerCli, resp.ID)
 
 	// Attach to container stdin/stdout/stderr before ContainerStart
 	hijacked, err := w.dockerCli.ContainerAttach(ctx, resp.ID, container.AttachOptions{
@@ -256,6 +251,8 @@ printf "protocol=https\nhost=github.com\nusername=x-access-token\n\n" | git cred
 	if err := w.dockerCli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
 		return fmt.Errorf("failed to start worker push container: %w", err)
 	}
+	// Nothing reads the push output, so drain it: an unread attach stream can stall the container.
+	go func() { _, _ = io.Copy(io.Discard, hijacked.Reader) }()
 
 	// 1. Write the token on the first line: fmt.Fprintf(hijacked.Conn, "%s\n", token)
 	// 2. Stream bundle bytes into hijacked.Conn
