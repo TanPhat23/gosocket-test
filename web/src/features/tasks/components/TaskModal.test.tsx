@@ -18,11 +18,11 @@ describe('TaskModal', () => {
     expect(triggerBtn).toBeInTheDocument();
 
     fireEvent.click(triggerBtn);
-    await screen.findByLabelText(/Task Title/i);
+    await screen.findByLabelText(/^Title$/i);
 
-    expect(screen.getByText(/Create Autonomous Agent Task/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/Task Title/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/Prompt & Execution Specification/i)).toBeInTheDocument();
+    expect(screen.getByText(/Create task/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Title$/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Prompt$/i)).toBeInTheDocument();
   });
 
   it('validates client input with zod and displays errors on empty submission', async () => {
@@ -30,7 +30,7 @@ describe('TaskModal', () => {
 
     const triggerBtn = screen.getByRole('button', { name: /new task/i });
     fireEvent.click(triggerBtn);
-    await screen.findByLabelText(/Task Title/i);
+    await screen.findByLabelText(/^Title$/i);
 
     const submitBtn = screen.getByRole('button', { name: /dispatch task/i });
     fireEvent.click(submitBtn);
@@ -63,10 +63,10 @@ describe('TaskModal', () => {
 
     const triggerBtn = screen.getByRole('button', { name: /new task/i });
     fireEvent.click(triggerBtn);
-    await screen.findByLabelText(/Task Title/i);
+    await screen.findByLabelText(/^Title$/i);
 
-    const titleInput = screen.getByLabelText(/Task Title/i);
-    const promptInput = screen.getByLabelText(/Prompt & Execution Specification/i);
+    const titleInput = screen.getByLabelText(/^Title$/i);
+    const promptInput = screen.getByLabelText(/^Prompt$/i);
 
     fireEvent.change(titleInput, { target: { value: 'Valid task title' } });
     fireEvent.change(promptInput, { target: { value: 'Valid prompt details' } });
@@ -102,10 +102,10 @@ describe('TaskModal', () => {
 
     const triggerBtn = screen.getByRole('button', { name: /new task/i });
     fireEvent.click(triggerBtn);
-    await screen.findByLabelText(/Task Title/i);
+    await screen.findByLabelText(/^Title$/i);
 
-    const titleInput = screen.getByLabelText(/Task Title/i);
-    const promptInput = screen.getByLabelText(/Prompt & Execution Specification/i);
+    const titleInput = screen.getByLabelText(/^Title$/i);
+    const promptInput = screen.getByLabelText(/^Prompt$/i);
 
     fireEvent.change(titleInput, { target: { value: 'Task on second repo' } });
     fireEvent.change(promptInput, { target: { value: 'Do work on repo 2' } });
@@ -149,7 +149,7 @@ describe('TaskModal', () => {
     render(<TaskModal />);
 
     fireEvent.click(screen.getByRole('button', { name: /new task/i }));
-    await screen.findByLabelText(/Task Title/i);
+    await screen.findByLabelText(/^Title$/i);
 
     await waitFor(() => {
       expect(screen.getByText('org/repo-demo')).toBeInTheDocument();

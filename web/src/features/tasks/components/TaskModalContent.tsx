@@ -1,8 +1,10 @@
-import React, { useState, useMemo } from 'react';
+import React, { useMemo } from 'react';
+import { useForm, useStore } from '@tanstack/react-form';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { z } from 'zod';
 import { useTaskStore } from '../store/useTaskStore';
 import { useProjectsList, useActiveProjectId, useActiveTeamId } from '@/features/teams/store/useTeamStore';
-import { CreateTaskRequestSchema } from '../schemas/taskSchemas';
+import type { CreateTaskRequest } from '../schemas/taskSchemas';
 import {
   DialogContent,
   DialogHeader,
@@ -12,7 +14,6 @@ import {
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import {
   Select,
   SelectContent,
@@ -20,8 +21,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Check, Sparkles, Server, Wrench, AlertCircle, Cpu, GitBranch, FolderGit2, RefreshCw } from 'lucide-react';
+import { AlertCircle } from 'lucide-react';
 import { integrationApi } from '@/features/integrations/api/integrationApi';
+import type { IntegrationDTO } from '@/features/integrations/schemas/integrationSchemas';
 import { projectIntegrationsQueryOptions, gitHubBranchesQueryOptions } from '@/features/integrations/queries';
 import { modelsQueryOptions } from '../queries';
 import {
@@ -29,24 +31,32 @@ import {
   type ModelOption,
   DEFAULT_OPENCODE_MODELS,
 } from '../store/useWorkspaceSettingsStore';
-import { cn } from '@/lib/utils';
 
+const DEFAULT_MODEL = 'google/gemini-3.8-flash';
 
-const AVAILABLE_SKILLS = [
-  'frontend-ui-engineering',
-  'systematic-debugging',
-  'code-review-and-quality',
-  'browser-testing-with-devtools',
-  'test-driven-development',
-];
+// Title and prompt are the only fields the dialog validates on the client; the API checks the rest.
+const taskFormSchema = z.object({
+  project_id: z.string(),
+  integration_id: z.string(),
+  base_branch: z.string(),
+  model: z.string(),
+  title: z.string().trim().min(1, 'Title is required').max(255, 'Title too long'),
+  prompt: z.string().trim().min(1, 'Prompt is required'),
+});
 
-const AVAILABLE_MCPS = [
-  'github',
-  'context7',
-  'playwright',
-  'postgres',
-  'docker',
-];
+interface CreateTaskArgs {
+  taskData: CreateTaskRequest;
+  projectId: string;
+  integration?: IntegrationDTO;
+  baseBranch: string;
+}
+
+function errorText(errors: unknown[]): string | undefined {
+  const first = errors[0];
+  if (!first) return undefined;
+  if (typeof first === 'string') return first;
+  return (first as { message?: string }).message;
+}
 
 interface TaskModalContentProps {
   open: boolean;
@@ -66,7 +76,9 @@ export const TaskModalContent: React.FC<TaskModalContentProps> = ({ open, onOpen
   const defaultRepoId = useWorkspaceSettingsStore((state) => state.defaultRepoId);
   const workspaceModels = useWorkspaceSettingsStore((state) => state.availableModels);
 
-  // Queries for models
+  // Priority is a workspace setting, not a per-task field in the dialog.
+  const priority = defaultPriority || 50;
+
   const { data: fetchedModels } = useQuery(modelsQueryOptions());
   const availableModels: ModelOption[] = useMemo(() => {
     if (fetchedModels && fetchedModels.length > 0) return fetchedModels;
@@ -74,68 +86,96 @@ export const TaskModalContent: React.FC<TaskModalContentProps> = ({ open, onOpen
     return DEFAULT_OPENCODE_MODELS;
   }, [fetchedModels, workspaceModels]);
 
-  const [selectedProjectId, setSelectedProjectId] = useState<string>(activeProjectId || '');
-  const [title, setTitle] = useState('');
-  const [prompt, setPrompt] = useState('');
-  const [priority, setPriority] = useState<number>(defaultPriority || 50);
-  const [selectedModel, setSelectedModel] = useState<string>(defaultModel || 'google/gemini-3.8-flash');
-  const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
-  const [selectedMcps, setSelectedMcps] = useState<string[]>([]);
-  const [errors, setErrors] = useState<Record<string, string>>({});
+  const fallbackProjectId = activeProjectId || projects[0]?.id || '';
 
-  // Sync project ID when projects load
+  const createTaskMutation = useMutation({
+    mutationFn: async ({ taskData, projectId, integration, baseBranch }: CreateTaskArgs) => {
+      // A branch picked in the dialog becomes the repository's configured base branch before the task is dispatched.
+      if (integration && baseBranch !== String(integration.config?.base_branch || 'main')) {
+        try {
+          await integrationApi.updateProjectIntegration(projectId, integration.id, { base_branch: baseBranch });
+        } catch (err) {
+          console.warn('Failed to update integration base_branch before dispatch:', err);
+        }
+      }
+      return await createTask(taskData);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+    },
+  });
+
+  const form = useForm({
+    defaultValues: {
+      project_id: '',
+      integration_id: '',
+      base_branch: '',
+      model: defaultModel || DEFAULT_MODEL,
+      title: '',
+      prompt: '',
+    },
+    validators: {
+      onSubmit: taskFormSchema,
+    },
+    onSubmit: async ({ value }) => {
+      try {
+        await createTaskMutation.mutateAsync({
+          taskData: {
+            project_id: projectId.trim(),
+            integration_id: integrationId || undefined,
+            title: value.title.trim(),
+            prompt: value.prompt.trim(),
+            assignee_id: 'agent-sandbox-1',
+            assignee_type: 'agent',
+            priority: Number(priority),
+            model: value.model.trim() || undefined,
+          },
+          projectId: projectId.trim(),
+          integration: selectedInteg,
+          baseBranch,
+        });
+      } catch {
+        // The mutation keeps the error, which the form shows at the top.
+        return;
+      }
+      resetDetails();
+      onOpenChange(false);
+    },
+  });
+
+  const values = useStore(form.store, (state) => state.values);
+  const isSubmitting = useStore(form.store, (state) => state.isSubmitting);
+
+  const projectId = values.project_id || fallbackProjectId;
+
+  // Keep the dialog in step with the workspace defaults each time it opens.
   React.useEffect(() => {
-    if (activeProjectId) {
-      setSelectedProjectId(activeProjectId);
-    } else if (projects.length > 0 && !selectedProjectId) {
-      setSelectedProjectId(projects[0].id);
-    }
-  }, [activeProjectId, projects, selectedProjectId]);
+    if (!open) return;
+    if (defaultModel) form.setFieldValue('model', defaultModel);
+    if (activeProjectId) form.setFieldValue('project_id', activeProjectId);
+  }, [open, defaultModel, activeProjectId, form]);
 
-  const effectiveProjectId = selectedProjectId || activeProjectId || (projects.length > 0 ? projects[0].id : '');
-
-  // Query project integrations
   const { data: rawIntegrations } = useQuery({
-    ...projectIntegrationsQueryOptions(effectiveProjectId),
-    enabled: Boolean(effectiveProjectId),
+    ...projectIntegrationsQueryOptions(projectId),
+    enabled: Boolean(projectId),
   });
 
   const projectIntegrations = useMemo(() => {
     return (rawIntegrations || []).filter((i) => i.provider === 'github' && i.enabled);
   }, [rawIntegrations]);
 
-  const [selectedIntegrationId, setSelectedIntegrationId] = useState<string>('');
-  const [selectedBranch, setSelectedBranch] = useState<string>('');
+  const preferredRepoId = selectedRepoId !== 'all' ? selectedRepoId : defaultRepoId;
+  const selectedInteg =
+    projectIntegrations.find((i) => i.id === values.integration_id) ??
+    projectIntegrations.find((i) => i.id === preferredRepoId) ??
+    projectIntegrations[0];
+  const integrationId = selectedInteg?.id ?? '';
 
-  // Sync selected integration based on preferences or available integrations
-  React.useEffect(() => {
-    if (projectIntegrations.length > 0) {
-      const preferredRepo = selectedRepoId !== 'all' ? selectedRepoId : defaultRepoId;
-      const matchPreferred = projectIntegrations.find((g) => g.id === preferredRepo);
-      if (matchPreferred) {
-        setSelectedIntegrationId(matchPreferred.id);
-      } else {
-        setSelectedIntegrationId((prev) => {
-          const exists = projectIntegrations.some((g) => g.id === prev);
-          return exists ? prev : projectIntegrations[0].id;
-        });
-      }
-    } else {
-      setSelectedIntegrationId('');
-    }
-  }, [projectIntegrations, selectedRepoId, defaultRepoId]);
-
-  const selectedInteg = useMemo(
-    () => projectIntegrations.find((i) => i.id === selectedIntegrationId),
-    [projectIntegrations, selectedIntegrationId]
-  );
-
-  // Query branches for selected integration
   const shouldFetchBranches = Boolean(
     activeTeamId && selectedInteg?.credential_id && selectedInteg?.external_id
   );
 
-  const { data: fetchedBranches, isLoading: loadingBranches } = useQuery({
+  const { data: fetchedBranches } = useQuery({
     ...gitHubBranchesQueryOptions(
       activeTeamId || '',
       selectedInteg?.credential_id || '',
@@ -153,427 +193,232 @@ export const TaskModalContent: React.FC<TaskModalContentProps> = ({ open, onOpen
     return selectedInteg ? [defaultBaseBranch] : [];
   }, [fetchedBranches, selectedInteg, defaultBaseBranch]);
 
-  // Keep selected branch updated
-  React.useEffect(() => {
-    if (!selectedInteg) {
-      setSelectedBranch('');
-      return;
-    }
-    if (fetchedBranches && fetchedBranches.length > 0) {
-      if (fetchedBranches.includes(defaultBaseBranch)) {
-        setSelectedBranch(defaultBaseBranch);
-      } else {
-        setSelectedBranch(fetchedBranches[0]);
-      }
-    } else {
-      setSelectedBranch(defaultBaseBranch);
-    }
-  }, [selectedInteg, fetchedBranches, defaultBaseBranch]);
+  const preferredBranch =
+    fetchedBranches && fetchedBranches.length > 0
+      ? fetchedBranches.includes(defaultBaseBranch)
+        ? defaultBaseBranch
+        : fetchedBranches[0]
+      : defaultBaseBranch;
+  const baseBranch = repoBranches.includes(values.base_branch) ? values.base_branch : preferredBranch;
 
-  // Sync with workspace settings defaults when opening
-  React.useEffect(() => {
-    if (open) {
-      if (defaultModel) setSelectedModel(defaultModel);
-      if (defaultPriority) setPriority(defaultPriority);
-      if (activeProjectId) setSelectedProjectId(activeProjectId);
-    }
-  }, [open, defaultModel, defaultPriority, activeProjectId]);
-
-  const createTaskMutation = useMutation({
-    mutationFn: async (taskData: Parameters<typeof createTask>[0]) => {
-      // If a branch was customized, ensure integration config base_branch reflects the selected branch
-      if (effectiveProjectId && selectedIntegrationId && selectedBranch) {
-        const currentIntegBranch = String(selectedInteg?.config?.base_branch || 'main');
-        if (selectedBranch !== currentIntegBranch) {
-          try {
-            await integrationApi.updateProjectIntegration(effectiveProjectId, selectedIntegrationId, {
-              base_branch: selectedBranch,
-            });
-          } catch (err) {
-            console.warn('Failed to update integration base_branch before dispatch:', err);
-          }
-        }
-      }
-
-      return await createTask(taskData);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tasks'] });
-      resetForm();
-      onOpenChange(false);
-    },
-    onError: (err) => {
-      setErrors({ form: err instanceof Error ? err.message : 'Failed to create task' });
-    },
-  });
-
-  const toggleSkill = (skill: string) => {
-    setSelectedSkills((prev) =>
-      prev.includes(skill) ? prev.filter((s) => s !== skill) : [...prev, skill]
-    );
+  const resetDetails = () => {
+    form.reset({ ...form.state.values, title: '', prompt: '' });
+    createTaskMutation.reset();
   };
 
-  const toggleMcp = (mcp: string) => {
-    setSelectedMcps((prev) =>
-      prev.includes(mcp) ? prev.filter((m) => m !== mcp) : [...prev, mcp]
-    );
-  };
-
-  const resetForm = () => {
-    setTitle('');
-    setPrompt('');
-    setPriority(defaultPriority || 50);
-    setSelectedModel(defaultModel || 'google/gemini-3.8-flash');
-    setSelectedSkills([]);
-    setSelectedMcps([]);
-    setSelectedIntegrationId('');
-    setSelectedBranch('');
-    setErrors({});
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrors({});
-
-    const rawData = {
-      project_id: effectiveProjectId.trim(),
-      integration_id: selectedIntegrationId ? selectedIntegrationId.trim() : undefined,
-      title: title.trim(),
-      prompt: prompt.trim(),
-      assignee_id: 'agent-sandbox-1',
-      assignee_type: 'agent' as const,
-      priority: Number(priority),
-      model: selectedModel.trim() || undefined,
-      skills: selectedSkills,
-      mcp_servers: selectedMcps,
-    };
-
-    const validation = CreateTaskRequestSchema.safeParse(rawData);
-    if (!validation.success) {
-      const fieldErrors: Record<string, string> = {};
-      for (const issue of validation.error.issues) {
-        if (issue.path.length > 0) {
-          fieldErrors[issue.path[0].toString()] = issue.message;
-        }
-      }
-      setErrors(fieldErrors);
-      return;
-    }
-
-    createTaskMutation.mutate(validation.data);
-  };
-
-  const isSubmitting = createTaskMutation.isPending;
+  const submitError = createTaskMutation.isError
+    ? createTaskMutation.error instanceof Error
+      ? createTaskMutation.error.message
+      : 'Failed to create task'
+    : null;
 
   return (
-
-    <DialogContent className="sm:max-w-xl max-h-[90vh] overflow-y-auto">
+    <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
       <DialogHeader>
-        <DialogTitle className="text-base font-semibold flex items-center gap-2">
-          <Sparkles className="size-4 text-primary" />
-          Create Autonomous Agent Task
-        </DialogTitle>
+        <DialogTitle className="text-base font-semibold">Create task</DialogTitle>
       </DialogHeader>
 
-      <form onSubmit={handleSubmit} className="space-y-4 pt-1">
-        {errors.form && (
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          form.handleSubmit();
+        }}
+        className="space-y-4 pt-1"
+      >
+        {submitError && (
           <div className="p-3 text-xs rounded-lg bg-destructive/15 text-destructive flex items-center gap-2">
             <AlertCircle className="size-4 shrink-0" />
-            <span>{errors.form}</span>
+            <span>{submitError}</span>
           </div>
         )}
 
-        {/* Project selection */}
-        <div className="space-y-1.5">
-          <label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
-            <FolderGit2 className="size-3.5 text-primary" />
-            Project
-          </label>
-          {projects.length > 0 ? (
-            <Select
-              value={effectiveProjectId || 'none'}
-              onValueChange={(val) => {
-                if (typeof val === 'string') {
-                  setSelectedProjectId(val === 'none' ? '' : val);
-                }
-              }}
-            >
-              <SelectTrigger size="sm" className="w-full bg-card text-xs" aria-label="Project">
-                <SelectValue placeholder="Select project..." />
-              </SelectTrigger>
-              <SelectContent align="start">
-                <SelectItem value="none">-- No Project (Empty) --</SelectItem>
-                {projects.map((proj) => (
-                  <SelectItem key={proj.id} value={proj.id}>
-                    {proj.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          ) : (
-            <Input
-              id="task-project-input"
-              aria-label="Project"
-              value={selectedProjectId}
-              onChange={(e) => setSelectedProjectId(e.target.value)}
-              placeholder="Project UUID (leave empty to test)"
-              className="text-xs font-mono"
-            />
-          )}
-          {errors.project_id && (
-            <p className="text-[11px] text-destructive">{errors.project_id}</p>
-          )}
-        </div>
-
-        {/* Target Repository Selection (when project has connected GitHub repos) */}
-        {projectIntegrations.length > 0 && (
-          <div className="space-y-3 p-3 rounded-lg border border-border/70 bg-muted/20">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
-                <GitBranch className="size-3.5 text-primary" />
-                Target Repository &amp; Base Branch
-              </label>
-              <Badge variant="outline" className="text-[9px] font-mono">
-                {projectIntegrations.length} connected
-              </Badge>
-            </div>
-
-            {projectIntegrations.length === 1 ? (
-              <div className="flex items-center gap-2 text-xs font-mono text-muted-foreground bg-background px-2.5 py-1.5 rounded border border-border/50">
-                <span className="size-1.5 rounded-full bg-emerald-500 shrink-0" />
-                <span className="text-foreground font-medium">{projectIntegrations[0].external_id}</span>
-              </div>
-            ) : (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <form.Field
+            name="project_id"
+            children={(field) => (
               <div className="space-y-1.5">
-                <p className="text-[11px] text-muted-foreground">
-                  Select which repository the agent should clone, work on, and create branches in:
-                </p>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2" role="radiogroup" aria-label="Target Repository">
-                  {projectIntegrations.map((integ) => {
-                    const isSelected = selectedIntegrationId === integ.id;
-                    return (
-                      <button
-                        key={integ.id}
-                        type="button"
-                        onClick={() => setSelectedIntegrationId(integ.id)}
-                        data-testid={`target-repo-${integ.id}`}
-                        className={`text-left p-2 rounded-lg border text-xs transition-colors flex items-center justify-between gap-2 cursor-pointer ${
-                          isSelected
-                            ? 'border-primary bg-primary/10 text-foreground font-medium shadow-xs'
-                            : 'border-border/60 bg-background hover:bg-muted/40 text-muted-foreground'
-                        }`}
-                      >
-                        <div className="min-w-0 flex-1 truncate">
-                          <div className="font-mono text-xs truncate text-foreground">{integ.external_id}</div>
-                          <div className="text-[10px] text-muted-foreground truncate">
-                            Configured: {String(integ.config?.base_branch || 'main')}
-                          </div>
-                        </div>
-                        {isSelected && (
-                          <span className="size-2 rounded-full bg-primary shrink-0" />
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
+                <label className="text-xs font-medium text-foreground">Project</label>
+                {projects.length > 0 ? (
+                  <Select
+                    value={projectId || 'none'}
+                    onValueChange={(val) => {
+                      if (typeof val === 'string') field.handleChange(val === 'none' ? '' : val);
+                    }}
+                  >
+                    <SelectTrigger size="sm" className="w-full bg-card text-xs" aria-label="Project">
+                      <SelectValue placeholder="Select project..." />
+                    </SelectTrigger>
+                    <SelectContent align="start">
+                      <SelectItem value="none">No project</SelectItem>
+                      {projects.map((proj) => (
+                        <SelectItem key={proj.id} value={proj.id}>
+                          {proj.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Input
+                    id="task-project-input"
+                    aria-label="Project"
+                    value={field.state.value}
+                    onChange={(e) => field.handleChange(e.target.value)}
+                    placeholder="Project UUID"
+                    className="text-xs font-mono"
+                  />
+                )}
               </div>
             )}
+          />
 
-            {/* Base Branch Selection for the chosen repository */}
-            <div className="space-y-1.5 pt-1 border-t border-border/40">
-              <div className="flex items-center justify-between">
-                <label htmlFor="target-base-branch" className="text-xs font-medium text-foreground flex items-center gap-1.5">
-                  <GitBranch className="size-3 text-primary" />
-                  <span>Base Branch</span>
-                </label>
-                {loadingBranches ? (
-                  <span className="text-[10px] text-muted-foreground flex items-center gap-1">
-                    <RefreshCw className="size-2.5 animate-spin text-primary" />
-                    <span>Fetching branches from GitHub...</span>
-                  </span>
-                ) : repoBranches.length > 0 ? (
-                  <span className="text-[10px] text-muted-foreground font-mono">
-                    {repoBranches.length} branches found
-                  </span>
-                ) : null}
-              </div>
-
-              {repoBranches.length > 0 ? (
+          <form.Field
+            name="model"
+            children={(field) => (
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-foreground">Model</label>
                 <Select
-                  value={selectedBranch || repoBranches[0]}
+                  value={field.state.value}
                   onValueChange={(val) => {
-                    if (typeof val === 'string') {
-                      setSelectedBranch(val);
-                    }
+                    if (typeof val === 'string') field.handleChange(val);
                   }}
                 >
-                  <SelectTrigger
-                    id="target-base-branch"
-                    size="sm"
-                    className="w-full bg-background text-xs font-mono"
-                    aria-label="Base Branch"
-                    data-testid="target-branch-select"
-                  >
-                    <SelectValue placeholder="Select branch..." />
+                  <SelectTrigger size="sm" className="w-full bg-card text-xs" aria-label="Model">
+                    <SelectValue placeholder="Select model..." />
                   </SelectTrigger>
                   <SelectContent align="start">
-                    {repoBranches.map((branch) => (
-                      <SelectItem key={branch} value={branch} className="font-mono text-xs">
-                        {branch}
+                    {availableModels.map((model) => (
+                      <SelectItem key={model.id} value={model.id}>
+                        {model.name}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-              ) : (
-                <Input
-                  id="target-base-branch"
-                  value={selectedBranch}
-                  onChange={(e) => setSelectedBranch(e.target.value)}
-                  placeholder="main"
-                  className="text-xs font-mono h-8 bg-background"
-                  data-testid="target-branch-input"
-                />
+              </div>
+            )}
+          />
+        </div>
+
+        {projectIntegrations.length > 0 && (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <form.Field
+              name="integration_id"
+              children={(field) => (
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-foreground">Repository</label>
+                  {projectIntegrations.length === 1 ? (
+                    <div className="flex h-8 items-center truncate rounded-md border border-input bg-card px-2.5 font-mono text-xs text-foreground">
+                      {projectIntegrations[0].external_id}
+                    </div>
+                  ) : (
+                    <Select
+                      value={integrationId}
+                      onValueChange={(val) => {
+                        if (typeof val !== 'string') return;
+                        field.handleChange(val);
+                        // A branch from the previous repository does not carry over.
+                        form.setFieldValue('base_branch', '');
+                      }}
+                    >
+                      <SelectTrigger size="sm" className="w-full bg-card text-xs font-mono" aria-label="Repository">
+                        <SelectValue placeholder="Select repository..." />
+                      </SelectTrigger>
+                      <SelectContent align="start">
+                        {projectIntegrations.map((integ) => (
+                          <SelectItem key={integ.id} value={integ.id} className="font-mono text-xs">
+                            {integ.external_id}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                </div>
               )}
-            </div>
+            />
+
+            <form.Field
+              name="base_branch"
+              children={(field) => (
+                <div className="space-y-1.5">
+                  <label htmlFor="target-base-branch" className="text-xs font-medium text-foreground">
+                    Base branch
+                  </label>
+                  <Select
+                    value={baseBranch}
+                    onValueChange={(val) => {
+                      if (typeof val === 'string') field.handleChange(val);
+                    }}
+                  >
+                    <SelectTrigger
+                      id="target-base-branch"
+                      size="sm"
+                      className="w-full bg-card text-xs font-mono"
+                      aria-label="Base branch"
+                      data-testid="target-branch-select"
+                    >
+                      <SelectValue placeholder="Select branch..." />
+                    </SelectTrigger>
+                    <SelectContent align="start">
+                      {repoBranches.map((branch) => (
+                        <SelectItem key={branch} value={branch} className="font-mono text-xs">
+                          {branch}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+            />
           </div>
         )}
 
-        {/* Title */}
-        <div className="space-y-1.5">
-          <label htmlFor="task-title" className="text-xs font-semibold text-foreground">
-            Task Title
-          </label>
-          <Input
-            id="task-title"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="e.g. Implement OIDC token refresh worker in internal/auth"
-            className="text-xs"
-            autoFocus
-          />
-          {errors.title && <p className="text-[11px] text-destructive">{errors.title}</p>}
-        </div>
+        <form.Field
+          name="title"
+          children={(field) => {
+            const error = errorText(field.state.meta.errors);
+            return (
+              <div className="space-y-1.5">
+                <label htmlFor="task-title" className="text-xs font-medium text-foreground">
+                  Title
+                </label>
+                <Input
+                  id="task-title"
+                  value={field.state.value}
+                  onBlur={field.handleBlur}
+                  onChange={(e) => field.handleChange(e.target.value)}
+                  placeholder="Short summary of the task"
+                  className="text-xs"
+                  autoFocus
+                />
+                {error && <p className="text-[11px] text-destructive">{error}</p>}
+              </div>
+            );
+          }}
+        />
 
-        {/* Prompt */}
-        <div className="space-y-1.5">
-          <label htmlFor="task-prompt" className="text-xs font-semibold text-foreground">
-            Prompt &amp; Execution Specification
-          </label>
-          <Textarea
-            id="task-prompt"
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            placeholder="Detailed instructions, files to modify, constraints, and test requirements..."
-            rows={4}
-            className="text-xs min-h-[90px] font-sans"
-          />
-          {errors.prompt && <p className="text-[11px] text-destructive">{errors.prompt}</p>}
-        </div>
-
-        {/* Priority & Model */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          {/* Priority */}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-semibold text-foreground">Priority ({priority})</label>
-              <span className="text-[11px] font-mono text-muted-foreground">
-                {priority >= 80 ? 'Critical' : priority >= 60 ? 'High' : priority >= 30 ? 'Normal' : 'Low'}
-              </span>
-            </div>
-            <input
-              type="range"
-              min="1"
-              max="100"
-              value={priority}
-              onChange={(e) => setPriority(Number(e.target.value))}
-              className="w-full accent-primary h-2 bg-muted rounded-lg appearance-none cursor-pointer"
-            />
-          </div>
-
-          {/* Model Engine */}
-          {/* Model Selection */}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
-                <Cpu className="size-3.5 text-primary" />
-                Model Engine (OpenCode)
-              </label>
-            </div>
-            <Select
-              value={selectedModel}
-              onValueChange={(val) => {
-                if (typeof val === 'string') {
-                  setSelectedModel(val);
-                }
-              }}
-            >
-              <SelectTrigger size="sm" className="w-full bg-card text-xs font-mono" aria-label="Model Engine">
-                <SelectValue placeholder="Select model..." />
-              </SelectTrigger>
-              <SelectContent align="start">
-                {availableModels.map((model) => (
-                  <SelectItem key={model.id} value={model.id}>
-                    {model.name} ({model.id})
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-
-        {/* Skills (Toggleable badge list) */}
-        <div className="space-y-1.5">
-          <div className="flex items-center gap-1.5">
-            <Wrench className="size-3.5 text-muted-foreground" />
-            <label className="text-xs font-semibold text-foreground">Agent Skills</label>
-          </div>
-          <div className="flex flex-wrap gap-1.5 pt-1">
-            {AVAILABLE_SKILLS.map((skill) => {
-              const isSelected = selectedSkills.includes(skill);
-              return (
-                <Badge
-                  key={skill}
-                  variant={isSelected ? 'default' : 'outline'}
-                  onClick={() => toggleSkill(skill)}
-                  className={cn(
-                    'cursor-pointer select-none text-[11px] transition-all py-0.5 px-2 font-normal',
-                    isSelected ? 'shadow-xs' : 'hover:bg-muted opacity-75 hover:opacity-100'
-                  )}
-                >
-                  {isSelected && <Check className="size-3 mr-1" />}
-                  {skill}
-                </Badge>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* MCP Servers (Toggleable badge list) */}
-        <div className="space-y-1.5">
-          <div className="flex items-center gap-1.5">
-            <Server className="size-3.5 text-muted-foreground" />
-            <label className="text-xs font-semibold text-foreground">MCP Servers</label>
-          </div>
-          <div className="flex flex-wrap gap-1.5 pt-1">
-            {AVAILABLE_MCPS.map((mcp) => {
-              const isSelected = selectedMcps.includes(mcp);
-              return (
-                <Badge
-                  key={mcp}
-                  variant={isSelected ? 'default' : 'outline'}
-                  onClick={() => toggleMcp(mcp)}
-                  className={cn(
-                    'cursor-pointer select-none text-[11px] transition-all py-0.5 px-2 font-normal',
-                    isSelected ? 'shadow-xs' : 'hover:bg-muted opacity-75 hover:opacity-100'
-                  )}
-                >
-                  {isSelected && <Check className="size-3 mr-1" />}
-                  {mcp}
-                </Badge>
-              );
-            })}
-          </div>
-        </div>
+        <form.Field
+          name="prompt"
+          children={(field) => {
+            const error = errorText(field.state.meta.errors);
+            return (
+              <div className="space-y-1.5">
+                <label htmlFor="task-prompt" className="text-xs font-medium text-foreground">
+                  Prompt
+                </label>
+                <Textarea
+                  id="task-prompt"
+                  value={field.state.value}
+                  onBlur={field.handleBlur}
+                  onChange={(e) => field.handleChange(e.target.value)}
+                  placeholder="What should the agent do?"
+                  rows={5}
+                  className="min-h-[120px] text-xs"
+                />
+                {error && <p className="text-[11px] text-destructive">{error}</p>}
+              </div>
+            );
+          }}
+        />
 
         <DialogFooter className="pt-2">
           <Button
@@ -581,14 +426,14 @@ export const TaskModalContent: React.FC<TaskModalContentProps> = ({ open, onOpen
             variant="outline"
             size="sm"
             onClick={() => {
-              resetForm();
+              resetDetails();
               onOpenChange(false);
             }}
           >
             Cancel
           </Button>
           <Button type="submit" size="sm" disabled={isSubmitting}>
-            {isSubmitting ? 'Creating...' : 'Dispatch Task'}
+            {isSubmitting ? 'Creating...' : 'Dispatch task'}
           </Button>
         </DialogFooter>
       </form>
