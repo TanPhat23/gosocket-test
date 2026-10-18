@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -106,14 +107,16 @@ func (r *AgentTaskRunner) relaySessionMessages(ctx context.Context, oc OpenCodeC
 			if !ok {
 				continue
 			}
-			partID := fmt.Sprintf("%s_%d", msg.ID, idx)
 			switch part["type"] {
 			case "tool":
-				r.relayToolPart(ctx, taskID, attemptID, src, partID, part, seen)
+				r.relayToolPart(ctx, taskID, attemptID, src, partKey(msg.ID, idx), part, seen)
 			case "text":
 				text, _ := part["text"].(string)
-				key := partID + "_text"
-				if text == "" || seen[key] {
+				if text == "" {
+					continue
+				}
+				key := partKey(msg.ID, idx) + "_text"
+				if seen[key] {
 					continue
 				}
 				seen[key] = true
@@ -195,16 +198,12 @@ func (r *AgentTaskRunner) relayToolPart(ctx context.Context, taskID, attemptID s
 		}))
 	}
 	if out, _ := output.(string); strings.TrimSpace(out) != "" {
-		lines := strings.Split(strings.TrimSpace(out), "\n")
-		show := lines
-		if len(show) > streamToolOutLines {
-			show = show[:streamToolOutLines]
-		}
-		for _, line := range show {
+		head, total := headLines(strings.TrimSpace(out), streamToolOutLines)
+		for _, line := range head {
 			r.broadcastLog(ctx, taskID, attemptID, fmt.Sprintf("  \x1b[90m%s\x1b[0m\r\n", line))
 		}
-		if len(lines) > streamToolOutLines {
-			r.broadcastLog(ctx, taskID, attemptID, fmt.Sprintf("  \x1b[90m... (%d lines)\x1b[0m\r\n", len(lines)))
+		if total > streamToolOutLines {
+			r.broadcastLog(ctx, taskID, attemptID, fmt.Sprintf("  \x1b[90m... (%d lines)\x1b[0m\r\n", total))
 		}
 	}
 	if status == "completed" {
@@ -212,6 +211,27 @@ func (r *AgentTaskRunner) relayToolPart(ctx context.Context, taskID, attemptID s
 	} else {
 		r.broadcastLog(ctx, taskID, attemptID, fmt.Sprintf("%s\x1b[31m✖ Tool failed: %s\x1b[0m\r\n", src.prefix(), name))
 	}
+}
+
+// partKey is the stable identifier of a message part within a session transcript.
+func partKey(msgID string, idx int) string {
+	return msgID + "_" + strconv.Itoa(idx)
+}
+
+// headLines returns the first n lines of s and the total line count. It equals strings.Split(s, "\n") for
+// the head and the length of that split, but does not allocate a string per line of a large output.
+func headLines(s string, n int) (head []string, total int) {
+	total = strings.Count(s, "\n") + 1
+	head = make([]string, 0, min(n, total))
+	for len(head) < n {
+		line, rest, found := strings.Cut(s, "\n")
+		head = append(head, line)
+		if !found {
+			break
+		}
+		s = rest
+	}
+	return head, total
 }
 
 // event stamps a hub event with the session it came from, and its parent and name when it is a subagent's.

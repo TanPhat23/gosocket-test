@@ -96,6 +96,53 @@ type openCodeClient struct {
 	httpClient *http.Client
 }
 
+const (
+	// openCodeIdleConnTimeout closes idle pooled connections before typical server keep-alive timeouts
+	// (Node defaults to 5s), so the client rarely reuses a connection the server has already closed.
+	openCodeIdleConnTimeout = 4 * time.Second
+	// openCodeMaxTransports bounds the number of endpoints whose transports are cached.
+	openCodeMaxTransports = 64
+	// openCodeDrainLimit bounds how much of an unread response body is discarded so the connection can be reused.
+	openCodeDrainLimit = 64 << 10
+)
+
+// openCodeTransports holds one shared transport per OpenCode endpoint (and socket route). Credentials are
+// never part of the key or the transport: Basic auth is set on each request.
+var openCodeTransports = struct {
+	mu    sync.Mutex
+	byKey map[string]*http.Transport
+}{byKey: make(map[string]*http.Transport)}
+
+// sharedOpenCodeTransport returns the cached transport for key, creating it with dial on first use. When the
+// cache is full it is reset, closing idle connections on the discarded transports; in-flight requests finish
+// on their own transport and its idle connections expire after openCodeIdleConnTimeout.
+func sharedOpenCodeTransport(key string, dial func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Transport {
+	openCodeTransports.mu.Lock()
+	defer openCodeTransports.mu.Unlock()
+	if t, ok := openCodeTransports.byKey[key]; ok {
+		return t
+	}
+	if len(openCodeTransports.byKey) >= openCodeMaxTransports {
+		for k, old := range openCodeTransports.byKey {
+			old.CloseIdleConnections()
+			delete(openCodeTransports.byKey, k)
+		}
+	}
+	t := &http.Transport{
+		DialContext:     dial,
+		IdleConnTimeout: openCodeIdleConnTimeout,
+	}
+	openCodeTransports.byKey[key] = t
+	return t
+}
+
+// drainAndClose discards up to openCodeDrainLimit bytes of an unread body before closing it. Go only reuses a
+// connection whose body was read to EOF, so this keeps the connection pooled for the next request.
+func drainAndClose(body io.ReadCloser) {
+	_, _ = io.Copy(io.Discard, io.LimitReader(body, openCodeDrainLimit))
+	_ = body.Close()
+}
+
 // NewProjectOpenCodeClient creates and validates an OpenCodeClient instance specifically for
 // communicating with an in-container project-scoped OpenCode server.
 // It requires an explicit HTTP or HTTPS endpointURL with non-empty host, rejects non-http schemes (file, ftp, unix),
@@ -121,7 +168,7 @@ func NewProjectOpenCodeClient(endpointURL, password string, httpClient *http.Cli
 
 	client := httpClient
 	if client == nil {
-		transport := &http.Transport{}
+		transport := sharedOpenCodeTransport("project|"+cleanBaseURL, nil)
 		client = &http.Client{
 			Timeout:   30 * time.Second,
 			Transport: transport,
@@ -179,9 +226,9 @@ func NewOpenCodeClient(baseURL, password string, httpClient *http.Client) OpenCo
 
 	client := httpClient
 	if client == nil {
-		transport := &http.Transport{}
+		var dial func(ctx context.Context, network, addr string) (net.Conn, error)
 		if unixSocketCandidate != "" {
-			transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
 				// Only route to unix socket if destination port is 49374 (OpenCode daemon port)
 				if strings.HasSuffix(addr, ":49374") {
 					var d net.Dialer
@@ -193,6 +240,7 @@ func NewOpenCodeClient(baseURL, password string, httpClient *http.Client) OpenCo
 				return d.DialContext(ctx, network, addr)
 			}
 		}
+		transport := sharedOpenCodeTransport("legacy|"+unixSocketCandidate+"|"+baseURL, dial)
 		client = &http.Client{
 			Timeout:   30 * time.Second,
 			Transport: transport,
@@ -270,7 +318,7 @@ func (c *openCodeClient) GetSession(ctx context.Context, sessionID string) (*Ope
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer drainAndClose(resp.Body)
 
 	if err := mapStatus(resp.StatusCode, ""); err != nil {
 		return nil, err
@@ -398,7 +446,7 @@ func (c *openCodeClient) GetSessionMessages(ctx context.Context, sessionID strin
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer drainAndClose(resp.Body)
 
 	if err := mapStatus(resp.StatusCode, ""); err != nil {
 		return nil, err
@@ -423,7 +471,8 @@ func (c *openCodeClient) GetSessionMessages(ctx context.Context, sessionID strin
 				Created   int64 `json:"created"`
 				Completed int64 `json:"completed"`
 			} `json:"time"`
-			Content json.RawMessage `json:"content"`
+			// Decoded in the same pass as the envelope, instead of re-parsing a raw copy per message.
+			Content any `json:"content"`
 		} `json:"data"`
 	}
 
@@ -432,10 +481,7 @@ func (c *openCodeClient) GetSessionMessages(ctx context.Context, sessionID strin
 		for i, m := range wrapper.Data {
 			createdAt := millisToTimePtr(m.Time.Created)
 			completedAt := millisToTimePtr(m.Time.Completed)
-			var contentObj any
-			if len(m.Content) > 0 {
-				_ = json.Unmarshal(m.Content, &contentObj)
-			}
+			contentObj := m.Content
 			textVal := m.Text
 			if strings.HasPrefix(textVal, "\"") && strings.HasSuffix(textVal, "\"") && len(textVal) >= 2 {
 				var unquoted string
@@ -485,7 +531,7 @@ func (c *openCodeClient) ListChildSessions(ctx context.Context, parentID string)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer drainAndClose(resp.Body)
 
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("opencode server returned status %d", resp.StatusCode)
@@ -562,7 +608,7 @@ func (c *openCodeClient) PromptSession(ctx context.Context, sessionID, prompt st
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer drainAndClose(resp.Body)
 
 	if resp.StatusCode == http.StatusNotFound {
 		return common.ErrNotFound
@@ -597,7 +643,7 @@ func (c *openCodeClient) CompactSession(ctx context.Context, sessionID string) e
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer drainAndClose(resp.Body)
 
 	return mapStatus(resp.StatusCode, "")
 }
@@ -612,7 +658,7 @@ func (c *openCodeClient) InterruptSession(ctx context.Context, sessionID string)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer drainAndClose(resp.Body)
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil
@@ -681,7 +727,7 @@ func (c *openCodeClient) EnsureSessionAtLocation(ctx context.Context, sessionID,
 	if err == nil {
 		resp, reqErr := c.doRequest(ctx, http.MethodPost, "/api/session", bytes.NewReader(body))
 		if reqErr == nil {
-			defer resp.Body.Close()
+			defer drainAndClose(resp.Body)
 			if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
 				return nil
 			}
@@ -701,7 +747,7 @@ func (c *openCodeClient) EnsureSessionAtLocation(ctx context.Context, sessionID,
 	if err != nil {
 		return err
 	}
-	defer moveResp.Body.Close()
+	defer drainAndClose(moveResp.Body)
 
 	if moveResp.StatusCode == http.StatusOK || moveResp.StatusCode == http.StatusNoContent {
 		return nil

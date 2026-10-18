@@ -29,7 +29,7 @@ var streamBufferPool = sync.Pool{
 
 // AgentStreamScanner wraps bufio.Scanner and manages a pooled slice buffer.
 type AgentStreamScanner struct {
-	*bufio.Scanner
+	scanner *bufio.Scanner
 	// bufPtr holds the pooled buffer until Close swaps it out; a nil value means closed.
 	bufPtr atomic.Pointer[[]byte]
 }
@@ -40,10 +40,25 @@ func NewAgentStreamScanner(r io.Reader) *AgentStreamScanner {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(*bufPtr, AgentStreamMaxLineBytes)
 
-	s := &AgentStreamScanner{Scanner: scanner}
+	s := &AgentStreamScanner{scanner: scanner}
 	s.bufPtr.Store(bufPtr)
 	return s
 }
+
+// Scan advances to the next line, as bufio.Scanner.Scan does.
+func (s *AgentStreamScanner) Scan() bool { return s.scanner.Scan() }
+
+// Bytes returns the current line, as bufio.Scanner.Bytes does.
+func (s *AgentStreamScanner) Bytes() []byte { return s.scanner.Bytes() }
+
+// Text returns the current line as a string, as bufio.Scanner.Text does.
+func (s *AgentStreamScanner) Text() string { return s.scanner.Text() }
+
+// Err returns the first non-EOF error the scanner hit, as bufio.Scanner.Err does.
+func (s *AgentStreamScanner) Err() error { return s.scanner.Err() }
+
+// Buffer sets the scanner's read buffer, as bufio.Scanner.Buffer does.
+func (s *AgentStreamScanner) Buffer(buf []byte, max int) { s.scanner.Buffer(buf, max) }
 
 // Close releases the scanner's buffer back to streamBufferPool if within AgentStreamMaxPooledBufferBytes.
 // Close is thread-safe and idempotent.

@@ -1171,7 +1171,7 @@ func (r *AgentTaskRunner) watchChildSubagents(ctx context.Context, oc OpenCodeCl
 						continue
 					}
 					cPartType, _ := cItemMap["type"].(string)
-					cPartID := fmt.Sprintf("%s_%d", cMsg.ID, cPartIdx)
+					cPartID := partKey(cMsg.ID, cPartIdx)
 
 					if cPartType == "tool" {
 						cToolName, _ := cItemMap["name"].(string)
@@ -1245,16 +1245,12 @@ func (r *AgentTaskRunner) watchChildSubagents(ctx context.Context, oc OpenCodeCl
 							}
 
 							if outStr, ok := cOutput.(string); ok && outStr != "" {
-								lines := strings.Split(strings.TrimSpace(outStr), "\n")
-								limit := 4
-								if len(lines) < limit {
-									limit = len(lines)
+								head, total := headLines(strings.TrimSpace(outStr), streamToolOutLines)
+								for _, line := range head {
+									r.broadcastLog(context.Background(), taskID, attemptID, fmt.Sprintf("  \x1b[90m%s\x1b[0m\r\n", line))
 								}
-								for lIdx := 0; lIdx < limit; lIdx++ {
-									r.broadcastLog(context.Background(), taskID, attemptID, fmt.Sprintf("  \x1b[90m%s\x1b[0m\r\n", lines[lIdx]))
-								}
-								if len(lines) > 4 {
-									r.broadcastLog(context.Background(), taskID, attemptID, fmt.Sprintf("  \x1b[90m... (%d lines)\x1b[0m\r\n", len(lines)))
+								if total > streamToolOutLines {
+									r.broadcastLog(context.Background(), taskID, attemptID, fmt.Sprintf("  \x1b[90m... (%d lines)\x1b[0m\r\n", total))
 								}
 							}
 

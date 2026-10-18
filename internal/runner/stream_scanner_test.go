@@ -65,7 +65,7 @@ func TestAgentStreamScanner_BufferReuse(t *testing.T) {
 	// We simulate or provide a buffer exceeding AgentStreamMaxPooledBufferBytes.
 	oversizedBuf := make([]byte, 0, AgentStreamMaxPooledBufferBytes+1024)
 	sOver := &AgentStreamScanner{
-		Scanner: bufio.NewScanner(strings.NewReader("oversized\n")),
+		scanner: bufio.NewScanner(strings.NewReader("oversized\n")),
 	}
 	sOver.bufPtr.Store(&oversizedBuf)
 	sOver.Buffer(oversizedBuf, AgentStreamMaxLineBytes)
