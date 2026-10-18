@@ -3,6 +3,7 @@ import { useTeamStore, useProjectsList, useActiveProjectId } from '../store/useT
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -19,9 +20,13 @@ export const ProjectSwitcher: React.FC = () => {
     return null;
   }
 
+  // Base UI resolves the trigger label from the root's items, so the project name shows instead of its id.
+  const projectItems = projects.map((proj) => ({ value: proj.id, label: proj.name }));
+
   return (
     <div className="flex items-center gap-2">
       <Select
+        items={projectItems}
         value={activeProjectId ?? ''}
         onValueChange={(val) => {
           if (val && typeof val === 'string') {
@@ -35,11 +40,13 @@ export const ProjectSwitcher: React.FC = () => {
           <SelectValue placeholder="Select project..." />
         </SelectTrigger>
         <SelectContent align="start">
-          {projects.map((proj) => (
-            <SelectItem key={proj.id} value={proj.id}>
-              {proj.name}
-            </SelectItem>
-          ))}
+          <SelectGroup>
+            {projectItems.map((item) => (
+              <SelectItem key={item.value} value={item.value}>
+                {item.label}
+              </SelectItem>
+            ))}
+          </SelectGroup>
         </SelectContent>
       </Select>
     </div>

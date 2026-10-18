@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button';
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -116,6 +117,22 @@ export const WorkspaceControlBar: React.FC = () => {
 
   const selectedRepo = connectedRepos.find((r) => r.id === selectedRepoId);
 
+  // Base UI resolves each trigger label from the root's items, so names show instead of ids.
+  const repoItems = [
+    { value: 'all', label: `All Repositories${connectedRepos.length > 0 ? ` (${connectedRepos.length})` : ''}` },
+    ...connectedRepos.map((r) => ({
+      value: r.id,
+      label: `${r.external_id} (${String(r.config?.base_branch || 'main')})`,
+    })),
+  ];
+  const modelItems = availableModels.map((m) => ({ value: m.id, label: m.name }));
+  const priorityItems = [
+    { value: 'all', label: 'All Priorities' },
+    { value: 'high', label: 'High (P70+)' },
+    { value: 'normal', label: 'Normal (P40-69)' },
+    { value: 'low', label: 'Low (<P40)' },
+  ];
+
   return (
     <div className="flex flex-col gap-3.5 bg-card/60 backdrop-blur border border-border/80 rounded-xl p-4 shadow-xs">
       {/* Top Header Row */}
@@ -145,6 +162,7 @@ export const WorkspaceControlBar: React.FC = () => {
         {/* Target Repository Selector / Filter */}
         <div className="sm:col-span-3">
           <Select
+            items={repoItems}
             value={selectedRepoId || 'all'}
             onValueChange={(val) => {
               if (typeof val === 'string') {
@@ -157,14 +175,13 @@ export const WorkspaceControlBar: React.FC = () => {
               <SelectValue placeholder="All Repositories" />
             </SelectTrigger>
             <SelectContent align="start">
-              <SelectItem value="all">
-                All Repositories {connectedRepos.length > 0 ? `(${connectedRepos.length})` : ''}
-              </SelectItem>
-              {connectedRepos.map((r) => (
-                <SelectItem key={r.id} value={r.id}>
-                  {r.external_id} ({String(r.config?.base_branch || 'main')})
-                </SelectItem>
-              ))}
+              <SelectGroup>
+                {repoItems.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
             </SelectContent>
           </Select>
         </div>
@@ -172,6 +189,7 @@ export const WorkspaceControlBar: React.FC = () => {
         {/* Model Selector / Switcher */}
         <div className="sm:col-span-3">
           <Select
+            items={modelItems}
             value={defaultModel}
             onValueChange={(val) => {
               if (typeof val === 'string') {
@@ -184,11 +202,13 @@ export const WorkspaceControlBar: React.FC = () => {
               <SelectValue placeholder="Select model..." />
             </SelectTrigger>
             <SelectContent align="start">
-              {availableModels.map((m) => (
-                <SelectItem key={m.id} value={m.id}>
-                  {m.name}
-                </SelectItem>
-              ))}
+              <SelectGroup>
+                {modelItems.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
             </SelectContent>
           </Select>
         </div>
@@ -217,6 +237,7 @@ export const WorkspaceControlBar: React.FC = () => {
         {/* Priority Filter */}
         <div className="sm:col-span-2">
           <Select
+            items={priorityItems}
             value={priorityFilter}
             onValueChange={(val) => {
               if (typeof val === 'string') {
@@ -229,10 +250,13 @@ export const WorkspaceControlBar: React.FC = () => {
               <SelectValue placeholder="All Priorities" />
             </SelectTrigger>
             <SelectContent align="start">
-              <SelectItem value="all">All Priorities</SelectItem>
-              <SelectItem value="high">High (P70+)</SelectItem>
-              <SelectItem value="normal">Normal (P40-69)</SelectItem>
-              <SelectItem value="low">Low (&lt;P40)</SelectItem>
+              <SelectGroup>
+                {priorityItems.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
             </SelectContent>
           </Select>
         </div>

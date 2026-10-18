@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -48,6 +49,19 @@ export const WorkspaceSettingsModalContent: React.FC<WorkspaceSettingsModalConte
     { value: 80, label: 'High (P80)', desc: 'Urgent fixes and prioritized work' },
   ];
 
+  // Base UI resolves each trigger label from the root's items, so names show instead of ids.
+  const projectItems = [
+    { value: 'all', label: '-- All Projects (No Specific Project) --' },
+    ...projects.map((p) => ({ value: p.id, label: p.name })),
+  ];
+  const repoItems = [
+    { value: 'auto', label: '-- Auto (First connected repo) --' },
+    ...connectedRepos.map((r) => ({
+      value: r.id,
+      label: `${r.external_id} (${String(r.config?.base_branch || 'main')})`,
+    })),
+  ];
+
   return (
 
     <DialogContent className="sm:max-w-md max-h-[85vh] overflow-y-auto">
@@ -76,6 +90,7 @@ export const WorkspaceSettingsModalContent: React.FC<WorkspaceSettingsModalConte
             New tasks will automatically target this project by default.
           </p>
           <Select
+            items={projectItems}
             value={activeProjectId || 'all'}
             onValueChange={(val) => {
               if (typeof val === 'string') {
@@ -87,12 +102,13 @@ export const WorkspaceSettingsModalContent: React.FC<WorkspaceSettingsModalConte
               <SelectValue placeholder="All Projects" />
             </SelectTrigger>
             <SelectContent align="start">
-              <SelectItem value="all">-- All Projects (No Specific Project) --</SelectItem>
-              {projects.map((p) => (
-                <SelectItem key={p.id} value={p.id}>
-                  {p.name}
-                </SelectItem>
-              ))}
+              <SelectGroup>
+                {projectItems.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
             </SelectContent>
           </Select>
         </div>
@@ -108,6 +124,7 @@ export const WorkspaceSettingsModalContent: React.FC<WorkspaceSettingsModalConte
               Pre-selected when creating tasks so you never have to pick it repeatedly.
             </p>
             <Select
+              items={repoItems}
               value={defaultRepoId || 'auto'}
               onValueChange={(val) => {
                 if (typeof val === 'string') {
@@ -119,12 +136,13 @@ export const WorkspaceSettingsModalContent: React.FC<WorkspaceSettingsModalConte
                 <SelectValue placeholder="Auto (First connected repo)" />
               </SelectTrigger>
               <SelectContent align="start">
-                <SelectItem value="auto">-- Auto (First connected repo) --</SelectItem>
-                {connectedRepos.map((r) => (
-                  <SelectItem key={r.id} value={r.id}>
-                    {r.external_id} ({String(r.config?.base_branch || 'main')})
-                  </SelectItem>
-                ))}
+                <SelectGroup>
+                  {repoItems.map((item) => (
+                    <SelectItem key={item.value} value={item.value}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
               </SelectContent>
             </Select>
           </div>

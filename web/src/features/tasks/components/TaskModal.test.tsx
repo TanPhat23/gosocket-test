@@ -157,5 +157,7 @@ describe('TaskModal', () => {
     });
 
     expect(screen.getByTestId('target-branch-select')).toBeInTheDocument();
+    // The trigger shows the project's name, not its id.
+    expect(screen.getByLabelText('Project')).toHaveTextContent('Project 1');
   });
 });

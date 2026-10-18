@@ -17,6 +17,7 @@ import { Button } from '@/components/ui/button';
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -206,6 +207,15 @@ export const TaskModalContent: React.FC<TaskModalContentProps> = ({ open, onOpen
     createTaskMutation.reset();
   };
 
+  // Base UI resolves a trigger's label from the root's items, so each select gets its label list.
+  const projectItems = [
+    { value: 'none', label: 'No project' },
+    ...projects.map((proj) => ({ value: proj.id, label: proj.name })),
+  ];
+  const modelItems = availableModels.map((model) => ({ value: model.id, label: model.name }));
+  const repoItems = projectIntegrations.map((integ) => ({ value: integ.id, label: integ.external_id }));
+  const branchItems = repoBranches.map((branch) => ({ value: branch, label: branch }));
+
   const submitError = createTaskMutation.isError
     ? createTaskMutation.error instanceof Error
       ? createTaskMutation.error.message
@@ -241,6 +251,7 @@ export const TaskModalContent: React.FC<TaskModalContentProps> = ({ open, onOpen
                 <label className="text-xs font-medium text-foreground">Project</label>
                 {projects.length > 0 ? (
                   <Select
+                    items={projectItems}
                     value={projectId || 'none'}
                     onValueChange={(val) => {
                       if (typeof val === 'string') field.handleChange(val === 'none' ? '' : val);
@@ -250,12 +261,13 @@ export const TaskModalContent: React.FC<TaskModalContentProps> = ({ open, onOpen
                       <SelectValue placeholder="Select project..." />
                     </SelectTrigger>
                     <SelectContent align="start">
-                      <SelectItem value="none">No project</SelectItem>
-                      {projects.map((proj) => (
-                        <SelectItem key={proj.id} value={proj.id}>
-                          {proj.name}
-                        </SelectItem>
-                      ))}
+                      <SelectGroup>
+                        {projectItems.map((item) => (
+                          <SelectItem key={item.value} value={item.value}>
+                            {item.label}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
                     </SelectContent>
                   </Select>
                 ) : (
@@ -278,6 +290,7 @@ export const TaskModalContent: React.FC<TaskModalContentProps> = ({ open, onOpen
               <div className="space-y-1.5">
                 <label className="text-xs font-medium text-foreground">Model</label>
                 <Select
+                  items={modelItems}
                   value={field.state.value}
                   onValueChange={(val) => {
                     if (typeof val === 'string') field.handleChange(val);
@@ -287,11 +300,13 @@ export const TaskModalContent: React.FC<TaskModalContentProps> = ({ open, onOpen
                     <SelectValue placeholder="Select model..." />
                   </SelectTrigger>
                   <SelectContent align="start">
-                    {availableModels.map((model) => (
-                      <SelectItem key={model.id} value={model.id}>
-                        {model.name}
-                      </SelectItem>
-                    ))}
+                    <SelectGroup>
+                      {modelItems.map((item) => (
+                        <SelectItem key={item.value} value={item.value}>
+                          {item.label}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
                   </SelectContent>
                 </Select>
               </div>
@@ -312,6 +327,7 @@ export const TaskModalContent: React.FC<TaskModalContentProps> = ({ open, onOpen
                     </div>
                   ) : (
                     <Select
+                      items={repoItems}
                       value={integrationId}
                       onValueChange={(val) => {
                         if (typeof val !== 'string') return;
@@ -324,11 +340,13 @@ export const TaskModalContent: React.FC<TaskModalContentProps> = ({ open, onOpen
                         <SelectValue placeholder="Select repository..." />
                       </SelectTrigger>
                       <SelectContent align="start">
-                        {projectIntegrations.map((integ) => (
-                          <SelectItem key={integ.id} value={integ.id} className="font-mono text-xs">
-                            {integ.external_id}
-                          </SelectItem>
-                        ))}
+                        <SelectGroup>
+                          {repoItems.map((item) => (
+                            <SelectItem key={item.value} value={item.value} className="font-mono text-xs">
+                              {item.label}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
                       </SelectContent>
                     </Select>
                   )}
@@ -344,6 +362,7 @@ export const TaskModalContent: React.FC<TaskModalContentProps> = ({ open, onOpen
                     Base branch
                   </label>
                   <Select
+                    items={branchItems}
                     value={baseBranch}
                     onValueChange={(val) => {
                       if (typeof val === 'string') field.handleChange(val);
@@ -359,11 +378,13 @@ export const TaskModalContent: React.FC<TaskModalContentProps> = ({ open, onOpen
                       <SelectValue placeholder="Select branch..." />
                     </SelectTrigger>
                     <SelectContent align="start">
-                      {repoBranches.map((branch) => (
-                        <SelectItem key={branch} value={branch} className="font-mono text-xs">
-                          {branch}
-                        </SelectItem>
-                      ))}
+                      <SelectGroup>
+                        {branchItems.map((item) => (
+                          <SelectItem key={item.value} value={item.value} className="font-mono text-xs">
+                            {item.label}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
                     </SelectContent>
                   </Select>
                 </div>
