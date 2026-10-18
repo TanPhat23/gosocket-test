@@ -11,6 +11,8 @@ import (
 type TeamRepository interface {
 	GetByID(ctx context.Context, id string) (*models.Team, error)
 	GetMembership(ctx context.Context, teamID, userID string) (*models.TeamMembership, error)
+	// ListMembershipsByUserID returns every membership of userID in one query.
+	ListMembershipsByUserID(ctx context.Context, userID string) ([]models.TeamMembership, error)
 	AddMembership(ctx context.Context, membership *models.TeamMembership) error
 	List(ctx context.Context) ([]models.Team, error)
 }
@@ -30,6 +32,10 @@ func (r *teamRepo) GetByID(ctx context.Context, id string) (*models.Team, error)
 
 func (r *teamRepo) GetMembership(ctx context.Context, teamID, userID string) (*models.TeamMembership, error) {
 	return findFirst[models.TeamMembership](ctx, r.db, "team_id = ? AND user_id = ?", teamID, userID)
+}
+
+func (r *teamRepo) ListMembershipsByUserID(ctx context.Context, userID string) ([]models.TeamMembership, error) {
+	return gorm.G[models.TeamMembership](r.db).Where("user_id = ?", userID).Find(ctx)
 }
 
 func (r *teamRepo) AddMembership(ctx context.Context, membership *models.TeamMembership) error {

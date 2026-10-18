@@ -324,39 +324,79 @@ func (s *taskService) ListTasks(ctx context.Context, projectID, userID string) (
 		return nil, common.ErrServiceUnavailable
 	}
 
-	teams, err := s.teamRepo.List(ctx)
+	// At most three set-based reads, however many teams and projects exist: memberships, then the projects of
+	// the visible teams, then their tasks (newest first, as the repository orders them).
+	memberships, err := s.teamRepo.ListMembershipsByUserID(ctx, userID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list teams: %w", err)
+		return nil, fmt.Errorf("failed to list team memberships: %w", err)
+	}
+	teamIDs := make([]string, 0, len(memberships))
+	for i := range memberships {
+		if !auth.TeamAllowed(ctx, memberships[i].TeamID) {
+			continue
+		}
+		if !auth.HasRolePermission(memberships[i].Role, models.RoleViewer) {
+			continue
+		}
+		teamIDs = append(teamIDs, memberships[i].TeamID)
 	}
 
+	projects, err := s.listProjectsByTeams(ctx, teamIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list projects: %w", err)
+	}
+	projectIDs := make([]string, 0, len(projects))
+	for i := range projects {
+		projectIDs = append(projectIDs, projects[i].ID)
+	}
+	return s.listTasksByProjects(ctx, projectIDs)
+}
+
+// batchProjectLister and batchTaskLister are the set-based reads ListTasks uses when the repository offers them.
+// Other implementations get one read per team or project instead, so the interfaces stay unchanged.
+type batchProjectLister interface {
+	ListByTeamIDs(ctx context.Context, teamIDs []string) ([]models.Project, error)
+}
+
+type batchTaskLister interface {
+	ListByProjectIDs(ctx context.Context, projectIDs []string) ([]models.Task, error)
+}
+
+func (s *taskService) listProjectsByTeams(ctx context.Context, teamIDs []string) ([]models.Project, error) {
+	if b, ok := s.projectRepo.(batchProjectLister); ok {
+		return b.ListByTeamIDs(ctx, teamIDs)
+	}
+	projects := []models.Project{}
+	for _, teamID := range teamIDs {
+		ps, err := s.projectRepo.List(ctx, teamID)
+		if err != nil {
+			return nil, err
+		}
+		projects = append(projects, ps...)
+	}
+	return projects, nil
+}
+
+// listTasksByProjects returns the tasks of projectIDs, newest first.
+func (s *taskService) listTasksByProjects(ctx context.Context, projectIDs []string) ([]models.Task, error) {
+	if b, ok := s.taskRepo.(batchTaskLister); ok {
+		tasks, err := b.ListByProjectIDs(ctx, projectIDs)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list tasks: %w", err)
+		}
+		if tasks == nil {
+			tasks = []models.Task{}
+		}
+		return tasks, nil
+	}
 	tasks := []models.Task{}
-	for i := range teams {
-		if !auth.TeamAllowed(ctx, teams[i].ID) {
-			continue
+	for _, projectID := range projectIDs {
+		ts, err := s.taskRepo.List(ctx, projectID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list tasks: %w", err)
 		}
-		membership, mErr := s.teamRepo.GetMembership(ctx, teams[i].ID, userID)
-		if mErr != nil {
-			if errors.Is(mErr, gorm.ErrRecordNotFound) {
-				continue
-			}
-			return nil, fmt.Errorf("failed to load team membership: %w", mErr)
-		}
-		if !auth.HasRolePermission(membership.Role, models.RoleViewer) {
-			continue
-		}
-		projects, pErr := s.projectRepo.List(ctx, teams[i].ID)
-		if pErr != nil {
-			return nil, fmt.Errorf("failed to list projects: %w", pErr)
-		}
-		for j := range projects {
-			projectTasks, tErr := s.taskRepo.List(ctx, projects[j].ID)
-			if tErr != nil {
-				return nil, fmt.Errorf("failed to list tasks: %w", tErr)
-			}
-			tasks = append(tasks, projectTasks...)
-		}
+		tasks = append(tasks, ts...)
 	}
-
 	sort.SliceStable(tasks, func(a, b int) bool { return tasks[a].CreatedAt.After(tasks[b].CreatedAt) })
 	return tasks, nil
 }

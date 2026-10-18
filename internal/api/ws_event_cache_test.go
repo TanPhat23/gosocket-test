@@ -33,7 +33,7 @@ func (c *sinkClient) Close() error      { return nil }
 func TestVisibleTaskEventsClientCachesAuthorizationPerTask(t *testing.T) {
 	svc, sink := &countingTaskSvc{}, &sinkClient{}
 	now := time.Unix(1_000_000, 0)
-	c := &visibleTaskEventsClient{Client: sink, userID: "u", taskSvc: svc, now: func() time.Time { return now }}
+	c := &visibleTaskEventsClient{client: sink, userID: "u", taskSvc: svc, now: func() time.Time { return now }}
 	msg := []byte(`{"task_id":"t1"}`)
 
 	for i := 0; i < 5; i++ {
@@ -59,7 +59,7 @@ func TestVisibleTaskEventsClientCachesAuthorizationPerTask(t *testing.T) {
 
 func TestVisibleTaskEventsClientCachesDenialsAndDropsThem(t *testing.T) {
 	svc, sink := &countingTaskSvc{err: common.ErrForbidden}, &sinkClient{}
-	c := &visibleTaskEventsClient{Client: sink, userID: "u", taskSvc: svc, now: time.Now}
+	c := &visibleTaskEventsClient{client: sink, userID: "u", taskSvc: svc, now: time.Now}
 	for i := 0; i < 3; i++ {
 		_ = c.Send([]byte(`{"task_id":"t1"}`))
 	}
@@ -72,7 +72,7 @@ func TestVisibleTaskEventsClientCachesDenialsAndDropsThem(t *testing.T) {
 
 	// A transient lookup failure drops the event but is not cached as a denial.
 	svc2 := &countingTaskSvc{err: errors.New("db down")}
-	c2 := &visibleTaskEventsClient{Client: sink, userID: "u", taskSvc: svc2, now: time.Now}
+	c2 := &visibleTaskEventsClient{client: sink, userID: "u", taskSvc: svc2, now: time.Now}
 	_ = c2.Send([]byte(`{"task_id":"t1"}`))
 	_ = c2.Send([]byte(`{"task_id":"t1"}`))
 	if got := svc2.calls.Load(); got != 2 {

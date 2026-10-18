@@ -12,7 +12,6 @@ import (
 	"agent-task-manager/internal/service"
 
 	"github.com/gofiber/fiber/v3"
-	"gorm.io/gorm"
 )
 
 // TeamHandlers handles teams and projects endpoints.
@@ -42,23 +41,70 @@ func (h *TeamHandlers) memberTeams(ctx context.Context, userID string) ([]models
 	if err != nil {
 		return nil, fmt.Errorf("failed to list teams: %w", err)
 	}
+	// One read for all of the caller's memberships, however many teams exist. A user has at most one
+	// membership per team (team_id, user_id is the primary key), so a map by team is exact.
+	memberships, err := h.teamRepo.ListMembershipsByUserID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load team membership: %w", err)
+	}
+	roles := make(map[string]models.TeamRole, len(memberships))
+	for i := range memberships {
+		roles[memberships[i].TeamID] = memberships[i].Role
+	}
 	visible := []models.Team{}
 	for i := range teams {
 		if !auth.TeamAllowed(ctx, teams[i].ID) {
 			continue
 		}
-		membership, mErr := h.teamRepo.GetMembership(ctx, teams[i].ID, userID)
-		if mErr != nil {
-			if errors.Is(mErr, gorm.ErrRecordNotFound) {
-				continue
-			}
-			return nil, fmt.Errorf("failed to load team membership: %w", mErr)
+		role, ok := roles[teams[i].ID]
+		if !ok {
+			continue
 		}
-		if auth.HasRolePermission(membership.Role, models.RoleViewer) {
+		if auth.HasRolePermission(role, models.RoleViewer) {
 			visible = append(visible, teams[i])
 		}
 	}
 	return visible, nil
+}
+
+// batchProjectLister is the set-based project read ListProjects uses when the repository offers it.
+// Other implementations get one read per team instead, so ProjectRepository itself is unchanged.
+type batchProjectLister interface {
+	ListByTeamIDs(ctx context.Context, teamIDs []string) ([]models.Project, error)
+}
+
+// listProjectsForTeams returns the projects of teams: grouped in the order of teams, and newest first within a team.
+func (h *TeamHandlers) listProjectsForTeams(ctx context.Context, teams []models.Team) ([]models.Project, error) {
+	projects := []models.Project{}
+	if len(teams) == 0 {
+		return projects, nil
+	}
+	if b, ok := h.projectRepo.(batchProjectLister); ok {
+		teamIDs := make([]string, 0, len(teams))
+		for i := range teams {
+			teamIDs = append(teamIDs, teams[i].ID)
+		}
+		list, err := b.ListByTeamIDs(ctx, teamIDs)
+		if err != nil {
+			return nil, err
+		}
+		byTeam := make(map[string][]models.Project, len(teams))
+		for i := range list {
+			byTeam[list[i].TeamID] = append(byTeam[list[i].TeamID], list[i])
+		}
+		for i := range teams {
+			projects = append(projects, byTeam[teams[i].ID]...)
+		}
+		return projects, nil
+	}
+	for i := range teams {
+		list, err := h.projectRepo.List(ctx, teams[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		projects = append(projects, list...)
+	}
+	return projects, nil
 }
 
 // authorizeTeam maps a team role check onto the shared forbidden error (403) for non-members and
@@ -115,15 +161,12 @@ func (h *TeamHandlers) ListProjects(c fiber.Ctx) error {
 	if err != nil {
 		return CentralErrorHandler(c, err)
 	}
-	for i := range teams {
-		list, err := h.projectRepo.List(c.Context(), teams[i].ID)
-		if err != nil {
-			return CentralErrorHandler(c, err)
-		}
-		projects = append(projects, list...)
+	list, err := h.listProjectsForTeams(c.Context(), teams)
+	if err != nil {
+		return CentralErrorHandler(c, err)
 	}
 
-	return c.JSON(projects)
+	return c.JSON(list)
 }
 
 // CreateProject handles POST /api/v1/projects. Requires RoleAdmin or higher on the target team.

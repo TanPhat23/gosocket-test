@@ -32,6 +32,13 @@ func (r *projectRepo) List(ctx context.Context, teamID string) ([]models.Project
 	return gorm.G[models.Project](r.db).Order("created_at DESC").Find(ctx)
 }
 
+func (r *projectRepo) ListByTeamIDs(ctx context.Context, teamIDs []string) ([]models.Project, error) {
+	if len(teamIDs) == 0 {
+		return []models.Project{}, nil
+	}
+	return gorm.G[models.Project](r.db).Where("team_id IN ?", teamIDs).Order("created_at DESC").Find(ctx)
+}
+
 func (r *projectRepo) GetByID(ctx context.Context, id string) (*models.Project, error) {
 	return findFirst[models.Project](ctx, r.db, "id = ?", id)
 }

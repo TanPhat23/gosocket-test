@@ -62,8 +62,8 @@ type ProjectIntegration struct {
 	ID           string              `gorm:"type:uuid;primaryKey" json:"id" validate:"required"`
 	ProjectID    string              `gorm:"type:uuid;not null;index:idx_project_integrations_project;uniqueIndex:idx_proj_integ_ext,priority:1" json:"project_id" validate:"required"`
 	CredentialID string              `gorm:"type:uuid;not null" json:"credential_id" validate:"required"`
-	Provider     IntegrationProvider `gorm:"type:text;not null;uniqueIndex:idx_proj_integ_ext,priority:2;check:provider IN ('github', 'jira', 'trello')" json:"provider" validate:"required,oneof=github jira trello"`
-	ExternalID   string              `gorm:"type:text;not null;uniqueIndex:idx_proj_integ_ext,priority:3" json:"external_id" validate:"required"`
+	Provider     IntegrationProvider `gorm:"type:text;not null;index:idx_project_integrations_provider_external,priority:1;uniqueIndex:idx_proj_integ_ext,priority:2;check:provider IN ('github', 'jira', 'trello')" json:"provider" validate:"required,oneof=github jira trello"`
+	ExternalID   string              `gorm:"type:text;not null;index:idx_project_integrations_provider_external,priority:2;uniqueIndex:idx_proj_integ_ext,priority:3" json:"external_id" validate:"required"`
 	Enabled      bool                `gorm:"not null;default:true" json:"enabled"`
 }
 

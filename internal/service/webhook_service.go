@@ -462,6 +462,16 @@ func (s *webhookService) closeLinkedIssueOnMergeDisabledDraft(ctx context.Contex
 	}
 }
 
+// taskBranchFinder and taskPRURLFinder are targeted lookups the task repository may offer. Other
+// implementations fall back to scanning the project's tasks, so TaskRepository itself is unchanged.
+type taskBranchFinder interface {
+	FindByProjectAndBranch(ctx context.Context, projectID, branchName string) (*models.Task, error)
+}
+
+type taskPRURLFinder interface {
+	FindByProjectAndPRURL(ctx context.Context, projectID, prURL string) (*models.Task, error)
+}
+
 func (s *webhookService) findTaskByBranch(ctx context.Context, projectID, branchName string) *models.Task {
 	if branchName == "" {
 		return nil
@@ -477,7 +487,14 @@ func (s *webhookService) findTaskByBranch(ctx context.Context, projectID, branch
 		}
 	}
 
-	// 2. Scan tasks in project by BranchName
+	// 2. Match the BranchName column, with a targeted query when the repository offers one.
+	if f, ok := s.taskRepo.(taskBranchFinder); ok {
+		if t, err := f.FindByProjectAndBranch(ctx, projectID, branchName); err == nil {
+			return t
+		}
+		return nil
+	}
+
 	tasks, err := s.taskRepo.List(ctx, projectID)
 	if err == nil {
 		for i := range tasks {
@@ -492,6 +509,12 @@ func (s *webhookService) findTaskByBranch(ctx context.Context, projectID, branch
 
 func (s *webhookService) findTaskByPRURL(ctx context.Context, projectID, prURL string) *models.Task {
 	if prURL == "" {
+		return nil
+	}
+	if f, ok := s.taskRepo.(taskPRURLFinder); ok {
+		if t, err := f.FindByProjectAndPRURL(ctx, projectID, prURL); err == nil {
+			return t
+		}
 		return nil
 	}
 	tasks, err := s.taskRepo.List(ctx, projectID)

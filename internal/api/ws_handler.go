@@ -1,8 +1,8 @@
 package api
 
 import (
-	"context"
 	"bytes"
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -40,7 +40,7 @@ var errWSAccessRevoked = errors.New("websocket access revoked")
 // the subscribing user may view (RoleViewer+ on the task's team). Messages without a task ID or that
 // cannot be authorized are dropped (fail closed). Send runs in its own goroutine per broadcast.
 type visibleTaskEventsClient struct {
-	ws.Client
+	client  ws.Client
 	userID  string
 	token   *models.APIToken // the PAT that authenticated the socket, if any; limits visibility to its team
 	taskSvc service.TaskService
@@ -54,6 +54,11 @@ type eventAuthzEntry struct {
 	visible bool
 	expires time.Time
 }
+
+// ID, TaskID and Close make visibleTaskEventsClient a ws.Client. Send is overridden below.
+func (c *visibleTaskEventsClient) ID() string     { return c.client.ID() }
+func (c *visibleTaskEventsClient) TaskID() string { return c.client.TaskID() }
+func (c *visibleTaskEventsClient) Close() error   { return c.client.Close() }
 
 func (c *visibleTaskEventsClient) clock() time.Time {
 	if c.now != nil {
@@ -110,7 +115,7 @@ func (c *visibleTaskEventsClient) Send(msg []byte) error {
 	if !c.visible(env.TaskID) {
 		return nil
 	}
-	return c.Client.Send(msg)
+	return c.client.Send(msg)
 }
 
 // WSHandler handles WebSocket connections for terminal and log streaming.
@@ -252,7 +257,7 @@ func (h *WSHandler) HandleEventsWS(c fiber.Ctx) error {
 		})
 
 		clientID := common.NewID()
-		client := &visibleTaskEventsClient{Client: ws.NewConnClient(clientID, "global", conn), userID: userID, token: token, taskSvc: h.taskSvc}
+		client := &visibleTaskEventsClient{client: ws.NewConnClient(clientID, "global", conn), userID: userID, token: token, taskSvc: h.taskSvc}
 		h.hub.Register(client)
 		defer func() {
 			h.hub.Unregister(client)

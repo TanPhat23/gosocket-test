@@ -6,7 +6,7 @@ import (
 
 // Task represents a unit of work executable by an agent or human.
 type Task struct {
-	CreatedAt     time.Time    `gorm:"type:timestamptz;not null;default:CURRENT_TIMESTAMP" json:"created_at"`
+	CreatedAt     time.Time    `gorm:"type:timestamptz;not null;default:CURRENT_TIMESTAMP;index:idx_tasks_project_created,priority:2" json:"created_at"`
 	UpdatedAt     time.Time    `gorm:"type:timestamptz;not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
 	HeartbeatAt   *time.Time   `gorm:"type:timestamptz" json:"heartbeat_at,omitempty"`
 	IntegrationID *string      `gorm:"type:uuid;index:idx_tasks_integration" json:"integration_id,omitempty"`
@@ -27,7 +27,7 @@ type Task struct {
 	// FailureReason is filled from the latest attempt when a task is read; it is not stored on the task.
 	FailureReason *string      `gorm:"-" json:"-"`
 	ID            string       `gorm:"type:uuid;primaryKey" json:"id" validate:"required"`
-	ProjectID     string       `gorm:"type:uuid;not null;index:idx_tasks_project" json:"project_id" validate:"required"`
+	ProjectID     string       `gorm:"type:uuid;not null;index:idx_tasks_project_created,priority:1" json:"project_id" validate:"required"`
 	Title         string       `gorm:"type:text;not null" json:"title" validate:"required,min=1,max=255"`
 	Prompt        string       `gorm:"type:text;not null" json:"prompt" validate:"required"`
 	AssigneeID    string       `gorm:"type:text;not null" json:"assignee_id" validate:"required"`

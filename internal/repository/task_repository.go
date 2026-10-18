@@ -42,6 +42,36 @@ func (r *taskRepo) List(ctx context.Context, projectID string) ([]models.Task, e
 	return gorm.G[models.Task](r.db).Order("created_at DESC").Find(ctx)
 }
 
+func (r *taskRepo) ListByProjectIDs(ctx context.Context, projectIDs []string) ([]models.Task, error) {
+	if len(projectIDs) == 0 {
+		return []models.Task{}, nil
+	}
+	return gorm.G[models.Task](r.db).Where("project_id IN ?", projectIDs).Order("created_at DESC").Find(ctx)
+}
+
+// FindByProjectAndBranch returns the newest task of projectID whose branch_name equals branchName, or
+// gorm.ErrRecordNotFound. It is deliberately not on TaskRepository: callers type-assert it and fall back to List.
+func (r *taskRepo) FindByProjectAndBranch(ctx context.Context, projectID, branchName string) (*models.Task, error) {
+	return r.findNewest(ctx, "project_id = ? AND branch_name = ?", projectID, branchName)
+}
+
+// FindByProjectAndPRURL returns the newest task of projectID whose pr_url equals prURL, or
+// gorm.ErrRecordNotFound. Like FindByProjectAndBranch it is an optional method, type-asserted by callers.
+func (r *taskRepo) FindByProjectAndPRURL(ctx context.Context, projectID, prURL string) (*models.Task, error) {
+	return r.findNewest(ctx, "project_id = ? AND pr_url = ?", projectID, prURL)
+}
+
+func (r *taskRepo) findNewest(ctx context.Context, query string, args ...any) (*models.Task, error) {
+	rows, err := gorm.G[models.Task](r.db).Where(query, args...).Order("created_at DESC").Limit(1).Find(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+	return &rows[0], nil
+}
+
 func (r *taskRepo) ListByParentID(ctx context.Context, parentTaskID string) ([]models.Task, error) {
 	return gorm.G[models.Task](r.db).Where("parent_task_id = ?", parentTaskID).Order("created_at ASC").Find(ctx)
 }
