@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { lazy, Suspense, useState } from 'react';
 import { useSelectedTask, useTaskStore } from '../store/useTaskStore';
 import {
   Dialog,
@@ -9,7 +9,6 @@ import {
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { TerminalView } from './TerminalView';
 import { DiffTab } from './inspector/DiffTab';
 import { TaskInspectorProvider } from './inspector/TaskInspectorContext';
 import { usePullRequestController } from './inspector/usePullRequestController';
@@ -44,9 +43,16 @@ import {
   FolderTree,
   Zap,
 } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
 import { taskApi } from '../api/taskApi';
-import type { TaskStatus, TaskSessionResponse } from '../schemas/taskSchemas';
+import { taskSessionQueryOptions } from '../queries';
+import type { TaskStatus } from '../schemas/taskSchemas';
 import { cn } from '@/lib/utils';
+
+// xterm is the heaviest part of the inspector. It loads when the terminal tab is first opened.
+const TerminalView = lazy(() =>
+  import('./TerminalView').then((m) => ({ default: m.TerminalView }))
+);
 
 const getStatusBadge = (status: TaskStatus) => {
   switch (status) {
@@ -131,27 +137,12 @@ export const TaskInspectorModal: React.FC<TaskInspectorModalProps> = ({
   const [copiedSessionId, setCopiedSessionId] = useState(false);
   const pullRequest = usePullRequestController(task);
   const { isCreatingPR, isSyncingPR, prError, prToast, handleCreatePR, handleSyncPR } = pullRequest;
-  const [sessionData, setSessionData] = useState<TaskSessionResponse | null>(null);
-
-  React.useEffect(() => {
-    if (!task?.id) {
-      setSessionData(null);
-      return;
-    }
-    let isMounted = true;
-    taskApi
-      .getTaskSession(task.id)
-      .then((data) => {
-        if (isMounted) setSessionData(data);
-      })
-      .catch(() => {
-        if (isMounted) setSessionData(null);
-      });
-    return () => {
-      isMounted = false;
-    };
-  }, [task?.id]);
-
+  // Shares the task-session query with the Agent Session tab, so opening the inspector fetches the session once.
+  const { data: sessionData } = useQuery({
+    ...taskSessionQueryOptions(task?.id ?? ''),
+    enabled: Boolean(task?.id),
+    retry: false,
+  });
 
   const isOpen = !!task;
 
@@ -647,7 +638,9 @@ export const TaskInspectorModal: React.FC<TaskInspectorModalProps> = ({
           {/* Terminal Tab */}
           <TabsContent value="terminal" className="flex-1 mt-4 overflow-hidden h-full">
             <div className="h-full w-full min-h-[380px]">
-              <TerminalView taskId={task.id} />
+              <Suspense fallback={<p className="p-4 text-xs text-muted-foreground">Loading terminal…</p>}>
+                <TerminalView taskId={task.id} />
+              </Suspense>
             </div>
           </TabsContent>
 

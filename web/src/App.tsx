@@ -1,8 +1,8 @@
-import React, { useEffect } from 'react';
+import React, { lazy, Suspense, useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useAuthStore } from '@/features/auth/store/useAuthStore';
 import { LoginForm } from '@/features/auth/components/LoginForm';
-import { useTaskStore } from '@/features/tasks/store/useTaskStore';
+import { useSelectedTaskId, useTaskStore } from '@/features/tasks/store/useTaskStore';
 import { useTeamStore, useActiveProjectId } from '@/features/teams/store/useTeamStore';
 import { useTaskSubscription } from '@/features/tasks/hooks/useTaskSubscription';
 import { tasksQueryOptions } from '@/features/tasks/queries';
@@ -12,8 +12,28 @@ import { Header } from '@/components/layout/Header';
 import { Footer } from '@/components/layout/Footer';
 import { WorkspaceControlBar } from '@/features/tasks/components/WorkspaceControlBar';
 import { KanbanBoard } from '@/features/tasks/components/KanbanBoard';
-import { TaskInspectorModal } from '@/features/tasks/components/TaskInspectorModal';
 import { Loader2 } from 'lucide-react';
+
+// The inspector loads the terminal, markdown and session views, so its code is split out of the workspace bundle.
+const TaskInspectorModal = lazy(() =>
+  import('@/features/tasks/components/TaskInspectorModal').then((m) => ({ default: m.TaskInspectorModal }))
+);
+
+// LazyTaskInspector loads the inspector the first time a task is selected. It then stays mounted, as it did before,
+// so the inspector keeps its open tab between selections.
+const LazyTaskInspector: React.FC = () => {
+  const selectedTaskId = useSelectedTaskId();
+  const [requested, setRequested] = useState(selectedTaskId !== null);
+  if (selectedTaskId !== null && !requested) {
+    setRequested(true);
+  }
+  if (!requested) return null;
+  return (
+    <Suspense fallback={null}>
+      <TaskInspectorModal />
+    </Suspense>
+  );
+};
 
 export const WorkspaceView: React.FC = () => {
   const setTasksData = useTaskStore((state) => state.setTasksData);
@@ -22,7 +42,9 @@ export const WorkspaceView: React.FC = () => {
 
   // Consume TanStack Query cache driven by queries
   const { data: cachedTeams } = useQuery(teamsQueryOptions());
-  const { data: cachedTasks } = useQuery(tasksQueryOptions(activeProjectId || undefined));
+  const { data: cachedTasks, dataUpdatedAt: tasksUpdatedAt } = useQuery(
+    tasksQueryOptions(activeProjectId || undefined)
+  );
 
   // Sync loader/query data into Zustand store on load or updates
   useEffect(() => {
@@ -31,11 +53,12 @@ export const WorkspaceView: React.FC = () => {
     }
   }, [cachedTeams, setTeamsData]);
 
+  // Also keyed on dataUpdatedAt: a refetch that returns the same list still re-syncs the store.
   useEffect(() => {
     if (cachedTasks) {
       setTasksData(cachedTasks);
     }
-  }, [cachedTasks, setTasksData]);
+  }, [cachedTasks, tasksUpdatedAt, setTasksData]);
 
   // Maintain real-time task status updates across the Kanban board
   useTaskSubscription();
@@ -60,7 +83,7 @@ export const WorkspaceView: React.FC = () => {
           </section>
 
           {/* Task Inspector Modal (opens when selectedTaskId is set) */}
-          <TaskInspectorModal />
+          <LazyTaskInspector />
         </main>
 
         <Footer />

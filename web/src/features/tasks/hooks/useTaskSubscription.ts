@@ -5,7 +5,6 @@ import type { TaskDTO, TaskStatus } from '../schemas/taskSchemas';
 
 export function useTaskSubscription() {
   const queryClient = useQueryClient();
-  const fetchTasks = useTaskStore((state) => state.fetchTasks);
   const updateTaskStatus = useTaskStore((state) => state.updateTaskStatus);
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -26,8 +25,8 @@ export function useTaskSubscription() {
         wsRef.current = ws;
 
         ws.onopen = () => {
-          // Sync any tasks that changed during reconnection
-          fetchTasks();
+          // Sync any tasks that changed during reconnection. The active task query refetches and WorkspaceView copies
+          // the result into the store, so this is one request rather than one for the store and one for the query.
           queryClient.invalidateQueries({ queryKey: ['tasks'] });
         };
 
@@ -103,5 +102,5 @@ export function useTaskSubscription() {
         wsRef.current = null;
       }
     };
-  }, [fetchTasks, updateTaskStatus]);
+  }, [updateTaskStatus]);
 }

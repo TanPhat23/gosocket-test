@@ -19,6 +19,26 @@ interface TaskState {
   cancelTask: (taskId: string) => Promise<void>;
 }
 
+// indexTasks builds the id index for a fresh task list. The poll refetches the whole list every few seconds, so a task
+// that did not change keeps its previous object, and an unchanged list keeps the previous record. Components that
+// subscribe to a task therefore do not re-render when nothing about it changed.
+function indexTasks(
+  previous: Pick<TaskState, 'tasks' | 'taskIds'>,
+  taskList: Task[]
+): Pick<TaskState, 'tasks' | 'taskIds'> {
+  let changed = taskList.length !== previous.taskIds.length;
+  const tasks: Record<string, Task> = {};
+  const taskIds: string[] = [];
+  taskList.forEach((t, i) => {
+    const before = previous.tasks[t.id];
+    const next = before && JSON.stringify(before) === JSON.stringify(t) ? before : t;
+    if (next !== before || previous.taskIds[i] !== t.id) changed = true;
+    tasks[t.id] = next;
+    taskIds.push(t.id);
+  });
+  return changed ? { tasks, taskIds } : { tasks: previous.tasks, taskIds: previous.taskIds };
+}
+
 export const useTaskStore = create<TaskState>((set, get) => ({
   tasks: {},
   taskIds: [],
@@ -27,28 +47,14 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   error: null,
 
   setTasksData: (taskList: Task[]) => {
-    const tasks: Record<string, Task> = {};
-    const taskIds: string[] = [];
-    for (const t of taskList) {
-      tasks[t.id] = t;
-      taskIds.push(t.id);
-    }
-    set({ tasks, taskIds, isLoading: false, error: null });
+    set((state) => ({ ...indexTasks(state, taskList), isLoading: false, error: null }));
   },
 
   fetchTasks: async (projectId) => {
     set({ isLoading: true, error: null });
     try {
       const taskList = await taskApi.getTasks(projectId);
-      const tasks: Record<string, Task> = {};
-      const taskIds: string[] = [];
-
-      for (const t of taskList) {
-        tasks[t.id] = t;
-        taskIds.push(t.id);
-      }
-
-      set({ tasks, taskIds, isLoading: false, error: null });
+      set((state) => ({ ...indexTasks(state, taskList), isLoading: false, error: null }));
     } catch (err) {
       set({
         isLoading: false,

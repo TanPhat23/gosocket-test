@@ -1,5 +1,7 @@
 import React, { useEffect } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useTeamStore, useTeamsList, useActiveTeamId } from '../store/useTeamStore';
+import { teamsQueryOptions } from '../queries';
 import {
   Select,
   SelectContent,
@@ -15,12 +17,15 @@ export const TeamSwitcher: React.FC = () => {
   const fetchTeams = useTeamStore((state) => state.fetchTeams);
   const selectTeam = useTeamStore((state) => state.selectTeam);
   const isLoading = useTeamStore((state) => state.isLoading);
+  const queryClient = useQueryClient();
 
   useEffect(() => {
-    if (teams.length === 0) {
+    // WorkspaceView already loads the teams query and copies it into the store. Fetch here only when that query has
+    // no data, which avoids a second GET /teams on every page load.
+    if (teams.length === 0 && queryClient.getQueryData(teamsQueryOptions().queryKey) === undefined) {
       fetchTeams();
     }
-  }, [teams.length, fetchTeams]);
+  }, [teams.length, fetchTeams, queryClient]);
 
   if (teams.length === 0 && !isLoading) {
     return null;

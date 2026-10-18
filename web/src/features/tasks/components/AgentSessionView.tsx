@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react';
 import { taskApi } from '../api/taskApi';
 import { useTaskStore } from '../store/useTaskStore';
 import { parseWsFrames } from '../utils/terminalParser';
@@ -33,6 +33,8 @@ import {
   Info,
   Square,
 } from 'lucide-react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { taskSessionQueryOptions } from '../queries';
 import { AgentQuestionnaire, type QuestionItemData } from './AgentQuestionnaire';
 import { extractQuestionsFromText } from '../utils/questionParser';
 import { cleanUserPrompt } from '../utils/promptCleaner';
@@ -209,16 +211,466 @@ export function parseSessionMessageContent(msg: SessionMessage): ParsedMessageDa
   };
 }
 
+const formatTimestamp = (ts?: number | string | null) => {
+  if (!ts) return null;
+  try {
+    const date = typeof ts === 'number' ? new Date(ts) : new Date(ts);
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  } catch {
+    return null;
+  }
+};
+
+interface TranscriptEntry {
+  msg: SessionMessage;
+  msgIdx: number;
+  parsed: ParsedMessageData;
+  hasSubsequentUserMessage: boolean;
+}
+
+interface SessionTranscriptMessagesProps {
+  transcript: TranscriptEntry[];
+  expandedTools: Record<string, boolean>;
+  selectedToolKey: string | null;
+  isSteeringActive: boolean;
+  isSubmittingPrompt: boolean;
+  toggleToolExpanded: (key: string) => void;
+  selectTool: (key: string, openInputTab: boolean) => void;
+  submitAnswer: (answerText: string) => Promise<void>;
+  endRef: React.RefObject<HTMLDivElement | null>;
+}
+
+// Memoized so that typing in the steer box, which re-renders AgentSessionView, does not re-render every message.
+const SessionTranscriptMessages = React.memo(function SessionTranscriptMessages({
+  transcript,
+  expandedTools,
+  selectedToolKey,
+  isSteeringActive,
+  isSubmittingPrompt,
+  toggleToolExpanded,
+  selectTool,
+  submitAnswer,
+  endRef,
+}: SessionTranscriptMessagesProps) {
+  return (
+    <>
+      {transcript.map(({ msg, msgIdx, parsed, hasSubsequentUserMessage }) => {
+        const isUser = msg.role === 'user' || msg.type === 'user';
+        const isSystem = msg.role === 'system' || msg.type === 'system';
+        if (isSystem) {
+          return null;
+        }
+
+        const { text: textContent, thoughts, toolCalls, extractedQuestions } = parsed;
+        const timeString = formatTimestamp(msg.created_at);
+        const hasQuestionTool = toolCalls.some((tc) => tc.name === 'question');
+
+        // Skip rendering empty bubbles or internal tool catalog instruction notices
+        const isInternalInstructionDump =
+          !isUser &&
+          (textContent.includes('The Code Mode tool catalog has changed') ||
+            textContent.includes('<mcp_instructions>') ||
+            textContent.startsWith('Current thought number')) &&
+          toolCalls.length === 0 &&
+          !thoughts;
+
+        if (!isUser && ((!textContent && !thoughts && toolCalls.length === 0) || isInternalInstructionDump)) {
+          return null;
+        }
+
+        if (isUser) {
+          // Ensure text is extracted even if in msg.text, msg.content, or JSON formatted
+          let rawUserText = textContent || (typeof msg.text === 'string' ? msg.text : '') || (typeof msg.content === 'string' ? msg.content : '');
+          if (!rawUserText && typeof msg.content === 'object' && msg.content !== null) {
+            const cObj = msg.content as Record<string, unknown>;
+            if (typeof cObj.text === 'string') rawUserText = cObj.text;
+          }
+          let cleanUserText = rawUserText.trim();
+          if (cleanUserText.startsWith('"') && cleanUserText.endsWith('"') && cleanUserText.length >= 2) {
+            try {
+              cleanUserText = JSON.parse(cleanUserText);
+            } catch {
+              cleanUserText = cleanUserText.slice(1, -1);
+            }
+          }
+          if (!cleanUserText) {
+            cleanUserText = '(User Prompt)';
+          }
+
+          const { prompt: displayPrompt, systemContext } = cleanUserPrompt(cleanUserText);
+
+          return (
+            <div
+              key={msg.id || `user-${msgIdx}`}
+              className="flex justify-end"
+              data-testid="user-message"
+            >
+              <div className="max-w-[85%] rounded-xl p-3.5 bg-muted/60 border border-border/80 text-foreground text-xs space-y-2 shadow-sm">
+                <div className="flex items-center justify-between gap-3 text-[10px] text-muted-foreground border-b border-border/60 pb-1.5">
+                  <span className="font-semibold flex items-center gap-1.5 text-foreground">
+                    <User className="size-3 text-primary" /> User Prompt
+                  </span>
+                  {timeString && <span className="font-mono">{timeString}</span>}
+                </div>
+                <div className="leading-relaxed font-sans text-xs">
+                  <Markdown content={displayPrompt} />
+                </div>
+
+                {systemContext && (
+                  <details className="mt-2 rounded-lg bg-background/80 border border-border/60 p-2 text-foreground/90 font-mono text-[11px] select-none group">
+                    <summary className="cursor-pointer font-semibold text-[10px] uppercase tracking-wider flex items-center justify-between select-none text-muted-foreground hover:text-foreground">
+                      <span className="flex items-center gap-1.5">
+                        <Settings2 className="size-3 text-primary" /> System Context &amp; MCP Tool Catalog
+                      </span>
+                      <span className="text-[9px] opacity-75 font-normal">
+                        {systemContext.split('\n').length} lines
+                      </span>
+                    </summary>
+                    <pre className="mt-2 max-h-52 overflow-y-auto whitespace-pre-wrap p-2 bg-muted/40 rounded border border-border/40 text-[10px] leading-relaxed text-foreground/90 font-mono">
+                      {systemContext}
+                    </pre>
+                  </details>
+                )}
+              </div>
+            </div>
+          );
+        }
+
+        // Assistant Message
+        return (
+          <div
+            key={msg.id || `assistant-${msgIdx}`}
+            className="flex justify-start"
+            data-testid="assistant-message"
+          >
+            <div className="max-w-[90%] w-full rounded-lg p-3.5 bg-muted/30 border border-border text-xs space-y-3">
+              {/* Header info */}
+              <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground border-b border-border/60 pb-1.5">
+                <div className="flex items-center gap-1.5 font-medium">
+                  <Bot className="size-3 text-primary" />
+                  <span className="font-semibold text-foreground">
+                    {msg.agent ? `Agent (${msg.agent})` : 'Assistant'}
+                  </span>
+                  {msg.model && (
+                    <span className="font-mono opacity-80">[{msg.model}]</span>
+                  )}
+                </div>
+                {timeString && <span className="font-mono">{timeString}</span>}
+              </div>
+
+              {/* Agent Reasoning / Thoughts (if present) */}
+              {thoughts && (
+                <details className="text-[11px] text-muted-foreground bg-muted/50 rounded-lg p-2.5 border border-border/60 group">
+                  <summary className="cursor-pointer font-medium flex items-center justify-between select-none text-muted-foreground hover:text-foreground">
+                    <span className="flex items-center gap-1.5">
+                      <Sparkles className="size-3.5 text-purple-400 shrink-0" />
+                      <span className="font-semibold text-foreground/90">Thought Process</span>
+                    </span>
+                    <span className="text-[10px] text-muted-foreground opacity-70 group-open:rotate-180 transition-transform">▼</span>
+                  </summary>
+                  <div className="mt-2.5 whitespace-pre-wrap font-mono text-[10.5px] leading-relaxed text-foreground/90 pl-3 border-l-2 border-purple-500/40 bg-background/50 p-2 rounded">
+                    {thoughts}
+                  </div>
+                </details>
+              )}
+
+              {/* Text reply rendered with Markdown */}
+              {textContent && (
+                <div className="leading-relaxed text-foreground font-sans text-xs">
+                  <Markdown content={textContent} />
+                </div>
+              )}
+
+              {/* Extracted Questionnaire from message text (if no explicit question tool call) */}
+              {!hasQuestionTool && extractedQuestions && extractedQuestions.length > 0 && (
+                <div className="pt-2">
+                  <AgentQuestionnaire
+                    questions={extractedQuestions}
+                    status={hasSubsequentUserMessage ? 'completed' : 'pending'}
+                    onSubmitAnswer={submitAnswer}
+                    isSubmitting={isSubmittingPrompt}
+                  />
+                </div>
+              )}
+
+              {/* Tool executions */}
+              {toolCalls.length > 0 && (
+                <div className="space-y-2 pt-1">
+                  <span className="text-[10px] uppercase font-semibold text-muted-foreground tracking-wider flex items-center gap-1">
+                    <Terminal className="size-3" /> Tool Executions ({toolCalls.length})
+                  </span>
+                  <div className="space-y-1.5">
+                    {toolCalls.map((tc: SessionToolCall, tcIdx: number) => {
+                      if (tc.name === 'question') {
+                        return (
+                          <div key={tcIdx} className="pt-1">
+                            <AgentQuestionnaire
+                              questions={tc.input as any}
+                              status={tc.status}
+                              output={tc.output}
+                              onSubmitAnswer={submitAnswer}
+                              isSubmitting={isSubmittingPrompt}
+                            />
+                          </div>
+                        );
+                      }
+
+                      const expandKey = `${msgIdx}-${tcIdx}`;
+                      const isExpanded = !!expandedTools[expandKey];
+                      const isSelectedInInspector = selectedToolKey === expandKey;
+
+                      const isSubagent = tc.name === 'subagent';
+                      const inputObj =
+                        typeof tc.input === 'object' && tc.input !== null
+                          ? (tc.input as Record<string, unknown>)
+                          : null;
+                      const subagentAgent = inputObj ? String(inputObj.agent || '') : '';
+                      const subagentDesc = inputObj
+                        ? String(inputObj.description || inputObj.prompt || '')
+                        : '';
+
+                      const inputStr =
+                        typeof tc.input === 'string'
+                          ? tc.input
+                          : tc.input
+                          ? JSON.stringify(tc.input, null, 2)
+                          : '';
+
+                      const outputStr =
+                        typeof tc.output === 'string'
+                          ? tc.output
+                          : tc.output
+                          ? JSON.stringify(tc.output, null, 2)
+                          : '';
+
+                      const exitCode = tc.exit_code;
+                      const isSuccess =
+                        tc.status !== 'error' && (exitCode === undefined || exitCode === 0);
+
+                      return (
+                        <div
+                          key={tcIdx}
+                          onClick={() => selectTool(expandKey, isSubagent && !tc.output)}
+                          className={`rounded-lg border transition-all overflow-hidden font-mono text-[11px] cursor-pointer ${
+                            isSelectedInInspector
+                              ? 'border-cyan-500/80 ring-1 ring-cyan-500/40 bg-cyan-950/10'
+                              : !isSuccess
+                              ? 'border-rose-500/50 bg-rose-950/10'
+                              : 'border-border/80 bg-background/80'
+                          }`}
+                          data-testid="tool-call-card"
+                        >
+                          <div
+                            className={`w-full flex items-center justify-between p-2.5 transition-colors text-left select-none ${
+                              isSelectedInInspector
+                                ? 'bg-cyan-500/10'
+                                : !isSuccess
+                                ? 'bg-rose-500/10 hover:bg-rose-500/15'
+                                : 'bg-muted/40 hover:bg-muted/60'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2 min-w-0 flex-1">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleToolExpanded(expandKey);
+                                }}
+                                className="p-0.5 hover:bg-muted/80 rounded"
+                                title={isExpanded ? 'Collapse inline preview' : 'Expand inline preview'}
+                                data-testid={`toggle-tool-${tc.name}`}
+                              >
+                                {isExpanded ? (
+                                  <ChevronDown className="size-3 text-muted-foreground shrink-0" />
+                                ) : (
+                                  <ChevronRight className="size-3 text-muted-foreground shrink-0" />
+                                )}
+                              </button>
+                              <Badge
+                                variant="outline"
+                                className={`font-mono text-[10px] px-1.5 py-0 shrink-0 ${
+                                  isSubagent
+                                    ? 'bg-purple-500/10 text-purple-400 border-purple-500/30'
+                                    : 'bg-primary/10 text-primary border-primary/20'
+                                }`}
+                              >
+                                {tc.name}
+                              </Badge>
+                              {isSubagent && subagentAgent && (
+                                <Badge
+                                  variant="outline"
+                                  className="font-mono text-[9px] px-1 py-0 bg-primary/10 text-primary border-primary/20 shrink-0"
+                                >
+                                  {subagentAgent}
+                                </Badge>
+                              )}
+                              <span className="truncate text-muted-foreground min-w-0 flex-1">
+                                {isSubagent && subagentDesc
+                                  ? subagentDesc
+                                  : inputStr.replace(/\n/g, ' ')}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-2 shrink-0">
+                              {isSelectedInInspector && (
+                                <span className="text-[10px] font-sans font-semibold text-cyan-600 dark:text-cyan-400 hidden sm:inline-flex items-center gap-1">
+                                  <Eye className="size-3 shrink-0" />
+                                  <span>Inspecting in Right Pane</span>
+                                </span>
+                              )}
+                              {tc.status === 'running' ? (
+                                <Badge
+                                  variant="outline"
+                                  className="font-mono text-[9px] px-1.5 py-0 text-sky-500 border-sky-500/30 flex items-center gap-1"
+                                >
+                                  <span className="size-1.5 rounded-full bg-sky-500 animate-pulse" />
+                                  running
+                                </Badge>
+                              ) : !isSuccess ? (
+                                <Badge
+                                  variant="outline"
+                                  className="font-mono text-[9px] px-1.5 py-0 bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/40"
+                                >
+                                  {exitCode !== undefined && exitCode !== 0
+                                    ? `exit ${exitCode}`
+                                    : 'exit 1'}
+                                </Badge>
+                              ) : (
+                                <Badge
+                                  variant="outline"
+                                  className="font-mono text-[9px] px-1.5 py-0 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
+                                >
+                                  exit {exitCode ?? 0}
+                                </Badge>
+                              )}
+                            </div>
+                          </div>
+
+                          {isExpanded && (
+                            <div className="p-2.5 border-t border-border/60 space-y-2 bg-background font-mono text-[11px]">
+                              {isSubagent && inputObj && (
+                                <div className="rounded p-2 bg-purple-500/5 border border-purple-500/15 space-y-1 text-xs font-sans">
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-semibold text-purple-400">Subagent:</span>
+                                    <span className="font-mono text-[11px] text-foreground">
+                                      {subagentAgent ? `[${subagentAgent}] ` : ''}
+                                      {subagentDesc}
+                                    </span>
+                                  </div>
+                                </div>
+                              )}
+
+                              {inputStr && (
+                                <div className="space-y-1">
+                                  <div className="text-[10px] text-muted-foreground uppercase font-semibold">
+                                    {isSubagent ? 'Prompt / Task Brief' : 'Input'}
+                                  </div>
+                                  {isSubagent && inputObj?.prompt ? (
+                                    <div className="p-2.5 rounded bg-muted/40 border border-border/50 text-[11px] overflow-x-auto text-foreground max-h-56 font-sans">
+                                      <Markdown content={String(inputObj.prompt)} />
+                                    </div>
+                                  ) : (
+                                    <pre className="p-2 rounded bg-muted/50 text-[10px] overflow-x-auto whitespace-pre-wrap text-foreground max-h-48 font-mono">
+                                      {inputStr}
+                                    </pre>
+                                  )}
+                                </div>
+                              )}
+
+                              <div className="space-y-1">
+                                <div className="text-[10px] text-muted-foreground uppercase font-semibold">
+                                  {isSubagent ? 'Subagent Output / Results' : 'Output'}
+                                </div>
+                                {tc.status === 'running' ? (
+                                  <div className="flex items-center gap-2 p-3 rounded bg-muted/30 border border-border/50 text-xs text-primary font-mono">
+                                    <RefreshCw className="size-3.5 animate-spin text-primary" />
+                                    <span>
+                                      {isSubagent
+                                        ? 'Subagent is executing in child session...'
+                                        : 'Tool execution in progress...'}
+                                    </span>
+                                  </div>
+                                ) : outputStr ? (
+                                  <pre
+                                    className={`p-2 rounded text-[10px] overflow-x-auto whitespace-pre-wrap max-h-60 font-mono ${
+                                      tc.status === 'error' || !isSuccess
+                                        ? 'bg-destructive/10 text-destructive border border-destructive/20'
+                                        : 'bg-muted/50 text-foreground'
+                                    }`}
+                                  >
+                                    {outputStr}
+                                  </pre>
+                                ) : (
+                                  <div className="text-[10px] text-muted-foreground italic p-1">
+                                    No output recorded.
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+      {isSteeringActive && (
+        <div
+          className="flex justify-start animate-fade-in"
+          data-testid="steering-live-indicator"
+        >
+          <div className="max-w-[90%] w-full rounded-lg p-3 bg-muted/40 border border-primary/30 text-xs space-y-2 shadow-sm">
+            <div className="flex items-center justify-between text-[11px] font-mono text-primary">
+              <span className="flex items-center gap-1.5 font-semibold">
+                <Bot className="size-3.5 animate-pulse" /> Agent Streaming &amp; Reasoning...
+              </span>
+              <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                <RefreshCw className="size-2.5 animate-spin text-primary" /> Live
+              </span>
+            </div>
+            <div className="flex items-center gap-2 text-muted-foreground">
+              <span className="size-1.5 rounded-full bg-primary animate-ping" />
+              <span className="text-[11px] font-mono">
+                Generating tool calls and response...
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+      <div ref={endRef} />
+    </>
+  );
+});
+
+function sessionErrorMessage(err: { status?: number; message?: string }): string {
+  if (err.status === 503) return 'Task execution is temporarily disabled by the server.';
+  if (err.status === 404) return 'No active session initialized for this task yet.';
+  return err.message || 'Failed to load task session.';
+}
+
 export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
   taskId,
   defaultSessionId,
   isActive = true,
 }) => {
-  const [session, setSession] = useState<TaskSessionResponse | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
-  const [isUnavailable, setIsUnavailable] = useState<boolean>(false);
+  // The session lives in the shared task-session query, so the inspector's metrics and this transcript use one request.
+  // Stream frames and optimistic messages write into the same cache entry.
+  const queryClient = useQueryClient();
+  const sessionOptions = taskSessionQueryOptions(taskId);
+  // retry: false keeps the immediate error banner. refetchOnMount: false lets this tab reuse the inspector's fetch.
+  const sessionQuery = useQuery({ ...sessionOptions, retry: false, refetchOnMount: false });
+  const session = sessionQuery.data ?? null;
+  const sessionError = sessionQuery.error as { status?: number; message?: string } | null;
+  const isUnavailable = sessionError?.status === 503;
+  const error = sessionError ? sessionErrorMessage(sessionError) : null;
+  const loading = sessionQuery.isFetching && !session;
   const isSimulated = session?.simulated === true;
+  // Mirrors streamLive for the terminal socket handler, which is set up once per task.
+  const streamLiveRef = useRef(false);
   const [copiedSessionId, setCopiedSessionId] = useState<boolean>(false);
 
   // Steer prompt state
@@ -243,12 +695,43 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
   // Expanded tool calls tracker: msgIndex-toolIndex
   const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({});
 
-  const toggleToolExpanded = (key: string) => {
+  // Stable callbacks: SessionTranscriptMessages is memoized and must not re-render when the steer draft changes.
+  const toggleToolExpanded = useCallback((key: string) => {
     setExpandedTools((prev) => ({
       ...prev,
       [key]: !prev[key],
     }));
-  };
+  }, []);
+
+  const selectTool = useCallback((key: string, openInputTab: boolean) => {
+    setSelectedToolKey(key);
+    if (openInputTab) {
+      setInspectorTab('input');
+    }
+    setInspectorInputView('markdown');
+    setInspectorOutputView('markdown');
+  }, []);
+
+  // The transcript is sorted by time and each message is parsed once per session update. Without this, every render
+  // (for example each keystroke in the steer box) re-sorted and re-parsed the whole transcript.
+  const transcript = React.useMemo(() => {
+    const sortedMsgs = [...(session?.messages || [])].sort((a, b) => {
+      const tA = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const tB = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return tA - tB;
+    });
+    let lastUserIdx = -1;
+    sortedMsgs.forEach((m, i) => {
+      if (m.role === 'user' || m.type === 'user') lastUserIdx = i;
+    });
+    return sortedMsgs.map((msg, msgIdx) => ({
+      msg,
+      msgIdx,
+      parsed: parseSessionMessageContent(msg),
+      // True when a user message comes after this one in the transcript.
+      hasSubsequentUserMessage: msgIdx < lastUserIdx,
+    }));
+  }, [session?.messages]);
 
   // Helper to collect all tool calls across messages for inspector lookup and metrics
   const allToolCallsMap = React.useMemo(() => {
@@ -261,23 +744,13 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
         msg: SessionMessage;
       }
     >();
-    if (!session?.messages) return map;
-
-    const sortedMsgs = [...(session.messages || [])].sort((a, b) => {
-      const tA = a.created_at ? new Date(a.created_at).getTime() : 0;
-      const tB = b.created_at ? new Date(b.created_at).getTime() : 0;
-      return tA - tB;
-    });
-
-    sortedMsgs.forEach((msg, mIdx) => {
-      const parsed = parseSessionMessageContent(msg);
+    for (const { msg, msgIdx, parsed } of transcript) {
       parsed.toolCalls.forEach((tc, tIdx) => {
-        map.set(`${mIdx}-${tIdx}`, { tc, msgIdx: mIdx, tcIdx: tIdx, msg });
+        map.set(`${msgIdx}-${tIdx}`, { tc, msgIdx, tcIdx: tIdx, msg });
       });
-    });
-
+    }
     return map;
-  }, [session?.messages]);
+  }, [transcript]);
 
   const selectedToolInfo = selectedToolKey ? allToolCallsMap.get(selectedToolKey) : null;
 
@@ -310,38 +783,9 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
     setShowScrollBottomBtn(distanceFromBottom > 100);
   };
 
-  const fetchSession = async (showLoadingSpinner = true) => {
-    if (showLoadingSpinner) {
-      setLoading(true);
-    }
-    setError(null);
-    setIsUnavailable(false);
-    try {
-      const data = await taskApi.getTaskSession(taskId);
-      setSession(data);
-
-      // Note: By default selectedToolKey remains null so inspector is conditional upon clicking
-    } catch (err: unknown) {
-      const apiErr = err as { status?: number; message?: string };
-      if (apiErr?.status === 503) {
-        setIsUnavailable(true);
-        setError('Task execution is temporarily disabled by the server.');
-      } else if (apiErr?.status === 404) {
-        setError('No active session initialized for this task yet.');
-      } else {
-        setError(apiErr?.message || 'Failed to load task session.');
-      }
-    } finally {
-      if (showLoadingSpinner) {
-        setLoading(false);
-      }
-    }
-  };
-
-  useEffect(() => {
-    fetchSession(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [taskId]);
+  // Refreshes the shared session query. Overlapping refreshes (polling, the terminal stream, prompts) share one request.
+  const refreshSession = () =>
+    queryClient.fetchQuery({ ...sessionOptions, staleTime: 0, retry: false }).catch(() => undefined);
 
   // When isActive becomes true, trigger scrollToBottom with delays (50ms and 150ms) to ensure layout paints
   useEffect(() => {
@@ -393,25 +837,33 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
             session?: TaskSessionResponse;
           };
           if (msg.type === 'session' && msg.session) {
+            streamLiveRef.current = true;
             setStreamLive(true);
-            setSession(msg.session);
+            // A written frame also clears an earlier error, as a successful query fetch does.
+            queryClient.setQueryData(sessionOptions.queryKey, msg.session);
             if (msg.session.status && msg.session.status !== 'running') setIsSteeringActive(false);
-            setError(null);
-            setIsUnavailable(false);
           } else if (msg.type === 'error') {
             // The relay could not read the session (e.g. sandbox not running): use the normal fetch path.
+            streamLiveRef.current = false;
             setStreamLive(false);
           }
         } catch {
           // ignore malformed frames
         }
       };
-      socket.onclose = () => setStreamLive(false);
-      socket.onerror = () => setStreamLive(false);
+      socket.onclose = () => {
+        streamLiveRef.current = false;
+        setStreamLive(false);
+      };
+      socket.onerror = () => {
+        streamLiveRef.current = false;
+        setStreamLive(false);
+      };
     } catch {
       // streaming is optional; polling covers it
     }
     return () => {
+      streamLiveRef.current = false;
       setStreamLive(false);
       socket?.close();
     };
@@ -427,7 +879,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
     const maxPolls = 60; // 60 * 800ms = 48s max
     const interval = setInterval(async () => {
       pollCount++;
-      await fetchSession(false);
+      await refreshSession();
       transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
 
       // Stop active steering mode if session outcome is not running after a few checks
@@ -458,7 +910,8 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
         const frames = parseWsFrames(rawData);
         for (const frame of frames) {
           if (frame.type === 'agent_event') {
-            fetchSession(false);
+            // While the session stream is live it pushes every change, so the terminal event refreshes only without it.
+            if (!streamLiveRef.current) void refreshSession();
             const payload = frame.payload as { eventType?: string } | undefined;
             if (payload?.eventType === 'step_finish') {
               setIsSteeringActive(false);
@@ -507,7 +960,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
       text: userPromptText,
       created_at: new Date().toISOString(),
     };
-    setSession((prev) => {
+    queryClient.setQueryData<TaskSessionResponse>(sessionOptions.queryKey, (prev) => {
       if (!prev) return prev;
       return {
         ...prev,
@@ -525,7 +978,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
     try {
       await taskApi.promptTaskSession(taskId, userPromptText);
       // Immediately refresh transcript
-      await fetchSession(false);
+      await refreshSession();
       setTimeout(() => {
         transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
       }, 100);
@@ -538,13 +991,22 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
     }
   };
 
+  // Questionnaire answers call the latest handleSendPrompt through a ref so submitAnswer keeps one identity.
+  const sendPromptRef = useRef(handleSendPrompt);
+  useLayoutEffect(() => {
+    sendPromptRef.current = handleSendPrompt;
+  });
+  const submitAnswer = useCallback(async (answerText: string) => {
+    await sendPromptRef.current(undefined, answerText);
+  }, []);
+
   const handleInterruptSession = async () => {
     setIsInterrupting(true);
     setCompactMessage(null);
     try {
       await taskApi.interruptTaskSession(taskId);
       setCompactMessage('Interrupt sent. The current turn is stopping.');
-      await fetchSession(false);
+      await refreshSession();
       setTimeout(() => setCompactMessage(null), 4000);
     } catch (err: unknown) {
       const apiErr = err as { message?: string };
@@ -560,7 +1022,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
     try {
       await taskApi.compactTaskSession(taskId);
       setCompactMessage('Session context successfully compacted.');
-      await fetchSession(false);
+      await refreshSession();
       setTimeout(() => setCompactMessage(null), 4000);
     } catch (err: unknown) {
       const apiErr = err as { message?: string };
@@ -605,16 +1067,6 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
         {s}
       </Badge>
     );
-  };
-
-  const formatTimestamp = (ts?: number | string | null) => {
-    if (!ts) return null;
-    try {
-      const date = typeof ts === 'number' ? new Date(ts) : new Date(ts);
-      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    } catch {
-      return null;
-    }
   };
 
   return (
@@ -675,7 +1127,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
                   variant="ghost"
                   size="sm"
                   disabled={loading}
-                  onClick={() => fetchSession(false)}
+                  onClick={() => void refreshSession()}
                   className="h-6 px-2 text-[11px] font-mono gap-1 text-muted-foreground hover:text-foreground"
                   title="Refresh transcript"
                   data-testid="refresh-session-btn"
@@ -850,7 +1302,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={() => fetchSession(true)}
+                  onClick={() => void refreshSession()}
                   className="text-xs font-mono mt-2"
                   data-testid="retry-session-btn"
                 >
@@ -870,7 +1322,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={() => fetchSession(true)}
+                  onClick={() => void refreshSession()}
                   className="text-xs font-mono mt-2"
                   data-testid="retry-session-btn"
                 >
@@ -890,415 +1342,17 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({
                 className="flex-1 overflow-y-auto p-4 space-y-4"
                 data-testid="session-transcript-container"
               >
-                {[...(session.messages || [])]
-                  .sort((a, b) => {
-                    const tA = a.created_at ? new Date(a.created_at).getTime() : 0;
-                    const tB = b.created_at ? new Date(b.created_at).getTime() : 0;
-                    return tA - tB;
-                  })
-                  .map((msg: SessionMessage, msgIdx: number, allMsgs: SessionMessage[]) => {
-                  const isUser = msg.role === 'user' || msg.type === 'user';
-                  const isSystem = msg.role === 'system' || msg.type === 'system';
-                  if (isSystem) {
-                    return null;
-                  }
-
-                  const parsed = parseSessionMessageContent(msg);
-                  const { text: textContent, thoughts, toolCalls, extractedQuestions } = parsed;
-                  const timeString = formatTimestamp(msg.created_at);
-                  const hasQuestionTool = toolCalls.some((tc) => tc.name === 'question');
-                  const hasSubsequentUserMessage = allMsgs
-                    .slice(msgIdx + 1)
-                    .some((m) => m.role === 'user' || m.type === 'user');
-
-                  // Skip rendering empty bubbles or internal tool catalog instruction notices
-                  const isInternalInstructionDump =
-                    !isUser &&
-                    (textContent.includes('The Code Mode tool catalog has changed') ||
-                      textContent.includes('<mcp_instructions>') ||
-                      textContent.startsWith('Current thought number')) &&
-                    toolCalls.length === 0 &&
-                    !thoughts;
-
-                  if (!isUser && ((!textContent && !thoughts && toolCalls.length === 0) || isInternalInstructionDump)) {
-                    return null;
-                  }
-
-                  if (isUser) {
-                    // Ensure text is extracted even if in msg.text, msg.content, or JSON formatted
-                    let rawUserText = textContent || (typeof msg.text === 'string' ? msg.text : '') || (typeof msg.content === 'string' ? msg.content : '');
-                    if (!rawUserText && typeof msg.content === 'object' && msg.content !== null) {
-                      const cObj = msg.content as Record<string, unknown>;
-                      if (typeof cObj.text === 'string') rawUserText = cObj.text;
-                    }
-                    let cleanUserText = rawUserText.trim();
-                    if (cleanUserText.startsWith('"') && cleanUserText.endsWith('"') && cleanUserText.length >= 2) {
-                      try {
-                        cleanUserText = JSON.parse(cleanUserText);
-                      } catch {
-                        cleanUserText = cleanUserText.slice(1, -1);
-                      }
-                    }
-                    if (!cleanUserText) {
-                      cleanUserText = '(User Prompt)';
-                    }
-
-                    const { prompt: displayPrompt, systemContext } = cleanUserPrompt(cleanUserText);
-
-                    return (
-                      <div
-                        key={msg.id || `user-${msgIdx}`}
-                        className="flex justify-end"
-                        data-testid="user-message"
-                      >
-                        <div className="max-w-[85%] rounded-xl p-3.5 bg-muted/60 border border-border/80 text-foreground text-xs space-y-2 shadow-sm">
-                          <div className="flex items-center justify-between gap-3 text-[10px] text-muted-foreground border-b border-border/60 pb-1.5">
-                            <span className="font-semibold flex items-center gap-1.5 text-foreground">
-                              <User className="size-3 text-primary" /> User Prompt
-                            </span>
-                            {timeString && <span className="font-mono">{timeString}</span>}
-                          </div>
-                          <div className="leading-relaxed font-sans text-xs">
-                            <Markdown content={displayPrompt} />
-                          </div>
-
-                          {systemContext && (
-                            <details className="mt-2 rounded-lg bg-background/80 border border-border/60 p-2 text-foreground/90 font-mono text-[11px] select-none group">
-                              <summary className="cursor-pointer font-semibold text-[10px] uppercase tracking-wider flex items-center justify-between select-none text-muted-foreground hover:text-foreground">
-                                <span className="flex items-center gap-1.5">
-                                  <Settings2 className="size-3 text-primary" /> System Context &amp; MCP Tool Catalog
-                                </span>
-                                <span className="text-[9px] opacity-75 font-normal">
-                                  {systemContext.split('\n').length} lines
-                                </span>
-                              </summary>
-                              <pre className="mt-2 max-h-52 overflow-y-auto whitespace-pre-wrap p-2 bg-muted/40 rounded border border-border/40 text-[10px] leading-relaxed text-foreground/90 font-mono">
-                                {systemContext}
-                              </pre>
-                            </details>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  }
-
-                  // Assistant Message
-                  return (
-                    <div
-                      key={msg.id || `assistant-${msgIdx}`}
-                      className="flex justify-start"
-                      data-testid="assistant-message"
-                    >
-                      <div className="max-w-[90%] w-full rounded-lg p-3.5 bg-muted/30 border border-border text-xs space-y-3">
-                        {/* Header info */}
-                        <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground border-b border-border/60 pb-1.5">
-                          <div className="flex items-center gap-1.5 font-medium">
-                            <Bot className="size-3 text-primary" />
-                            <span className="font-semibold text-foreground">
-                              {msg.agent ? `Agent (${msg.agent})` : 'Assistant'}
-                            </span>
-                            {msg.model && (
-                              <span className="font-mono opacity-80">[{msg.model}]</span>
-                            )}
-                          </div>
-                          {timeString && <span className="font-mono">{timeString}</span>}
-                        </div>
-
-                        {/* Agent Reasoning / Thoughts (if present) */}
-                        {thoughts && (
-                          <details className="text-[11px] text-muted-foreground bg-muted/50 rounded-lg p-2.5 border border-border/60 group">
-                            <summary className="cursor-pointer font-medium flex items-center justify-between select-none text-muted-foreground hover:text-foreground">
-                              <span className="flex items-center gap-1.5">
-                                <Sparkles className="size-3.5 text-purple-400 shrink-0" />
-                                <span className="font-semibold text-foreground/90">Thought Process</span>
-                              </span>
-                              <span className="text-[10px] text-muted-foreground opacity-70 group-open:rotate-180 transition-transform">▼</span>
-                            </summary>
-                            <div className="mt-2.5 whitespace-pre-wrap font-mono text-[10.5px] leading-relaxed text-foreground/90 pl-3 border-l-2 border-purple-500/40 bg-background/50 p-2 rounded">
-                              {thoughts}
-                            </div>
-                          </details>
-                        )}
-
-                        {/* Text reply rendered with Markdown */}
-                        {textContent && (
-                          <div className="leading-relaxed text-foreground font-sans text-xs">
-                            <Markdown content={textContent} />
-                          </div>
-                        )}
-
-                        {/* Extracted Questionnaire from message text (if no explicit question tool call) */}
-                        {!hasQuestionTool && extractedQuestions && extractedQuestions.length > 0 && (
-                          <div className="pt-2">
-                            <AgentQuestionnaire
-                              questions={extractedQuestions}
-                              status={hasSubsequentUserMessage ? 'completed' : 'pending'}
-                              onSubmitAnswer={async (answerText) => {
-                                await handleSendPrompt(undefined, answerText);
-                              }}
-                              isSubmitting={isSubmittingPrompt}
-                            />
-                          </div>
-                        )}
-
-                        {/* Tool executions */}
-                        {toolCalls.length > 0 && (
-                          <div className="space-y-2 pt-1">
-                            <span className="text-[10px] uppercase font-semibold text-muted-foreground tracking-wider flex items-center gap-1">
-                              <Terminal className="size-3" /> Tool Executions ({toolCalls.length})
-                            </span>
-                            <div className="space-y-1.5">
-                              {toolCalls.map((tc: SessionToolCall, tcIdx: number) => {
-                                if (tc.name === 'question') {
-                                  return (
-                                    <div key={tcIdx} className="pt-1">
-                                      <AgentQuestionnaire
-                                        questions={tc.input as any}
-                                        status={tc.status}
-                                        output={tc.output}
-                                        onSubmitAnswer={async (answerText) => {
-                                          await handleSendPrompt(undefined, answerText);
-                                        }}
-                                        isSubmitting={isSubmittingPrompt}
-                                      />
-                                    </div>
-                                  );
-                                }
-
-                                const expandKey = `${msgIdx}-${tcIdx}`;
-                                const isExpanded = !!expandedTools[expandKey];
-                                const isSelectedInInspector = selectedToolKey === expandKey;
-
-                                const isSubagent = tc.name === 'subagent';
-                                const inputObj =
-                                  typeof tc.input === 'object' && tc.input !== null
-                                    ? (tc.input as Record<string, unknown>)
-                                    : null;
-                                const subagentAgent = inputObj ? String(inputObj.agent || '') : '';
-                                const subagentDesc = inputObj
-                                  ? String(inputObj.description || inputObj.prompt || '')
-                                  : '';
-
-                                const inputStr =
-                                  typeof tc.input === 'string'
-                                    ? tc.input
-                                    : tc.input
-                                    ? JSON.stringify(tc.input, null, 2)
-                                    : '';
-
-                                const outputStr =
-                                  typeof tc.output === 'string'
-                                    ? tc.output
-                                    : tc.output
-                                    ? JSON.stringify(tc.output, null, 2)
-                                    : '';
-
-                                const exitCode = tc.exit_code;
-                                const isSuccess =
-                                  tc.status !== 'error' && (exitCode === undefined || exitCode === 0);
-
-                                return (
-                                  <div
-                                    key={tcIdx}
-                                    onClick={() => {
-                                      setSelectedToolKey(expandKey);
-                                      if (isSubagent && !tc.output) {
-                                        setInspectorTab('input');
-                                      }
-                                      setInspectorInputView('markdown');
-                                      setInspectorOutputView('markdown');
-                                    }}
-                                    className={`rounded-lg border transition-all overflow-hidden font-mono text-[11px] cursor-pointer ${
-                                      isSelectedInInspector
-                                        ? 'border-cyan-500/80 ring-1 ring-cyan-500/40 bg-cyan-950/10'
-                                        : !isSuccess
-                                        ? 'border-rose-500/50 bg-rose-950/10'
-                                        : 'border-border/80 bg-background/80'
-                                    }`}
-                                    data-testid="tool-call-card"
-                                  >
-                                    <div
-                                      className={`w-full flex items-center justify-between p-2.5 transition-colors text-left select-none ${
-                                        isSelectedInInspector
-                                          ? 'bg-cyan-500/10'
-                                          : !isSuccess
-                                          ? 'bg-rose-500/10 hover:bg-rose-500/15'
-                                          : 'bg-muted/40 hover:bg-muted/60'
-                                      }`}
-                                    >
-                                      <div className="flex items-center gap-2 min-w-0 flex-1">
-                                        <button
-                                          type="button"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            toggleToolExpanded(expandKey);
-                                          }}
-                                          className="p-0.5 hover:bg-muted/80 rounded"
-                                          title={isExpanded ? 'Collapse inline preview' : 'Expand inline preview'}
-                                          data-testid={`toggle-tool-${tc.name}`}
-                                        >
-                                          {isExpanded ? (
-                                            <ChevronDown className="size-3 text-muted-foreground shrink-0" />
-                                          ) : (
-                                            <ChevronRight className="size-3 text-muted-foreground shrink-0" />
-                                          )}
-                                        </button>
-                                        <Badge
-                                          variant="outline"
-                                          className={`font-mono text-[10px] px-1.5 py-0 shrink-0 ${
-                                            isSubagent
-                                              ? 'bg-purple-500/10 text-purple-400 border-purple-500/30'
-                                              : 'bg-primary/10 text-primary border-primary/20'
-                                          }`}
-                                        >
-                                          {tc.name}
-                                        </Badge>
-                                        {isSubagent && subagentAgent && (
-                                          <Badge
-                                            variant="outline"
-                                            className="font-mono text-[9px] px-1 py-0 bg-primary/10 text-primary border-primary/20 shrink-0"
-                                          >
-                                            {subagentAgent}
-                                          </Badge>
-                                        )}
-                                        <span className="truncate text-muted-foreground min-w-0 flex-1">
-                                          {isSubagent && subagentDesc
-                                            ? subagentDesc
-                                            : inputStr.replace(/\n/g, ' ')}
-                                        </span>
-                                      </div>
-
-                                      <div className="flex items-center gap-2 shrink-0">
-                                        {isSelectedInInspector && (
-                                          <span className="text-[10px] font-sans font-semibold text-cyan-600 dark:text-cyan-400 hidden sm:inline-flex items-center gap-1">
-                                            <Eye className="size-3 shrink-0" />
-                                            <span>Inspecting in Right Pane</span>
-                                          </span>
-                                        )}
-                                        {tc.status === 'running' ? (
-                                          <Badge
-                                            variant="outline"
-                                            className="font-mono text-[9px] px-1.5 py-0 text-sky-500 border-sky-500/30 flex items-center gap-1"
-                                          >
-                                            <span className="size-1.5 rounded-full bg-sky-500 animate-pulse" />
-                                            running
-                                          </Badge>
-                                        ) : !isSuccess ? (
-                                          <Badge
-                                            variant="outline"
-                                            className="font-mono text-[9px] px-1.5 py-0 bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/40"
-                                          >
-                                            {exitCode !== undefined && exitCode !== 0
-                                              ? `exit ${exitCode}`
-                                              : 'exit 1'}
-                                          </Badge>
-                                        ) : (
-                                          <Badge
-                                            variant="outline"
-                                            className="font-mono text-[9px] px-1.5 py-0 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
-                                          >
-                                            exit {exitCode ?? 0}
-                                          </Badge>
-                                        )}
-                                      </div>
-                                    </div>
-
-                                    {isExpanded && (
-                                      <div className="p-2.5 border-t border-border/60 space-y-2 bg-background font-mono text-[11px]">
-                                        {isSubagent && inputObj && (
-                                          <div className="rounded p-2 bg-purple-500/5 border border-purple-500/15 space-y-1 text-xs font-sans">
-                                            <div className="flex items-center gap-2">
-                                              <span className="font-semibold text-purple-400">Subagent:</span>
-                                              <span className="font-mono text-[11px] text-foreground">
-                                                {subagentAgent ? `[${subagentAgent}] ` : ''}
-                                                {subagentDesc}
-                                              </span>
-                                            </div>
-                                          </div>
-                                        )}
-
-                                        {inputStr && (
-                                          <div className="space-y-1">
-                                            <div className="text-[10px] text-muted-foreground uppercase font-semibold">
-                                              {isSubagent ? 'Prompt / Task Brief' : 'Input'}
-                                            </div>
-                                            {isSubagent && inputObj?.prompt ? (
-                                              <div className="p-2.5 rounded bg-muted/40 border border-border/50 text-[11px] overflow-x-auto text-foreground max-h-56 font-sans">
-                                                <Markdown content={String(inputObj.prompt)} />
-                                              </div>
-                                            ) : (
-                                              <pre className="p-2 rounded bg-muted/50 text-[10px] overflow-x-auto whitespace-pre-wrap text-foreground max-h-48 font-mono">
-                                                {inputStr}
-                                              </pre>
-                                            )}
-                                          </div>
-                                        )}
-
-                                        <div className="space-y-1">
-                                          <div className="text-[10px] text-muted-foreground uppercase font-semibold">
-                                            {isSubagent ? 'Subagent Output / Results' : 'Output'}
-                                          </div>
-                                          {tc.status === 'running' ? (
-                                            <div className="flex items-center gap-2 p-3 rounded bg-muted/30 border border-border/50 text-xs text-primary font-mono">
-                                              <RefreshCw className="size-3.5 animate-spin text-primary" />
-                                              <span>
-                                                {isSubagent
-                                                  ? 'Subagent is executing in child session...'
-                                                  : 'Tool execution in progress...'}
-                                              </span>
-                                            </div>
-                                          ) : outputStr ? (
-                                            <pre
-                                              className={`p-2 rounded text-[10px] overflow-x-auto whitespace-pre-wrap max-h-60 font-mono ${
-                                                tc.status === 'error' || !isSuccess
-                                                  ? 'bg-destructive/10 text-destructive border border-destructive/20'
-                                                  : 'bg-muted/50 text-foreground'
-                                              }`}
-                                            >
-                                              {outputStr}
-                                            </pre>
-                                          ) : (
-                                            <div className="text-[10px] text-muted-foreground italic p-1">
-                                              No output recorded.
-                                            </div>
-                                          )}
-                                        </div>
-                                      </div>
-                                    )}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-                {isSteeringActive && (
-                  <div
-                    className="flex justify-start animate-fade-in"
-                    data-testid="steering-live-indicator"
-                  >
-                    <div className="max-w-[90%] w-full rounded-lg p-3 bg-muted/40 border border-primary/30 text-xs space-y-2 shadow-sm">
-                      <div className="flex items-center justify-between text-[11px] font-mono text-primary">
-                        <span className="flex items-center gap-1.5 font-semibold">
-                          <Bot className="size-3.5 animate-pulse" /> Agent Streaming &amp; Reasoning...
-                        </span>
-                        <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                          <RefreshCw className="size-2.5 animate-spin text-primary" /> Live
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2 text-muted-foreground">
-                        <span className="size-1.5 rounded-full bg-primary animate-ping" />
-                        <span className="text-[11px] font-mono">
-                          Generating tool calls and response...
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                )}
-                <div ref={transcriptEndRef} />
+                <SessionTranscriptMessages
+                  transcript={transcript}
+                  expandedTools={expandedTools}
+                  selectedToolKey={selectedToolKey}
+                  isSteeringActive={isSteeringActive}
+                  isSubmittingPrompt={isSubmittingPrompt}
+                  toggleToolExpanded={toggleToolExpanded}
+                  selectTool={selectTool}
+                  submitAnswer={submitAnswer}
+                  endRef={transcriptEndRef}
+                />
               </div>
             )}
 

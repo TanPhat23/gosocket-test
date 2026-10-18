@@ -61,7 +61,7 @@ describe('/_auth.tasks.$taskId route', () => {
   });
 
   describe('component', () => {
-    it('renders WorkspaceView and TaskInspectorModal with taskId, and closing navigates back to /', () => {
+    it('renders WorkspaceView and TaskInspectorModal with taskId, and closing navigates back to /', async () => {
       // Stub Route.useParams
       vi.spyOn(Route, 'useParams').mockReturnValue({ taskId: 'task-789' } as any);
 
@@ -69,7 +69,8 @@ describe('/_auth.tasks.$taskId route', () => {
       render(<Component />);
 
       expect(screen.getByTestId('workspace-view')).toBeInTheDocument();
-      expect(screen.getByTestId('task-inspector-modal')).toBeInTheDocument();
+      // The inspector is lazy-loaded, so it appears once its module resolves.
+      expect(await screen.findByTestId('task-inspector-modal')).toBeInTheDocument();
       expect(screen.getByTestId('modal-task-id')).toHaveTextContent('task-789');
 
       fireEvent.click(screen.getByTestId('modal-close-button'));

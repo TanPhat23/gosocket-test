@@ -1,7 +1,12 @@
+import { lazy, Suspense } from 'react';
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { tasksQueryOptions, taskDetailQueryOptions, taskSessionQueryOptions } from '@/features/tasks/queries';
 import { WorkspaceView } from '@/App';
-import { TaskInspectorModal } from '@/features/tasks/components/TaskInspectorModal';
+
+// Split out of the workspace bundle, like the inspector in App.tsx.
+const TaskInspectorModal = lazy(() =>
+  import('@/features/tasks/components/TaskInspectorModal').then((m) => ({ default: m.TaskInspectorModal }))
+);
 
 export const Route = createFileRoute('/_auth/tasks/$taskId')({
   loader: async ({ params, context }) => {
@@ -25,7 +30,9 @@ function TaskDetailRouteComponent() {
   return (
     <>
       <WorkspaceView />
-      <TaskInspectorModal taskId={taskId} onClose={handleClose} />
+      <Suspense fallback={null}>
+        <TaskInspectorModal taskId={taskId} onClose={handleClose} />
+      </Suspense>
     </>
   );
 }

@@ -1,18 +1,15 @@
-import React, { useEffect, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useState } from 'react';
 import { KeyRound } from 'lucide-react';
 import { axiosClient } from '@/lib/axios';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '@/components/ui/dialog';
+import { Dialog, DialogTrigger } from '@/components/ui/dialog';
 
-interface ProviderKeyStatus {
+// The form loads the first time the dialog opens. Only the trigger stays in the header bundle.
+const ProviderKeyDialogContent = lazy(() =>
+  import('./ProviderKeyDialogContent').then((m) => ({ default: m.ProviderKeyDialogContent }))
+);
+
+export interface ProviderKeyStatus {
   operator: boolean;
   writable?: boolean;
   configured?: boolean;
@@ -26,6 +23,8 @@ interface ProviderKeyStatus {
 export const ProviderKeyDialog: React.FC = () => {
   const [status, setStatus] = useState<ProviderKeyStatus | null>(null);
   const [open, setOpen] = useState(false);
+  // Kept true after the first open so the content stays mounted through its close animation.
+  const [hasOpened, setHasOpened] = useState(false);
   const [key, setKey] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -64,8 +63,13 @@ export const ProviderKeyDialog: React.FC = () => {
     }
   };
 
+  const handleOpenChange = (next: boolean) => {
+    if (next) setHasOpened(true);
+    setOpen(next);
+  };
+
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger
         render={
           <Button
@@ -80,41 +84,18 @@ export const ProviderKeyDialog: React.FC = () => {
         <KeyRound className="size-3.5" />
         <span className="hidden sm:inline">Provider key</span>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-md p-6">
-        <DialogHeader>
-          <DialogTitle className="text-base font-semibold">LLM provider key</DialogTitle>
-          <DialogDescription className="text-xs">
-            Used by the gateway for every team. It is never shown again after saving. Changing the provider URL or model
-            still needs the setup script and a restart.
-          </DialogDescription>
-        </DialogHeader>
-        <p className="text-xs text-muted-foreground" data-testid="provider-key-state">
-          {status.writable === false
-            ? 'This server does not take its key from a file, so it cannot be changed here.'
-            : status.configured
-              ? `A key is set${status.updated_at ? ` (changed ${new Date(status.updated_at).toLocaleString()})` : ''}.`
-              : 'No key is set.'}
-        </p>
-        <form onSubmit={save} className="space-y-3">
-          <Input
-            type="password"
-            autoComplete="off"
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-            placeholder="Paste the new key"
-            disabled={busy || status.writable === false}
-            data-testid="provider-key-input"
+      {hasOpened && (
+        <Suspense fallback={null}>
+          <ProviderKeyDialogContent
+            status={status}
+            keyValue={key}
+            busy={busy}
+            message={message}
+            onKeyChange={setKey}
+            onSubmit={save}
           />
-          <Button type="submit" size="sm" disabled={busy || !key.trim() || status.writable === false} data-testid="provider-key-save">
-            {busy ? 'Saving...' : 'Save key'}
-          </Button>
-          {message && (
-            <p className="text-xs text-muted-foreground" role="status" data-testid="provider-key-message">
-              {message}
-            </p>
-          )}
-        </form>
-      </DialogContent>
+        </Suspense>
+      )}
     </Dialog>
   );
 };

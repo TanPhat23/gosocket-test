@@ -1,6 +1,5 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { taskApi } from '../api/taskApi';
 import { integrationApi } from '@/features/integrations/api/integrationApi';
 import type { IntegrationDTO } from '@/features/integrations/schemas/integrationSchemas';
 
@@ -41,7 +40,6 @@ export interface WorkspaceSettingsState {
   setSearchQuery: (query: string) => void;
   setPriorityFilter: (filter: string) => void;
   setAvailableModels: (models: ModelOption[]) => void;
-  fetchModels: () => Promise<void>;
   fetchConnectedRepos: (projectId?: string) => Promise<void>;
 }
 
@@ -65,17 +63,6 @@ export const useWorkspaceSettingsStore = create<WorkspaceSettingsState>()(
       setSearchQuery: (searchQuery) => set({ searchQuery }),
       setPriorityFilter: (priorityFilter) => set({ priorityFilter }),
       setAvailableModels: (availableModels) => set({ availableModels }),
-
-      fetchModels: async () => {
-        try {
-          const models = await taskApi.getModels();
-          if (models && models.length > 0) {
-            set({ availableModels: models });
-          }
-        } catch {
-          // Fallback to default models
-        }
-      },
 
       fetchConnectedRepos: async (projectId) => {
         if (!projectId) {

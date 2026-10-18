@@ -86,9 +86,9 @@ describe('TaskInspectorModal Agent Session Tab and Steering', () => {
     // Switch to session tab
     fireEvent.click(sessionTabTrigger);
 
-    await waitFor(() => {
-      expect(getSessionSpy).toHaveBeenCalledWith('task-sess-123');
-    });
+    expect(getSessionSpy).toHaveBeenCalledWith('task-sess-123');
+    // The transcript renders once the shared query resolves.
+    await screen.findByText('Initial prompt or follow-up prompt');
 
     // Session ID display
     expect(screen.getByTestId('session-id-display')).toHaveTextContent('ses_atm_task-sess-123');
@@ -114,6 +114,20 @@ describe('TaskInspectorModal Agent Session Tab and Steering', () => {
     const toolToggleBtn = screen.getByTestId('toggle-tool-shell');
     fireEvent.click(toolToggleBtn);
     expect(screen.getByText('PASS ok agent-task-manager 1.2s')).toBeInTheDocument();
+  });
+
+  it('fetches the task session once per open, shared by the metrics card and the Agent Session tab', async () => {
+    const getSessionSpy = vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue(mockSessionData);
+
+    render(<TaskInspectorModal />);
+    await screen.findByText(/Session Token Metrics/);
+
+    fireEvent.click(screen.getByTestId('tab-agent-session'));
+    await waitFor(() => {
+      expect(screen.getByTestId('session-transcript-container')).toBeInTheDocument();
+    });
+
+    expect(getSessionSpy).toHaveBeenCalledTimes(1);
   });
 
   it('allows submitting an interactive steer prompt and refreshes transcript', async () => {
@@ -158,8 +172,9 @@ describe('TaskInspectorModal Agent Session Tab and Steering', () => {
 
     fireEvent.click(screen.getByTestId('tab-agent-session'));
 
+    // The button is disabled until the shared session query has loaded.
     await waitFor(() => {
-      expect(screen.getByTestId('compact-session-btn')).toBeInTheDocument();
+      expect(screen.getByTestId('compact-session-btn')).toBeEnabled();
     });
 
     const compactBtn = screen.getByTestId('compact-session-btn');
