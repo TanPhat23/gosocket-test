@@ -122,8 +122,10 @@ func TestPublishTaskPullRequest_RefusesWhenNothingCanPush(t *testing.T) {
 	}
 }
 
+// Without a transfer manager the diff is read in the project container (the fallback path).
 func TestTaskDiff_ReadsTheDiffAgainstTheBaseBranchInTheWorktree(t *testing.T) {
 	f := prFixture(t)
+	f.r.repoTransfer = nil
 	f.dk.handler = func(argv []string) (int, string) {
 		if strings.Contains(strings.Join(argv, " "), "--no-color main...HEAD") {
 			return 0, "diff --git a/a.go b/a.go\n+x\n"
@@ -147,12 +149,49 @@ func TestTaskDiff_ReadsTheDiffAgainstTheBaseBranchInTheWorktree(t *testing.T) {
 	}
 }
 
-func TestTaskDiff_UnavailableWithoutARunningContainer(t *testing.T) {
+func TestTaskDiff_UnavailableWithoutARunningContainerOnTheFallbackPath(t *testing.T) {
 	f := prFixture(t)
+	f.r.repoTransfer = nil
 	f.sb.noRoute = true
 	_, err := f.r.TaskDiff(prCtx(t), f.task)
 	if !errors.Is(err, common.ErrServiceUnavailable) || f.dk.ran("diff") {
 		t.Fatalf("err=%v calls=%v", err, f.dk.argvs())
+	}
+}
+
+// The diff is read from the project volume through the transfer helper, so it needs no project container.
+func TestTaskDiff_ReadsFromTheVolumeWithTheBaseBranch(t *testing.T) {
+	f := prFixture(t)
+	f.tm.diffOut = "diff --git a/a.go b/a.go\n+x\n"
+	got, err := f.r.TaskDiff(prCtx(t), f.task)
+	if err != nil || got != "diff --git a/a.go b/a.go\n+x\n" {
+		t.Fatalf("diff=%q err=%v", got, err)
+	}
+	if f.tm.diff == nil || f.tm.diff.TaskID != "t1" || f.tm.diff.RepoID != "p1" || f.tm.diff.BaseRef != "refs/heads/main" {
+		t.Fatalf("diff request %+v", f.tm.diff)
+	}
+	if len(f.dk.argvs()) != 0 || f.sb.called != 0 {
+		t.Fatalf("volume diff must not touch a container: exec=%v provisioned=%d", f.dk.argvs(), f.sb.called)
+	}
+}
+
+// After a control-plane restart the project container is gone, but the diff still reads from the volume.
+func TestTaskDiff_SurvivesAMissingProjectContainer(t *testing.T) {
+	f := prFixture(t)
+	f.tm.diffOut = "diff --git a/a.go b/a.go\n+x\n"
+	f.sb.noRoute = true
+	got, err := f.r.TaskDiff(prCtx(t), f.task)
+	if err != nil || got != "diff --git a/a.go b/a.go\n+x\n" {
+		t.Fatalf("diff=%q err=%v", got, err)
+	}
+}
+
+func TestTaskDiff_TruncatesToTheBroadcastCap(t *testing.T) {
+	f := prFixture(t)
+	f.tm.diffOut = strings.Repeat("x", diffBroadcastCap+4096)
+	got, err := f.r.TaskDiff(prCtx(t), f.task)
+	if err != nil || len(got) != diffBroadcastCap {
+		t.Fatalf("len=%d err=%v, want %d", len(got), err, diffBroadcastCap)
 	}
 }
 

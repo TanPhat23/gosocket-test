@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"testing"
+	"time"
 
 	"agent-task-manager/internal/git/transfer"
 )
@@ -11,6 +12,20 @@ import (
 type mockVolumeHelper struct {
 	applyCalled  bool
 	exportCalled bool
+	// syncAge, syncFound and syncErr answer LastSyncAge; provisioned records ProvisionTaskWorktree.
+	syncAge     time.Duration
+	syncFound   bool
+	syncErr     error
+	provisioned bool
+}
+
+func (m *mockVolumeHelper) LastSyncAge(ctx context.Context, repoID, baseRef string) (time.Duration, bool, error) {
+	return m.syncAge, m.syncFound, m.syncErr
+}
+
+func (m *mockVolumeHelper) ProvisionTaskWorktree(ctx context.Context, repoID, taskID, refName string) error {
+	m.provisioned = true
+	return nil
 }
 
 func (m *mockVolumeHelper) ApplyBundleAndProvisionWorktree(ctx context.Context, repoID, taskID, refName string, bundleStream io.Reader) (string, error) {
@@ -22,6 +37,10 @@ func (m *mockVolumeHelper) ApplyBundleAndProvisionWorktree(ctx context.Context, 
 func (m *mockVolumeHelper) ExportTaskBundle(ctx context.Context, repoID, taskID string, outStream io.Writer) error {
 	m.exportCalled = true
 	_, _ = outStream.Write([]byte("# v2 git bundle\n"))
+	return nil
+}
+
+func (m *mockVolumeHelper) DiffTask(ctx context.Context, repoID, taskID, baseRef string, outStream io.Writer) error {
 	return nil
 }
 
@@ -151,4 +170,16 @@ func TestGitTransferManager_IngestAndPushRoundTrip(t *testing.T) {
 	if err == nil {
 		t.Errorf("expected error for empty auth token in push")
 	}
+}
+
+func (m *mockVolumeHelper) RemoveTaskWorkspace(ctx context.Context, repoID, taskID string) error {
+	return nil
+}
+
+func (m *mockVolumeHelper) ListWorkspaceFiles(ctx context.Context, repoID, taskID string) (transfer.WorkspaceListing, error) {
+	return transfer.WorkspaceListing{Source: "workspace"}, nil
+}
+
+func (m *mockVolumeHelper) ReadWorkspaceFile(ctx context.Context, repoID, taskID, relPath string, maxBytes int64) (*transfer.WorkspaceFile, error) {
+	return &transfer.WorkspaceFile{Path: relPath, Missing: true}, nil
 }

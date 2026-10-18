@@ -12,6 +12,8 @@ var (
 	ErrForbidden          = errors.New("insufficient permissions")
 	ErrNotFound           = errors.New("resource not found")
 	ErrServiceUnavailable = errors.New("agent execution service unavailable")
+	// ErrInvalidPath marks a request path that is not a plain relative path inside a task workspace.
+	ErrInvalidPath = errors.New("invalid path")
 )
 
 // AppError represents a typed application error carrying an HTTP status code and safe message.

@@ -249,6 +249,26 @@ func main() {
 				return steerRunner.TaskDiff(ctx, task)
 			},
 		),
+		service.WithTaskWorkspaceCleaner(func(ctx context.Context, task *models.Task) error {
+			if steerRunner == nil {
+				return errors.New("agent runner is not initialized")
+			}
+			return steerRunner.RemoveTaskWorkspace(ctx, task)
+		}),
+		service.WithTaskFileBrowser(
+			func(ctx context.Context, task *models.Task) (string, []string, error) {
+				if steerRunner == nil {
+					return "", nil, errors.New("agent runner is not initialized")
+				}
+				return steerRunner.TaskFiles(ctx, task)
+			},
+			func(ctx context.Context, task *models.Task, path string, maxBytes int64) (*runner.TaskFileContent, error) {
+				if steerRunner == nil {
+					return nil, errors.New("agent runner is not initialized")
+				}
+				return steerRunner.TaskFile(ctx, task, path, maxBytes)
+			},
+		),
 	)
 	logService := service.NewLogService(logRepo, hub)
 	integrationService := service.NewIntegrationService(integrationRepo, projectRepo, credRepo)
@@ -354,6 +374,7 @@ func main() {
 				return
 			case <-ticker.C:
 				_ = taskService.ReconcileActivePRs(prReconcileCtx)
+				_ = taskService.CleanupFinishedWorkspaces(prReconcileCtx)
 			}
 		}
 	}()

@@ -183,6 +183,8 @@ func (s *Server) setupRoutes() {
 		v1.Post("/tasks/:id/sync-pr", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.SyncPR)
 		v1.Post("/tasks/:id/pr/sync", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.SyncPR)
 		v1.Get("/tasks/:id/diff", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.GetDiff)
+		v1.Get("/tasks/:id/files", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.ListFiles)
+		v1.Get("/tasks/:id/files/content", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.ReadFile)
 
 		// OpenCode session endpoints (AC-SEC-01: Protected by RequireAuth)
 		sessionGroup := v1.Group("/tasks/:id/session", RequireAuth(s.AuthService, s.SessionManager))

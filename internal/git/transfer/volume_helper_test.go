@@ -79,3 +79,172 @@ func TestVolumeHelper_GitLFSFailClosedSentinel(t *testing.T) {
 		t.Fatalf("expected ErrGitLFSNotSupported, got: %v", err)
 	}
 }
+
+func TestVolumeHelper_DiffTaskIsReadOnlyAndOffline(t *testing.T) {
+	mockDocker := sandbox.NewMockDockerClient()
+	helper := transfer.NewVolumeTransferHelper(mockDocker, "atm-helper:latest")
+
+	var out bytes.Buffer
+	if err := helper.DiffTask(context.Background(), "repo-1", "task-1", "refs/heads/main", &out); err != nil {
+		t.Fatalf("DiffTask: %v", err)
+	}
+	if len(mockDocker.CreateCalls) != 1 {
+		t.Fatalf("expected one container, got %d", len(mockDocker.CreateCalls))
+	}
+	call := mockDocker.CreateCalls[0]
+	if call.HostConfig.NetworkMode != "none" {
+		t.Errorf("expected NetworkMode 'none', got %q", call.HostConfig.NetworkMode)
+	}
+	if len(call.HostConfig.CapDrop) != 1 || call.HostConfig.CapDrop[0] != "ALL" {
+		t.Errorf("expected CapDrop ['ALL'], got %v", call.HostConfig.CapDrop)
+	}
+	if !call.HostConfig.ReadonlyRootfs {
+		t.Errorf("expected ReadonlyRootfs to be true")
+	}
+	if call.Config.User != "1000:1000" {
+		t.Errorf("expected container User '1000:1000', got %q", call.Config.User)
+	}
+
+	volumeMounted := false
+	for _, m := range call.HostConfig.Mounts {
+		if m.Target == "/workspaces" {
+			volumeMounted = true
+			if !m.ReadOnly {
+				t.Errorf("expected the project volume to be mounted read-only")
+			}
+		}
+	}
+	if !volumeMounted {
+		t.Errorf("expected the project volume at /workspaces")
+	}
+
+	hasBase := false
+	for _, e := range call.Config.Env {
+		if e == "ATM_BASE_REF=refs/heads/main" {
+			hasBase = true
+		}
+	}
+	if !hasBase {
+		t.Errorf("expected the base ref in ATM_BASE_REF, got %v", call.Config.Env)
+	}
+	script := strings.Join(call.Config.Cmd, " ")
+	for _, want := range []string{`refs/atm/base/task-1`, `exec git`, `diff --no-ext-diff --no-textconv`} {
+		if !strings.Contains(script, want) {
+			t.Errorf("diff script missing %q", want)
+		}
+	}
+}
+
+func TestVolumeHelper_DiffTaskRejectsUnsafeBaseRefBeforeAnyContainer(t *testing.T) {
+	mockDocker := sandbox.NewMockDockerClient()
+	helper := transfer.NewVolumeTransferHelper(mockDocker, "atm-helper:latest")
+
+	err := helper.DiffTask(context.Background(), "repo-1", "task-1", "refs/heads/a..b", &bytes.Buffer{})
+	if !errors.Is(err, transfer.ErrInvalidRefName) {
+		t.Fatalf("expected ErrInvalidRefName, got %v", err)
+	}
+	if len(mockDocker.CreateCalls) != 0 {
+		t.Errorf("an invalid base ref must not start a container")
+	}
+}
+
+func TestVolumeHelper_ProvisionPinsTheBaseCommitOnce(t *testing.T) {
+	mockDocker := sandbox.NewMockDockerClient()
+	helper := transfer.NewVolumeTransferHelper(mockDocker, "atm-helper:latest")
+
+	_, _ = helper.ApplyBundleAndProvisionWorktree(context.Background(), "repo-1", "task-1", "refs/heads/main",
+		bytes.NewReader([]byte("# v2 git bundle\n")))
+	if len(mockDocker.CreateCalls) == 0 {
+		t.Fatalf("expected a provisioning container")
+	}
+	script := strings.Join(mockDocker.CreateCalls[0].Config.Cmd, " ")
+	if !strings.Contains(script, `rev-parse -q --verify "refs/atm/base/task-1"`) {
+		t.Errorf("provisioning must check for an existing base pin before writing one")
+	}
+	if !strings.Contains(script, `update-ref "refs/atm/base/task-1" "refs/heads/main"`) {
+		t.Errorf("provisioning must pin the base ref it was given")
+	}
+}
+
+// A base branch moved locally (off upstream) must not make later ingests fail as non-fast-forward.
+func TestVolumeHelper_IngestForcesTheBaseBranchFetch(t *testing.T) {
+	mockDocker := sandbox.NewMockDockerClient()
+	helper := transfer.NewVolumeTransferHelper(mockDocker, "atm-helper:latest")
+
+	_, _ = helper.ApplyBundleAndProvisionWorktree(context.Background(), "repo-1", "task-1", "refs/heads/main",
+		bytes.NewReader([]byte("# v2 git bundle\n")))
+	if len(mockDocker.CreateCalls) == 0 {
+		t.Fatalf("expected a provisioning container")
+	}
+	script := strings.Join(mockDocker.CreateCalls[0].Config.Cmd, " ")
+	if !strings.Contains(script, `fetch "$TMP_BUNDLE" "+refs/heads/main:refs/heads/main"`) {
+		t.Errorf("ingest must force the base branch fetch")
+	}
+}
+
+// Removing a worktree needs the volume writable, but the container stays offline and drops every capability. It
+// must remove the checkout and prune the registration, and it must leave the task branch and base pin alone.
+func TestVolumeHelper_RemoveTaskWorkspaceDeletesOnlyTheCheckout(t *testing.T) {
+	mockDocker := sandbox.NewMockDockerClient()
+	helper := transfer.NewVolumeTransferHelper(mockDocker, "atm-helper:latest")
+
+	if err := helper.RemoveTaskWorkspace(context.Background(), "repo-1", "task-1"); err != nil {
+		t.Fatalf("RemoveTaskWorkspace: %v", err)
+	}
+	if len(mockDocker.CreateCalls) != 1 {
+		t.Fatalf("expected one container, got %d", len(mockDocker.CreateCalls))
+	}
+	call := mockDocker.CreateCalls[0]
+	if call.HostConfig.NetworkMode != "none" || !call.HostConfig.ReadonlyRootfs {
+		t.Errorf("expected an offline, read-only root, got network=%q readonly=%v", call.HostConfig.NetworkMode, call.HostConfig.ReadonlyRootfs)
+	}
+	if len(call.HostConfig.CapDrop) != 1 || call.HostConfig.CapDrop[0] != "ALL" {
+		t.Errorf("expected CapDrop ['ALL'], got %v", call.HostConfig.CapDrop)
+	}
+	for _, m := range call.HostConfig.Mounts {
+		if m.Target == "/workspaces" && m.ReadOnly {
+			t.Errorf("worktree removal needs the volume writable")
+		}
+	}
+	script := strings.Join(call.Config.Cmd, " ")
+	for _, want := range []string{`worktree remove --force "$TASK_DIR"`, `worktree prune`, `/workspaces/repo-1/tasks/task-1`} {
+		if !strings.Contains(script, want) {
+			t.Errorf("removal script missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"branch -D", "update-ref -d", "refs/atm"} {
+		if strings.Contains(script, forbidden) {
+			t.Errorf("removal must not touch %q", forbidden)
+		}
+	}
+}
+
+func TestVolumeHelper_RemoveTaskWorkspaceRejectsBadIDsBeforeAnyContainer(t *testing.T) {
+	mockDocker := sandbox.NewMockDockerClient()
+	helper := transfer.NewVolumeTransferHelper(mockDocker, "atm-helper:latest")
+
+	if err := helper.RemoveTaskWorkspace(context.Background(), "repo-1", "../etc"); err == nil {
+		t.Fatalf("expected a path-like task ID to be rejected")
+	}
+	if len(mockDocker.CreateCalls) != 0 {
+		t.Errorf("a rejected ID must not start a container")
+	}
+}
+
+// A task whose history shares no commit with its base must still produce a diff: the script falls back to the
+// difference between the two trees when there is no merge base.
+func TestVolumeHelper_DiffTaskFallsBackToTreeDiffWithoutAMergeBase(t *testing.T) {
+	mockDocker := sandbox.NewMockDockerClient()
+	helper := transfer.NewVolumeTransferHelper(mockDocker, "atm-helper:latest")
+
+	if err := helper.DiffTask(context.Background(), "repo-1", "task-1", "refs/heads/main", &bytes.Buffer{}); err != nil {
+		t.Fatalf("DiffTask: %v", err)
+	}
+	script := strings.Join(mockDocker.CreateCalls[0].Config.Cmd, " ")
+	if !strings.Contains(script, `merge-base "$BASE_REF" "$TASK_REF"`) {
+		t.Errorf("diff must look for a merge base first")
+	}
+	if !strings.Contains(script, `diff --no-ext-diff --no-textconv --no-color "$BASE_REF" "$TASK_REF"`) {
+		t.Errorf("diff must fall back to the tree-to-tree form when there is no merge base")
+	}
+}

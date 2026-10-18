@@ -46,6 +46,9 @@ type TaskService interface {
 	GetTaskDiff(ctx context.Context, taskID, userID string) (string, error)
 	SyncTaskPRStatus(ctx context.Context, taskID, userID string) (*models.Task, error)
 	ReconcileActivePRs(ctx context.Context) error
+	CleanupFinishedWorkspaces(ctx context.Context) error
+	ListTaskFiles(ctx context.Context, taskID, userID string) (*dto.TaskFilesResponse, error)
+	ReadTaskFile(ctx context.Context, taskID, userID, path string) (*dto.TaskFileResponse, error)
 }
 
 type taskService struct {
@@ -64,6 +67,10 @@ type taskService struct {
 	steerFinalizer  SteerFinalizer
 	publishPR       PullRequestPublisher
 	readTaskDiff    TaskDiffReader
+	cleanWorkspace  WorkspaceCleaner
+	cleanedAt       sync.Map // task ID -> UpdatedAt of the state whose workspace was removed
+	listFiles       TaskFileLister
+	readFile        TaskFileReader
 	logRepo         repository.LogRepository
 	simulated       bool
 
@@ -112,6 +119,117 @@ func WithTaskPullRequestPublisher(publish PullRequestPublisher, diff TaskDiffRea
 		s.publishPR = publish
 		s.readTaskDiff = diff
 	}
+}
+
+// WorkspaceCleaner deletes a task's worktree from the project volume. The task's branch stays.
+type WorkspaceCleaner func(ctx context.Context, task *models.Task) error
+
+// WithTaskWorkspaceCleaner wires the removal of finished tasks' worktrees. Without it nothing is removed.
+func WithTaskWorkspaceCleaner(clean WorkspaceCleaner) TaskServiceOption {
+	return func(s *taskService) { s.cleanWorkspace = clean }
+}
+
+// workspaceGrace is how long a finished task keeps its worktree after its last update, so a run that is still
+// winding down is not removed from under it.
+const workspaceGrace = 10 * time.Minute
+
+// finishedTask reports whether a task has reached a state it will not run again without a retry.
+func finishedTask(status models.TaskStatus) bool {
+	return status == models.TaskStatusDone || status == models.TaskStatusCancelled || status == models.TaskStatusFailed
+}
+
+// CleanupFinishedWorkspaces removes the worktrees of finished tasks (done, cancelled or failed) once they have been
+// idle for workspaceGrace. Each state is cleaned once: a retry changes UpdatedAt, so the next finish is cleaned again.
+// Review tasks keep their worktrees so they can still be steered and diffed.
+func (s *taskService) CleanupFinishedWorkspaces(ctx context.Context) error {
+	if s.cleanWorkspace == nil {
+		return nil
+	}
+	tasks, err := s.taskRepo.List(ctx, "")
+	if err != nil {
+		return err
+	}
+	cutoff := time.Now().UTC().Add(-workspaceGrace)
+	for i := range tasks {
+		task := &tasks[i]
+		if !finishedTask(task.Status) || task.UpdatedAt.After(cutoff) {
+			continue
+		}
+		if prev, ok := s.cleanedAt.Load(task.ID); ok && prev.(time.Time).Equal(task.UpdatedAt) {
+			continue
+		}
+		if err := s.cleanWorkspace(ctx, task); err != nil {
+			log.Printf("warning: workspace cleanup failed for task %s: %v", task.ID, err)
+			continue
+		}
+		s.cleanedAt.Store(task.ID, task.UpdatedAt)
+	}
+	return nil
+}
+
+// TaskFileLister returns the source ("workspace" or "committed") and file paths of a task's workspace.
+type TaskFileLister func(ctx context.Context, task *models.Task) (source string, files []string, err error)
+
+// TaskFileReader reads up to maxBytes of one file of a task's workspace.
+type TaskFileReader func(ctx context.Context, task *models.Task, path string, maxBytes int64) (*runner.TaskFileContent, error)
+
+// taskFileMaxBytes caps how much of one file the explorer returns.
+const taskFileMaxBytes = 512 * 1024
+
+// WithTaskFileBrowser wires the workspace file explorer. Without it both reads refuse with the runtime-unavailable
+// error.
+func WithTaskFileBrowser(list TaskFileLister, read TaskFileReader) TaskServiceOption {
+	return func(s *taskService) {
+		s.listFiles = list
+		s.readFile = read
+	}
+}
+
+// ListTaskFiles lists a task's workspace files. AC-SEC-02: Requires RoleViewer or higher; an empty userID is forbidden.
+func (s *taskService) ListTaskFiles(ctx context.Context, taskID, userID string) (*dto.TaskFilesResponse, error) {
+	task, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleViewer)
+	if err != nil {
+		return nil, err
+	}
+	if s.simulated || s.listFiles == nil {
+		return nil, runner.ErrRuntimeExecutionUnavailable
+	}
+	source, files, err := s.listFiles(ctx, task)
+	if err != nil {
+		return nil, err
+	}
+	if files == nil {
+		files = []string{}
+	}
+	return &dto.TaskFilesResponse{TaskID: task.ID, Source: source, Files: files}, nil
+}
+
+// ReadTaskFile returns one file of a task's workspace, capped at taskFileMaxBytes. A path that does not name a file
+// inside the workspace is reported as not found. AC-SEC-02: Requires RoleViewer or higher.
+func (s *taskService) ReadTaskFile(ctx context.Context, taskID, userID, path string) (*dto.TaskFileResponse, error) {
+	task, err := s.authorizeUserForTask(ctx, taskID, userID, models.RoleViewer)
+	if err != nil {
+		return nil, err
+	}
+	if s.simulated || s.readFile == nil {
+		return nil, runner.ErrRuntimeExecutionUnavailable
+	}
+	file, err := s.readFile(ctx, task, path, taskFileMaxBytes)
+	if err != nil {
+		return nil, err
+	}
+	if file.Missing || file.Denied {
+		return nil, common.ErrNotFound
+	}
+	return &dto.TaskFileResponse{
+		TaskID:    task.ID,
+		Path:      file.Path,
+		Source:    file.Source,
+		Size:      file.Size,
+		Content:   string(file.Content),
+		Binary:    file.Binary,
+		Truncated: file.Truncated,
+	}, nil
 }
 
 // steerTimeout bounds one steered turn including its commit and push.

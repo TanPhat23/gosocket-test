@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -13,7 +14,15 @@ import (
 type fakeTransferMgr struct {
 	ingest *transfer.IngestRequest
 	push   *transfer.PushRequest
-	err    error
+	diff   *transfer.DiffRequest
+	remove *transfer.WorkspaceRequest
+	// listing and file answer the workspace file requests; readReq records the last read.
+	listing transfer.WorkspaceListing
+	file    *transfer.WorkspaceFile
+	readReq *transfer.WorkspaceFileRequest
+	// diffOut is written to the diff stream.
+	diffOut string
+	err     error
 	// worktree overrides the returned task worktree path (live probes).
 	worktree string
 }
@@ -32,6 +41,15 @@ func (f *fakeTransferMgr) IngestRemoteBranch(_ context.Context, r transfer.Inges
 func (f *fakeTransferMgr) ExportAndPushTask(_ context.Context, r transfer.PushRequest) (*transfer.TransferResult, error) {
 	f.push = &r
 	return &transfer.TransferResult{}, f.err
+}
+
+func (f *fakeTransferMgr) DiffTask(_ context.Context, r transfer.DiffRequest, out io.Writer) error {
+	f.diff = &r
+	if f.err != nil {
+		return f.err
+	}
+	_, _ = io.WriteString(out, f.diffOut)
+	return nil
 }
 
 func TestTaskRepoTransfer_IngestUsesProjectIDAsVolumeKey(t *testing.T) {
@@ -107,4 +125,21 @@ func TestTaskRepoTransferFromEnv(t *testing.T) {
 	if got, err := TaskRepoTransferFromEnv(env(map[string]string{"ATM_GIT_TRANSFER_ENABLED": "true", "ATM_GIT_TRANSFER_IMAGE": pinned}), cli); got == nil || err != nil {
 		t.Errorf("pinned image: want adapter, got %v,%v", got, err)
 	}
+}
+
+func (f *fakeTransferMgr) RemoveTaskWorkspace(_ context.Context, r transfer.WorkspaceRequest) error {
+	f.remove = &r
+	return f.err
+}
+
+func (f *fakeTransferMgr) ListWorkspaceFiles(_ context.Context, _ transfer.WorkspaceRequest) (transfer.WorkspaceListing, error) {
+	return f.listing, f.err
+}
+
+func (f *fakeTransferMgr) ReadWorkspaceFile(_ context.Context, r transfer.WorkspaceFileRequest) (*transfer.WorkspaceFile, error) {
+	f.readReq = &r
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.file, nil
 }

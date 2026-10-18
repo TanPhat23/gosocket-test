@@ -93,13 +93,19 @@ func (r *AgentTaskRunner) TaskDiff(ctx context.Context, task *models.Task) (stri
 	if task == nil || task.SessionID == nil || *task.SessionID == "" {
 		return "", nil
 	}
-	route, worktree, err := r.taskWorktreeInContainer(ctx, task)
-	if err != nil {
-		return "", err
-	}
 	base := "main"
 	if integ, err := r.findGitHubIntegration(ctx, task); err == nil {
 		base = integrationBaseBranch(integ)
+	}
+	// The volume helper reads the diff from the project volume, so it does not need the project container
+	// (which does not survive a control-plane restart).
+	if r.repoTransfer != nil {
+		return r.repoTransfer.TaskDiff(ctx, task.ProjectID, task.ID, base, diffBroadcastCap)
+	}
+
+	route, worktree, err := r.taskWorktreeInContainer(ctx, task)
+	if err != nil {
+		return "", err
 	}
 	raw, err := r.runGit(ctx, route.ContainerID, worktree,
 		"diff", "--no-ext-diff", "--no-textconv", "--no-color", base+"...HEAD")
@@ -110,4 +116,38 @@ func (r *AgentTaskRunner) TaskDiff(ctx context.Context, task *models.Task) (stri
 		raw = raw[:diffBroadcastCap]
 	}
 	return raw, nil
+}
+
+// RemoveTaskWorkspace deletes a finished task's worktree from the project volume. Without the git transfer
+// adapter there is no volume access, so there is nothing to remove.
+func (r *AgentTaskRunner) RemoveTaskWorkspace(ctx context.Context, task *models.Task) error {
+	if task == nil {
+		return errors.New("task is required")
+	}
+	if r.repoTransfer == nil {
+		return nil
+	}
+	return r.repoTransfer.RemoveTaskWorkspace(ctx, task.ProjectID, task.ID)
+}
+
+// TaskFiles lists the files of a task's workspace. Without the git transfer adapter there is no volume to list.
+func (r *AgentTaskRunner) TaskFiles(ctx context.Context, task *models.Task) (string, []string, error) {
+	if task == nil {
+		return "", nil, errors.New("task is required")
+	}
+	if r.repoTransfer == nil {
+		return "", nil, common.ErrServiceUnavailable
+	}
+	return r.repoTransfer.ListTaskFiles(ctx, task.ProjectID, task.ID)
+}
+
+// TaskFile reads one file of a task's workspace.
+func (r *AgentTaskRunner) TaskFile(ctx context.Context, task *models.Task, path string, maxBytes int64) (*TaskFileContent, error) {
+	if task == nil {
+		return nil, errors.New("task is required")
+	}
+	if r.repoTransfer == nil {
+		return nil, common.ErrServiceUnavailable
+	}
+	return r.repoTransfer.ReadTaskFile(ctx, task.ProjectID, task.ID, path, maxBytes)
 }

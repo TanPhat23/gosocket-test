@@ -266,3 +266,32 @@ func (h *TaskHandlers) GetDiff(c fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{"diff": diff})
 }
+
+// ListFiles handles GET /api/v1/tasks/:id/files and lists the files of the task's workspace.
+func (h *TaskHandlers) ListFiles(c fiber.Ctx) error {
+	taskID, err := parseTaskID(c)
+	if err != nil {
+		return badRequest(c, err)
+	}
+	resp, err := h.taskService.ListTaskFiles(c.Context(), taskID, currentUserID(c))
+	if err != nil {
+		return CentralErrorHandler(c, err)
+	}
+	return c.JSON(resp)
+}
+
+// ReadFile handles GET /api/v1/tasks/:id/files/content?path= and returns one file of the task's workspace.
+func (h *TaskHandlers) ReadFile(c fiber.Ctx) error {
+	taskID, err := parseTaskID(c)
+	if err != nil {
+		return badRequest(c, err)
+	}
+	resp, err := h.taskService.ReadTaskFile(c.Context(), taskID, currentUserID(c), c.Query("path"))
+	if err != nil {
+		if errors.Is(err, common.ErrInvalidPath) {
+			return badRequest(c, err)
+		}
+		return CentralErrorHandler(c, err)
+	}
+	return c.JSON(resp)
+}

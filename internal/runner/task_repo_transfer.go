@@ -1,12 +1,14 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 
+	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/git/transfer"
 	"agent-task-manager/internal/sandbox"
 )
@@ -71,6 +73,42 @@ func (t *TaskRepoTransfer) PushTaskBranch(ctx context.Context, projectID, taskID
 	return nil
 }
 
+// TaskDiff returns the task's diff against its base, read from the project volume. baseBranch is only the
+// fallback for tasks provisioned before their base was pinned. Output past maxBytes is dropped.
+func (t *TaskRepoTransfer) TaskDiff(ctx context.Context, projectID, taskID, baseBranch string, maxBytes int) (string, error) {
+	out := &cappedWriter{max: maxBytes}
+	if err := t.mgr.DiffTask(ctx, transfer.DiffRequest{
+		ProjectID: projectID, RepoID: projectID, TaskID: taskID, BaseRef: "refs/heads/" + baseBranch,
+	}, out); err != nil {
+		return "", fmt.Errorf("diff task %s: %w", taskID, err)
+	}
+	return out.buf.String(), nil
+}
+
+// RemoveTaskWorkspace deletes the task's worktree from the project volume. The branch and base pin stay.
+func (t *TaskRepoTransfer) RemoveTaskWorkspace(ctx context.Context, projectID, taskID string) error {
+	if err := t.mgr.RemoveTaskWorkspace(ctx, transfer.WorkspaceRequest{
+		ProjectID: projectID, RepoID: projectID, TaskID: taskID,
+	}); err != nil {
+		return fmt.Errorf("remove workspace of task %s: %w", taskID, err)
+	}
+	return nil
+}
+
+// cappedWriter keeps the first max bytes written to it and drops the rest. Every write reports success, so a
+// long diff is truncated rather than failing the read.
+type cappedWriter struct {
+	buf bytes.Buffer
+	max int
+}
+
+func (w *cappedWriter) Write(p []byte) (int, error) {
+	if room := w.max - w.buf.Len(); room > 0 {
+		w.buf.Write(p[:min(len(p), room)])
+	}
+	return len(p), nil
+}
+
 // TaskRepoTransferFromEnv builds the adapter when ATM_GIT_TRANSFER_ENABLED=true. It returns nil, nil
 // when the feature is off (unset or "false"), and an error, never a half-configured adapter, for an
 // invalid flag, a missing Docker client, or a ATM_GIT_TRANSFER_IMAGE that is not digest-pinned.
@@ -94,4 +132,46 @@ func TaskRepoTransferFromEnv(getenv func(string) string, cli sandbox.DockerClien
 		transfer.NewVolumeTransferHelper(cli, image),
 		transfer.NewCredentialedGitWorker(cli, image),
 	)), nil
+}
+
+// TaskFileContent is one file read from a task workspace. Missing and Denied mean the path does not name a file
+// inside the workspace. Binary files carry no Content, and Truncated files carry only their first bytes.
+type TaskFileContent struct {
+	Path      string
+	Source    string
+	Size      int64
+	Content   []byte
+	Truncated bool
+	Binary    bool
+	Missing   bool
+	Denied    bool
+}
+
+// ListTaskFiles returns the source ("workspace" or "committed") and the file paths of a task's workspace.
+func (t *TaskRepoTransfer) ListTaskFiles(ctx context.Context, projectID, taskID string) (string, []string, error) {
+	listing, err := t.mgr.ListWorkspaceFiles(ctx, transfer.WorkspaceRequest{
+		ProjectID: projectID, RepoID: projectID, TaskID: taskID,
+	})
+	if err != nil {
+		return "", nil, fmt.Errorf("list files of task %s: %w", taskID, err)
+	}
+	return listing.Source, listing.Files, nil
+}
+
+// ReadTaskFile reads up to maxBytes of one file of a task's workspace. A path that is not a plain relative path is
+// rejected with common.ErrInvalidPath before any container starts.
+func (t *TaskRepoTransfer) ReadTaskFile(ctx context.Context, projectID, taskID, path string, maxBytes int64) (*TaskFileContent, error) {
+	if err := transfer.ValidateWorkspacePath(path); err != nil {
+		return nil, fmt.Errorf("%w: %v", common.ErrInvalidPath, err)
+	}
+	file, err := t.mgr.ReadWorkspaceFile(ctx, transfer.WorkspaceFileRequest{
+		ProjectID: projectID, RepoID: projectID, TaskID: taskID, Path: path, MaxBytes: maxBytes,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read file of task %s: %w", taskID, err)
+	}
+	return &TaskFileContent{
+		Path: path, Source: file.Source, Size: file.Size, Content: file.Content,
+		Truncated: file.Truncated, Binary: file.Binary, Missing: file.Missing, Denied: file.Denied,
+	}, nil
 }

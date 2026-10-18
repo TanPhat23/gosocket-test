@@ -5,7 +5,12 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 )
+
+// baseFreshWindow is how recently the project must have been fetched for a new task to reuse that base instead of
+// fetching it again. A task started inside the window starts from a base up to this old.
+const baseFreshWindow = 5 * time.Minute
 
 type gitTransferManager struct {
 	volumeHelper VolumeHelper
@@ -32,6 +37,17 @@ func (m *gitTransferManager) IngestRemoteBranch(ctx context.Context, req IngestR
 	}
 	if req.AuthToken == "" {
 		return nil, fmt.Errorf("auth token is required")
+	}
+
+	// A base fetched moments ago is already in the project repository: only the task worktree is needed. Any doubt
+	// (a stale stamp, a missing ref, or a failed check) falls through to the full fetch below.
+	if age, found, err := m.volumeHelper.LastSyncAge(ctx, req.RepoID, req.BaseRef); err == nil && found && age < baseFreshWindow {
+		if err := m.volumeHelper.ProvisionTaskWorktree(ctx, req.RepoID, req.TaskID, req.BaseRef); err != nil {
+			return nil, fmt.Errorf("provision worktree from synced base: %w", err)
+		}
+		return &TransferResult{
+			TaskWorktreePath: fmt.Sprintf("/workspaces/%s/tasks/%s", req.RepoID, req.TaskID),
+		}, nil
 	}
 
 	// Direct in-memory stream pipe between worker and helper
@@ -130,4 +146,35 @@ func (m *gitTransferManager) ExportAndPushTask(ctx context.Context, req PushRequ
 	}
 
 	return &TransferResult{}, nil
+}
+
+// DiffTask validates the request and streams the task's diff from the volume helper.
+func (m *gitTransferManager) DiffTask(ctx context.Context, req DiffRequest, outStream io.Writer) error {
+	if err := ValidateRepoID(req.RepoID); err != nil {
+		return err
+	}
+	if err := ValidateTaskID(req.TaskID); err != nil {
+		return err
+	}
+	if err := ValidateRefName(req.BaseRef); err != nil {
+		return err
+	}
+	if err := m.volumeHelper.DiffTask(ctx, req.RepoID, req.TaskID, req.BaseRef, outStream); err != nil {
+		return fmt.Errorf("helper diff failed: %w", err)
+	}
+	return nil
+}
+
+// RemoveTaskWorkspace validates the request and deletes the task's worktree from the volume.
+func (m *gitTransferManager) RemoveTaskWorkspace(ctx context.Context, req WorkspaceRequest) error {
+	if err := ValidateRepoID(req.RepoID); err != nil {
+		return err
+	}
+	if err := ValidateTaskID(req.TaskID); err != nil {
+		return err
+	}
+	if err := m.volumeHelper.RemoveTaskWorkspace(ctx, req.RepoID, req.TaskID); err != nil {
+		return fmt.Errorf("helper workspace removal failed: %w", err)
+	}
+	return nil
 }
