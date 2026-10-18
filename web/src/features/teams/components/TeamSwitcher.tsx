@@ -2,13 +2,7 @@ import React, { useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useTeamStore, useTeamsList, useActiveTeamId } from '../store/useTeamStore';
 import { teamsQueryOptions } from '../queries';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+import { SearchableSelect } from '@/components/SearchableSelect';
 import { Users } from 'lucide-react';
 
 export const TeamSwitcher: React.FC = () => {
@@ -33,27 +27,18 @@ export const TeamSwitcher: React.FC = () => {
 
   return (
     <div className="flex items-center gap-2">
-      <Select
+      <SearchableSelect
+        items={teams.map((team) => ({ value: team.id, label: team.name }))}
         value={activeTeamId ?? ''}
-        onValueChange={(val) => {
-          if (val && typeof val === 'string') {
-            selectTeam(val);
-          }
-        }}
+        onValueChange={selectTeam}
         disabled={isLoading || teams.length === 0}
-      >
-        <SelectTrigger size="sm" className="w-[180px] bg-background/50">
-          <Users className="size-3.5 text-muted-foreground mr-1 shrink-0" />
-          <SelectValue placeholder="Select team..." />
-        </SelectTrigger>
-        <SelectContent align="start">
-          {teams.map((team) => (
-            <SelectItem key={team.id} value={team.id}>
-              {team.name}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+        placeholder="Select team..."
+        searchPlaceholder="Search teams..."
+        emptyText="No teams found."
+        icon={<Users className="size-3.5 text-muted-foreground shrink-0" />}
+        ariaLabel="Team"
+        testId="team-switcher"
+      />
     </div>
   );
 };

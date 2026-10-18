@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, waitFor } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { TeamSwitcher } from './TeamSwitcher';
 import { useTeamStore } from '../store/useTeamStore';
@@ -44,5 +44,20 @@ describe('TeamSwitcher', () => {
     );
 
     await waitFor(() => expect(getTeams).toHaveBeenCalledTimes(1));
+  });
+
+  it('shows the active team name in the trigger, not its id', () => {
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(teamsQueryOptions().queryKey, [{ id: 't1', name: 'Team One' }]);
+    useTeamStore.setState({ teams: [{ id: 't1', name: 'Team One' }] as never, activeTeamId: 't1' });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <TeamSwitcher />
+      </QueryClientProvider>
+    );
+
+    expect(screen.getByText('Team One')).toBeInTheDocument();
+    expect(screen.queryByText('t1')).not.toBeInTheDocument();
   });
 });
