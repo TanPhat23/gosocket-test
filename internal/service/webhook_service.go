@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -367,8 +368,7 @@ func (s *webhookService) HandleGitHubWebhook(ctx context.Context, payload []byte
 				}
 				taskIDCreated = task.ID
 
-				// Closing the linked GitHub issue (PAT decrypt + GitHub writes) is disabled pending
-				// Phase 1B/Gates 0C/0D/0G; see closeLinkedIssueOnMergeDisabledDraft.
+				s.closeLinkedIssueOnMerge(ctx, integration, task, pr.HTMLURL)
 			}
 		}
 	}
@@ -420,6 +420,30 @@ func (s *webhookService) requeueFailedTask(ctx context.Context, task *models.Tas
 
 	if s.queueClient != nil {
 		_, _ = s.queueClient.EnqueueTask(ctx, task)
+	}
+}
+
+// closeLinkedIssueOnMerge closes the task's linked GitHub issue and posts a completion comment. It is best
+// effort: a missing credential or a failed GitHub write is logged and does not fail the webhook.
+func (s *webhookService) closeLinkedIssueOnMerge(ctx context.Context, integration *models.ProjectIntegration, task *models.Task, prHTMLURL string) {
+	if task.ExternalID == nil || *task.ExternalID == "" || s.ghProvider == nil || s.cipher == nil || s.credRepo == nil {
+		return
+	}
+	cred, err := s.credRepo.GetByID(ctx, integration.CredentialID)
+	if err != nil {
+		log.Printf("warning: merged PR for task %s: failed to load GitHub credential: %v", task.ID, err)
+		return
+	}
+	token, err := s.cipher.Decrypt(cred.EncryptedData)
+	if err != nil {
+		log.Printf("warning: merged PR for task %s: failed to decrypt GitHub credential: %v", task.ID, err)
+		return
+	}
+	if err := s.ghProvider.UpdateIssueStatus(ctx, integration, token, *task.ExternalID, "closed"); err != nil {
+		log.Printf("warning: merged PR for task %s: failed to close issue %s: %v", task.ID, *task.ExternalID, err)
+	}
+	if err := s.ghProvider.AddComment(ctx, integration, token, *task.ExternalID, fmt.Sprintf("Pull Request %s was merged. Task marked as completed.", prHTMLURL)); err != nil {
+		log.Printf("warning: merged PR for task %s: failed to comment on issue %s: %v", task.ID, *task.ExternalID, err)
 	}
 }
 

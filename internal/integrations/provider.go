@@ -38,3 +38,16 @@ type PullRequestProvider interface {
 	CreatePullRequest(ctx context.Context, integration *models.ProjectIntegration, plainSecret string, branch, title, body string) (string, error)
 	GetPullRequestStatus(ctx context.Context, integration *models.ProjectIntegration, plainSecret string, prNumberOrURL string) (*PullRequestStatus, error)
 }
+
+// PullRequestStatusResult is the outcome of reading one pull request in a batch: Status on success, Err otherwise.
+type PullRequestStatusResult struct {
+	Status *PullRequestStatus
+	Err    error
+}
+
+// PullRequestStatusBatcher is implemented by providers that can read several pull request statuses in one
+// request. The result map is keyed by the URLs as they were passed in. A provider that does not implement it
+// is read one pull request at a time.
+type PullRequestStatusBatcher interface {
+	GetPullRequestStatuses(ctx context.Context, plainSecret string, prURLs []string) map[string]PullRequestStatusResult
+}

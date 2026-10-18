@@ -235,6 +235,20 @@ func main() {
 			_, err := steerRunner.FinalizeSteeredTurn(ctx, task, before, logf)
 			return err
 		}),
+		service.WithTaskPullRequestPublisher(
+			func(ctx context.Context, task *models.Task, logf func(string)) (string, error) {
+				if steerRunner == nil {
+					return "", errors.New("agent runner is not initialized")
+				}
+				return steerRunner.PublishTaskPullRequest(ctx, task, logf)
+			},
+			func(ctx context.Context, task *models.Task) (string, error) {
+				if steerRunner == nil {
+					return "", errors.New("agent runner is not initialized")
+				}
+				return steerRunner.TaskDiff(ctx, task)
+			},
+		),
 	)
 	logService := service.NewLogService(logRepo, hub)
 	integrationService := service.NewIntegrationService(integrationRepo, projectRepo, credRepo)

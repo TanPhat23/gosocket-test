@@ -187,8 +187,8 @@ func TestTaskService_ExecuteTask_NilRunnerFailsClosed(t *testing.T) {
 	}
 }
 
-// Item B: SyncTaskPRStatus refuses after authz without credential lookup, decrypt, or GitHub call.
-func TestTaskService_SyncTaskPRStatus_QuarantineHasNoSideEffects(t *testing.T) {
+// SyncTaskPRStatus authorizes (RoleMember) before any credential lookup or GitHub call.
+func TestTaskService_SyncTaskPRStatus_AuthorizesBeforeGitHub(t *testing.T) {
 	f := newQuarantineFixture(t)
 	task := f.createReviewTaskWithPR(t)
 	provider := &countingPRProvider{}
@@ -198,13 +198,6 @@ func TestTaskService_SyncTaskPRStatus_QuarantineHasNoSideEffects(t *testing.T) {
 	)
 	ctx := context.Background()
 
-	for _, userID := range []string{f.owner.ID} {
-		got, err := svc.SyncTaskPRStatus(ctx, task.ID, userID)
-		assertQuarantineErr(t, "userID="+userID, err)
-		if got != nil {
-			t.Errorf("userID=%q: expected nil task, got %+v", userID, got)
-		}
-	}
 	if _, err := svc.SyncTaskPRStatus(ctx, task.ID, f.viewer.ID); !errors.Is(err, common.ErrForbidden) {
 		t.Errorf("expected ErrForbidden for viewer (RoleMember required), got %v", err)
 	}
@@ -214,30 +207,56 @@ func TestTaskService_SyncTaskPRStatus_QuarantineHasNoSideEffects(t *testing.T) {
 	if _, err := svc.SyncTaskPRStatus(ctx, task.ID, ""); !errors.Is(err, common.ErrForbidden) {
 		t.Errorf("expected ErrForbidden for empty userID, got %v", err)
 	}
-	if _, err := svc.SyncTaskPRStatus(ctx, "does-not-exist", f.viewer.ID); err == nil || errors.Is(err, common.ErrRuntimeQuarantined) || errors.Is(err, common.ErrForbidden) {
+	if _, err := svc.SyncTaskPRStatus(ctx, "does-not-exist", f.viewer.ID); err == nil || errors.Is(err, common.ErrForbidden) {
 		t.Errorf("expected lookup error for unknown task, got %v", err)
 	}
 	if n := f.credRepo.getByID.Load(); n != 0 {
-		t.Errorf("expected zero credential lookups, got %d", n)
+		t.Errorf("unauthorized callers reached credential lookup: %d", n)
 	}
-	if provider.statusCalls != 0 || provider.createCalls != 0 {
-		t.Errorf("expected zero GitHub calls, got status=%d create=%d", provider.statusCalls, provider.createCalls)
+	if provider.statusCalls != 0 {
+		t.Errorf("unauthorized callers reached GitHub: %d status calls", provider.statusCalls)
+	}
+
+	// The owner passes authorization: GitHub is consulted once, and an open PR leaves the task in review.
+	got, err := svc.SyncTaskPRStatus(ctx, task.ID, f.owner.ID)
+	if err != nil || got == nil {
+		t.Fatalf("owner SyncTaskPRStatus: task=%v err=%v", got, err)
+	}
+	if provider.statusCalls != 1 {
+		t.Errorf("expected one GitHub status call, got %d", provider.statusCalls)
+	}
+	if n := f.credRepo.getByID.Load(); n != 1 {
+		t.Errorf("expected one credential lookup, got %d", n)
 	}
 	reloaded, _ := f.taskRepo.GetByID(ctx, task.ID)
 	if reloaded.Status != models.TaskStatusReview {
-		t.Errorf("task status must not change, got %s", reloaded.Status)
+		t.Errorf("open PR must leave the task in review, got %s", reloaded.Status)
 	}
 }
 
-// Item B: the reconciler is a no-op while quarantined.
-func TestTaskService_ReconcileActivePRs_QuarantineIsNoOp(t *testing.T) {
+// The reconciler marks a review task done once its PR is merged on GitHub.
+func TestTaskService_ReconcileActivePRs_MarksMergedTaskDone(t *testing.T) {
+	f := newQuarantineFixture(t)
+	task := f.createReviewTaskWithPR(t)
+	svc := service.NewTaskService(f.taskRepo, repository.NewAttemptRepository(f.db), &mockQueueClient{}, nil,
+		service.WithTaskGitHubIntegration(f.integRepo, f.credRepo, f.cipher, &mockTestPRProvider{merged: true}),
+	)
+
+	if err := svc.ReconcileActivePRs(context.Background()); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	reloaded, _ := f.taskRepo.GetByID(context.Background(), task.ID)
+	if reloaded.Status != models.TaskStatusDone {
+		t.Errorf("expected merged PR to mark the task %s, got %s", models.TaskStatusDone, reloaded.Status)
+	}
+}
+
+// Without GitHub dependencies the reconciler does nothing and does not list tasks.
+func TestTaskService_ReconcileActivePRs_UnwiredIsNoOp(t *testing.T) {
 	f := newQuarantineFixture(t)
 	task := f.createReviewTaskWithPR(t)
 	taskRepo := &countingTaskRepo{TaskRepository: f.taskRepo}
-	provider := &countingPRProvider{}
-	svc := service.NewTaskService(taskRepo, repository.NewAttemptRepository(f.db), &mockQueueClient{}, nil,
-		service.WithTaskGitHubIntegration(f.integRepo, f.credRepo, f.cipher, provider),
-	)
+	svc := service.NewTaskService(taskRepo, repository.NewAttemptRepository(f.db), &mockQueueClient{}, nil)
 
 	if err := svc.ReconcileActivePRs(context.Background()); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
@@ -245,20 +264,14 @@ func TestTaskService_ReconcileActivePRs_QuarantineIsNoOp(t *testing.T) {
 	if n := taskRepo.listCalls.Load(); n != 0 {
 		t.Errorf("expected zero task List calls, got %d", n)
 	}
-	if n := f.credRepo.getByID.Load(); n != 0 {
-		t.Errorf("expected zero credential lookups, got %d", n)
-	}
-	if provider.statusCalls != 0 {
-		t.Errorf("expected zero GitHub calls, got %d", provider.statusCalls)
-	}
 	reloaded, _ := f.taskRepo.GetByID(context.Background(), task.ID)
 	if reloaded.Status != models.TaskStatusReview {
 		t.Errorf("task status must not change, got %s", reloaded.Status)
 	}
 }
 
-// Item C: a merged-PR webhook still marks the task done but performs no GitHub writes.
-func TestHandleGitHubWebhook_PullRequestMerged_QuarantineSkipsGitHubWrites(t *testing.T) {
+// A merged-PR webhook marks the task done and closes its linked issue with the integration credential.
+func TestHandleGitHubWebhook_PullRequestMerged_ClosesLinkedIssue(t *testing.T) {
 	f := newQuarantineFixture(t)
 	task := f.createReviewTaskWithPR(t)
 	branch := "task/" + task.ID
@@ -289,11 +302,11 @@ func TestHandleGitHubWebhook_PullRequestMerged_QuarantineSkipsGitHubWrites(t *te
 	if reloaded.Status != models.TaskStatusDone {
 		t.Errorf("expected task status %s, got %s", models.TaskStatusDone, reloaded.Status)
 	}
-	if n := f.credRepo.getByID.Load(); n != 0 {
-		t.Errorf("expected zero credential lookups (no PAT decrypt), got %d", n)
+	if n := f.credRepo.getByID.Load(); n != 1 {
+		t.Errorf("expected one credential lookup for the issue close, got %d", n)
 	}
-	if u, c := sync.updateCalls.Load(), sync.commentCalls.Load(); u != 0 || c != 0 {
-		t.Errorf("expected zero GitHub writes, got update=%d comment=%d", u, c)
+	if u, c := sync.updateCalls.Load(), sync.commentCalls.Load(); u != 1 || c != 1 {
+		t.Errorf("expected the linked issue to be closed and commented once, got update=%d comment=%d", u, c)
 	}
 
 	// Idempotency is unchanged: a replay is reported as duplicate.
