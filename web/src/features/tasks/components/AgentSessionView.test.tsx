@@ -195,6 +195,24 @@ Which direction do you prefer?
   });
 });
 
+describe('subagent tool calls', () => {
+  it('reads the child session ID from the tool metadata', () => {
+    const msg = {
+      id: 'm-sub',
+      role: 'assistant',
+      content: [
+        {
+          type: 'tool',
+          tool: 'subagent',
+          state: { status: 'running', input: { description: 'review' }, metadata: { sessionId: 'ses_child_9' } },
+        },
+      ],
+    } as unknown as SessionMessage;
+
+    expect(parseSessionMessageContent(msg).toolCalls[0].session_id).toBe('ses_child_9');
+  });
+});
+
 describe('AgentSessionView Split Two-Pane Inspector', () => {
   const mockTaskId = 'task-test-split-1';
 
@@ -317,38 +335,6 @@ describe('AgentSessionView Split Two-Pane Inspector', () => {
     });
   });
 
-  it('lists subagent sessions from the session response', async () => {
-    vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue({
-      ...mockSessionData,
-      children: [{ id: 'ses_child1', title: 'explore', status: 'running' }],
-    });
-
-    render(<AgentSessionView taskId={mockTaskId} />);
-
-    await waitFor(() => {
-      expect(screen.getByTestId('session-children')).toHaveTextContent('explore · running');
-    });
-  });
-
-  it('keeps a long subagent list from taking over the panel', async () => {
-    const children = [
-      { id: 'c0', title: 'Implement Task 3: HTTP Server Integration, Origin Checks, & Graceful OS Signal Handling', status: 'running' },
-      ...Array.from({ length: 7 }, (_, i) => ({ id: `c${i + 1}`, title: `Verify Task ${i + 1}`, status: 'succeeded' })),
-    ];
-    vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue({ ...mockSessionData, children });
-
-    render(<AgentSessionView taskId={mockTaskId} />);
-
-    const strip = await screen.findByTestId('session-children');
-    expect(strip).toHaveTextContent('1 running');
-    expect(strip).toHaveTextContent('7 finished');
-    const list = screen.getByTestId('session-children-list');
-    expect(list.className).toMatch(/max-h-/);
-    expect(list.className).toMatch(/overflow-y-auto/);
-    const chip = screen.getByTitle('c0');
-    expect(chip.className).toMatch(/truncate/);
-  });
-
   it('applies snapshots pushed over the session stream', async () => {
     vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue(mockSessionData);
     const sockets: Array<{ url: string; onmessage?: (e: { data: string }) => void; close: () => void }> = [];
@@ -374,11 +360,14 @@ describe('AgentSessionView Split Two-Pane Inspector', () => {
       stream!.onmessage?.({
         data: JSON.stringify({
           type: 'session',
-          session: { ...mockSessionData, children: [{ id: 'c2', title: 'reviewer' }] },
+          session: {
+            ...mockSessionData,
+            messages: [{ id: 'frame_msg', role: 'assistant', text: 'Streamed reply from the session stream' }],
+          },
         }),
       });
       await waitFor(() => {
-        expect(screen.getByTestId('session-children')).toHaveTextContent('reviewer');
+        expect(screen.getByText('Streamed reply from the session stream')).toBeInTheDocument();
       });
     } finally {
       vi.unstubAllGlobals();
@@ -506,10 +495,10 @@ describe('AgentSessionView Split Two-Pane Inspector', () => {
     render(<AgentSessionView taskId={mockTaskId} />);
 
     await waitFor(() => {
-      expect(screen.getByText('"Fix failed step"')).toBeInTheDocument();
+      expect(screen.getByText('Fix failed step')).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByText('"Fix failed step"'));
+    fireEvent.click(screen.getByText('Fix failed step'));
 
     const steerTextarea = screen.getByTestId('steer-prompt-textarea');
     expect(steerTextarea).toHaveValue('Fix the failed step and run tests again.');
@@ -579,6 +568,123 @@ describe('AgentSessionView Split Two-Pane Inspector', () => {
     // Toggle to Raw Input view
     fireEvent.click(screen.getByTestId('toggle-input-raw-btn'));
     expect(screen.getByText(/"agent":\s*"frontend"/)).toBeInTheDocument();
+  });
+
+  it('attaches an image to the steer and sends it with the prompt', async () => {
+    const promptSpy = vi.spyOn(taskApi, 'promptTaskSession').mockResolvedValue(undefined);
+    vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue(mockSessionData);
+
+    render(<AgentSessionView taskId={mockTaskId} />);
+
+    const input = await screen.findByTestId('steer-image-input');
+    fireEvent.change(input, { target: { files: [new File(['png-bytes'], 'shot.png', { type: 'image/png' })] } });
+
+    expect(await screen.findByTestId('steer-image-list')).toHaveTextContent('');
+    expect(screen.getByAltText('shot.png')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('steer-prompt-textarea'), { target: { value: 'look at this' } });
+    fireEvent.click(screen.getByTestId('send-steer-btn'));
+
+    await waitFor(() => {
+      expect(promptSpy).toHaveBeenCalledWith(mockTaskId, 'look at this', [
+        expect.objectContaining({ mime: 'image/png', name: 'shot.png', data: btoa('png-bytes') }),
+      ]);
+    });
+  });
+
+  it('shows a running subagent card the latest step of its own child session', async () => {
+    const session: TaskSessionResponse = {
+      task_id: mockTaskId,
+      session_id: 'ses_atm_linked',
+      status: 'running',
+      model: 'gemini-3.8-flash',
+      messages: [
+        {
+          id: 'msg_parent',
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool',
+              tool: 'subagent',
+              state: {
+                status: 'running',
+                input: { agent: 'backend', description: 'Improve gosocket' },
+                metadata: { sessionId: 'ses_child_live' },
+              },
+            },
+          ],
+        },
+      ],
+      children: [
+        {
+          id: 'ses_child_live',
+          title: 'backend',
+          status: 'running',
+          messages: [
+            {
+              id: 'child_m1',
+              role: 'assistant',
+              content: [{ type: 'tool', tool: 'shell', state: { status: 'completed', input: { command: 'go test ./...' } } }],
+            },
+          ],
+        },
+      ],
+    };
+    vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue(session);
+
+    render(<AgentSessionView taskId={mockTaskId} />);
+
+    fireEvent.click(await screen.findByTestId('toggle-tool-subagent'));
+    expect(await screen.findByText('→ shell go test ./...')).toBeInTheDocument();
+    expect(screen.queryByTestId('toggle-subagents-btn')).not.toBeInTheDocument();
+  });
+
+  it('shows the activity of a finished subagent in the inspector, linked by its task description', async () => {
+    const session: TaskSessionResponse = {
+      task_id: mockTaskId,
+      session_id: 'ses_atm_done',
+      status: 'idle',
+      model: 'gemini-3.8-flash',
+      messages: [
+        {
+          id: 'msg_parent',
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool',
+              tool: 'subagent',
+              state: { status: 'completed', input: { agent: 'backend', description: 'Improve gosocket' }, output: 'Done.' },
+            },
+          ],
+        },
+      ],
+      children: [
+        {
+          id: 'ses_child_done',
+          title: 'Improve gosocket (@backend subagent)',
+          status: 'idle',
+          messages: [
+            {
+              id: 'child_m1',
+              role: 'assistant',
+              content: [{ type: 'tool', tool: 'shell', state: { status: 'completed', input: { command: 'go test ./...' } } }],
+            },
+            { id: 'child_m2', role: 'assistant', text: 'Race detector is clean.' },
+          ],
+        },
+      ],
+    };
+    vi.spyOn(taskApi, 'getTaskSession').mockResolvedValue(session);
+
+    render(<AgentSessionView taskId={mockTaskId} />);
+
+    fireEvent.click(await screen.findByTestId('tool-call-card'));
+    const timeline = await screen.findByTestId('subagent-activity');
+    expect(timeline).toHaveTextContent('go test ./...');
+    expect(timeline).toHaveTextContent('Race detector is clean.');
+
+    fireEvent.click(screen.getByText('Terminal Output (Stdout/Stderr)'));
+    expect(screen.queryByTestId('subagent-activity')).not.toBeInTheDocument();
   });
 
   it('defaults inspectorTab to input when subagent has no output yet', async () => {
