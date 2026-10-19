@@ -182,3 +182,21 @@ func (h *AuthHandlers) Me(c fiber.Ctx) error {
 		"user": dto.ToUserResponse(user),
 	})
 }
+
+// UpdateGitIdentity handles PUT /api/v1/me/git-identity. Protected by RequireAuth. It sets the author name and
+// email the caller's tasks are committed as; both empty clears it.
+func (h *AuthHandlers) UpdateGitIdentity(c fiber.Ctx) error {
+	user := CurrentUser(c)
+	if user == nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
+	}
+	req, err := bindBody[dto.GitIdentityRequest](c)
+	if err != nil {
+		return badRequest(c, err)
+	}
+	updated, err := h.authService.UpdateGitIdentity(c.Context(), user.ID, req.GitName, req.GitEmail)
+	if err != nil {
+		return CentralErrorHandler(c, err)
+	}
+	return c.JSON(fiber.Map{"user": dto.ToUserResponse(updated)})
+}

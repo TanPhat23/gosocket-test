@@ -111,6 +111,27 @@ func TestListTeams_ResultOrderAndMembershipFilter(t *testing.T) {
 	}
 }
 
+// TestListTeams_CarriesTheCallersRole pins the role field: the web UI reads it to decide whether to offer controls
+// that need an admin, and without it every member looks like a role-less user.
+func TestListTeams_CarriesTheCallersRole(t *testing.T) {
+	f := setupRouteAuthzFixture(t)
+	for who, want := range map[string]models.TeamRole{
+		"owner-a": models.RoleOwner, "admin-a": models.RoleAdmin, "member-a": models.RoleMember, "viewer-a": models.RoleViewer,
+	} {
+		code, body := f.do(t, http.MethodGet, "/api/v1/teams", nil, who)
+		var teams []struct {
+			ID   string          `json:"id"`
+			Role models.TeamRole `json:"role"`
+		}
+		if code != http.StatusOK || json.Unmarshal([]byte(body), &teams) != nil {
+			t.Fatalf("%s: GET /teams: status %d body %s", who, code, body)
+		}
+		if len(teams) != 1 || teams[0].ID != f.teamA.ID || teams[0].Role != want {
+			t.Errorf("%s: teams = %+v, want team A with role %d", who, teams, want)
+		}
+	}
+}
+
 // TestListProjects_ResultOrderAndMembershipFilter pins the project order without team_id: teams in the
 // order GET /teams returns them, and each team's projects newest first.
 func TestListProjects_ResultOrderAndMembershipFilter(t *testing.T) {

@@ -50,6 +50,10 @@ type TaskService interface {
 	ListTaskFiles(ctx context.Context, taskID, userID string) (*dto.TaskFilesResponse, error)
 	ReadTaskFile(ctx context.Context, taskID, userID, path string) (*dto.TaskFileResponse, error)
 	StartProjectRuntime(ctx context.Context, projectID, userID string) error
+	GetProjectRuntime(ctx context.Context, projectID, userID string) (*runner.ProjectRuntimeInfo, error)
+	GetProjectRuntimeLogs(ctx context.Context, projectID, userID string, tail int) (string, error)
+	StopProjectRuntime(ctx context.Context, projectID, userID string, force bool) error
+	RestartProjectRuntime(ctx context.Context, projectID, userID string, force bool) error
 }
 
 type taskService struct {
@@ -70,9 +74,12 @@ type taskService struct {
 	readTaskDiff    TaskDiffReader
 	cleanWorkspace  WorkspaceCleaner
 	cleanedAt       sync.Map // task ID -> UpdatedAt of the state whose workspace was removed
+	cleanDeps       DependencyCleaner
+	trimmedAt       sync.Map // task ID -> UpdatedAt of the review whose dependencies were removed
 	listFiles       TaskFileLister
 	readFile        TaskFileReader
 	warmRuntime     ProjectRuntimeWarmer
+	runtimeMgr      ProjectRuntimeManager
 	logRepo         repository.LogRepository
 	simulated       bool
 
@@ -131,6 +138,18 @@ func WithTaskWorkspaceCleaner(clean WorkspaceCleaner) TaskServiceOption {
 	return func(s *taskService) { s.cleanWorkspace = clean }
 }
 
+// DependencyCleaner deletes a task's node_modules from the project volume. The rest of the workspace stays.
+type DependencyCleaner func(ctx context.Context, task *models.Task) error
+
+// WithTaskDependencyCleaner wires the removal of idle review tasks' node_modules. Without it nothing is removed.
+func WithTaskDependencyCleaner(clean DependencyCleaner) TaskServiceOption {
+	return func(s *taskService) { s.cleanDeps = clean }
+}
+
+// dependencyGrace is how long a task waiting in review keeps its node_modules after its last update. The source
+// stays, so the task can still be steered and diffed; only the dependencies have to be installed again.
+const dependencyGrace = 24 * time.Hour
+
 // workspaceGrace is how long a finished task keeps its worktree after its last update, so a run that is still
 // winding down is not removed from under it.
 const workspaceGrace = 10 * time.Minute
@@ -144,17 +163,22 @@ func finishedTask(status models.TaskStatus) bool {
 // idle for workspaceGrace. Each state is cleaned once: a retry changes UpdatedAt, so the next finish is cleaned again.
 // Review tasks keep their worktrees so they can still be steered and diffed.
 func (s *taskService) CleanupFinishedWorkspaces(ctx context.Context) error {
-	if s.cleanWorkspace == nil {
+	if s.cleanWorkspace == nil && s.cleanDeps == nil {
 		return nil
 	}
 	tasks, err := s.taskRepo.List(ctx, "")
 	if err != nil {
 		return err
 	}
-	cutoff := time.Now().UTC().Add(-workspaceGrace)
+	now := time.Now().UTC()
+	cutoff := now.Add(-workspaceGrace)
+	depsCutoff := now.Add(-dependencyGrace)
 	for i := range tasks {
 		task := &tasks[i]
-		if !finishedTask(task.Status) || task.UpdatedAt.After(cutoff) {
+		if s.cleanDeps != nil && task.Status == models.TaskStatusReview && !task.UpdatedAt.After(depsCutoff) {
+			s.trimDependencies(ctx, task)
+		}
+		if s.cleanWorkspace == nil || !finishedTask(task.Status) || task.UpdatedAt.After(cutoff) {
 			continue
 		}
 		if prev, ok := s.cleanedAt.Load(task.ID); ok && prev.(time.Time).Equal(task.UpdatedAt) {
@@ -167,6 +191,18 @@ func (s *taskService) CleanupFinishedWorkspaces(ctx context.Context) error {
 		s.cleanedAt.Store(task.ID, task.UpdatedAt)
 	}
 	return nil
+}
+
+// trimDependencies removes the node_modules of one idle review task, once per review (a steer changes UpdatedAt).
+func (s *taskService) trimDependencies(ctx context.Context, task *models.Task) {
+	if prev, ok := s.trimmedAt.Load(task.ID); ok && prev.(time.Time).Equal(task.UpdatedAt) {
+		return
+	}
+	if err := s.cleanDeps(ctx, task); err != nil {
+		log.Printf("warning: dependency cleanup failed for task %s: %v", task.ID, err)
+		return
+	}
+	s.trimmedAt.Store(task.ID, task.UpdatedAt)
 }
 
 // TaskFileLister returns the source ("workspace" or "committed") and file paths of a task's workspace.
@@ -482,6 +518,7 @@ func (s *taskService) CreateTask(ctx context.Context, req *dto.CreateTaskRequest
 		MCPServers:   models.StringArray(req.MCPServers),
 		SessionID:    &sessionID,
 		Status:       models.TaskStatusQueued,
+		CreatedByID:  &userID,
 	}
 
 	if err := models.Validate.Struct(task); err != nil {

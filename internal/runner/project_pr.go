@@ -130,6 +130,18 @@ func (r *AgentTaskRunner) RemoveTaskWorkspace(ctx context.Context, task *models.
 	return r.repoTransfer.RemoveTaskWorkspace(ctx, task.ProjectID, task.ID)
 }
 
+// RemoveTaskDependencies deletes an idle task's node_modules from the project volume. Without the git transfer
+// adapter there is no volume access, so there is nothing to remove.
+func (r *AgentTaskRunner) RemoveTaskDependencies(ctx context.Context, task *models.Task) error {
+	if task == nil {
+		return errors.New("task is required")
+	}
+	if r.repoTransfer == nil {
+		return nil
+	}
+	return r.repoTransfer.RemoveTaskDependencies(ctx, task.ProjectID, task.ID)
+}
+
 // TaskFiles lists the files of a task's workspace. Without the git transfer adapter there is no volume to list.
 func (r *AgentTaskRunner) TaskFiles(ctx context.Context, task *models.Task) (string, []string, error) {
 	if task == nil {

@@ -20,6 +20,10 @@ type User struct {
 	Subject     string    `gorm:"type:text;not null;uniqueIndex:idx_users_issuer_subject,priority:2" json:"subject" validate:"required"`
 	Email       string    `gorm:"type:text" json:"email,omitempty" validate:"omitempty,email"`
 	DisplayName string    `gorm:"type:text" json:"display_name,omitempty" validate:"omitempty,max=100"`
+	// GitName and GitEmail are the author the user's tasks are committed as. Both are set or both empty; empty
+	// means the commits carry the control plane's own identity.
+	GitName  string `gorm:"type:text" json:"git_name,omitempty"`
+	GitEmail string `gorm:"type:text" json:"git_email,omitempty"`
 	// SessionsValidAfter revokes session cookies issued before it (set by logout); nil revokes nothing.
 	SessionsValidAfter *time.Time `gorm:"type:timestamptz" json:"-"`
 }

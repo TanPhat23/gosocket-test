@@ -172,6 +172,10 @@ func TestGitTransferManager_IngestAndPushRoundTrip(t *testing.T) {
 	}
 }
 
+func (m *mockVolumeHelper) RemoveTaskDependencies(ctx context.Context, repoID, taskID string) error {
+	return nil
+}
+
 func (m *mockVolumeHelper) RemoveTaskWorkspace(ctx context.Context, repoID, taskID string) error {
 	return nil
 }

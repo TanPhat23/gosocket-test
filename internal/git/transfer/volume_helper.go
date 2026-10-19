@@ -357,7 +357,6 @@ func (h *volumeTransferHelper) RemoveTaskWorkspace(ctx context.Context, repoID, 
 		return err
 	}
 
-	volumeName := sandbox.ProjectDataVolumeName(repoID)
 	removeScript := fmt.Sprintf(`
 set -eu
 REPO_DIR="/workspaces/%s/repository.git"
@@ -368,12 +367,36 @@ fi
 git -C "$REPO_DIR" -c core.hooksPath=/dev/null worktree prune
 `, repoID, repoID, taskID)
 
+	return h.runVolumeScript(ctx, repoID, removeScript, "workspace cleanup")
+}
+
+// RemoveTaskDependencies deletes the task's node_modules and nothing else. It is idempotent.
+func (h *volumeTransferHelper) RemoveTaskDependencies(ctx context.Context, repoID, taskID string) error {
+	if err := ValidateRepoID(repoID); err != nil {
+		return err
+	}
+	if err := ValidateTaskID(taskID); err != nil {
+		return err
+	}
+
+	script := fmt.Sprintf(`
+set -eu
+rm -rf "/workspaces/%s/tasks/%s/node_modules"
+`, repoID, taskID)
+
+	return h.runVolumeScript(ctx, repoID, script, "dependency cleanup")
+}
+
+// runVolumeScript runs script in an offline, capability-less helper container with the project volume writable.
+func (h *volumeTransferHelper) runVolumeScript(ctx context.Context, repoID, script, what string) error {
+	volumeName := sandbox.ProjectDataVolumeName(repoID)
+
 	containerCfg := &container.Config{
 		Image:        h.imageTag,
 		User:         "1000:1000",
 		AttachStdout: true,
 		AttachStderr: true,
-		Cmd:          []string{"/bin/sh", "-c", removeScript},
+		Cmd:          []string{"/bin/sh", "-c", script},
 	}
 
 	hostCfg := &container.HostConfig{
@@ -394,7 +417,7 @@ git -C "$REPO_DIR" -c core.hooksPath=/dev/null worktree prune
 		},
 	}
 
-	return h.runCapturedHelper(ctx, containerCfg, hostCfg, io.Discard, "workspace cleanup")
+	return h.runCapturedHelper(ctx, containerCfg, hostCfg, io.Discard, what)
 }
 
 // LastSyncAge reports how long ago the project was last fetched from its remote. found is false when the project

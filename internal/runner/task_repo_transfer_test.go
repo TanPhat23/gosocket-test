@@ -12,10 +12,11 @@ import (
 )
 
 type fakeTransferMgr struct {
-	ingest *transfer.IngestRequest
-	push   *transfer.PushRequest
-	diff   *transfer.DiffRequest
-	remove *transfer.WorkspaceRequest
+	ingest     *transfer.IngestRequest
+	push       *transfer.PushRequest
+	diff       *transfer.DiffRequest
+	remove     *transfer.WorkspaceRequest
+	removeDeps *transfer.WorkspaceRequest
 	// listing and file answer the workspace file requests; readReq records the last read.
 	listing transfer.WorkspaceListing
 	file    *transfer.WorkspaceFile
@@ -125,6 +126,11 @@ func TestTaskRepoTransferFromEnv(t *testing.T) {
 	if got, err := TaskRepoTransferFromEnv(env(map[string]string{"ATM_GIT_TRANSFER_ENABLED": "true", "ATM_GIT_TRANSFER_IMAGE": pinned}), cli); got == nil || err != nil {
 		t.Errorf("pinned image: want adapter, got %v,%v", got, err)
 	}
+}
+
+func (f *fakeTransferMgr) RemoveTaskDependencies(_ context.Context, r transfer.WorkspaceRequest) error {
+	f.removeDeps = &r
+	return f.err
 }
 
 func (f *fakeTransferMgr) RemoveTaskWorkspace(_ context.Context, r transfer.WorkspaceRequest) error {

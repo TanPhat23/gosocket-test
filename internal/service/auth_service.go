@@ -43,6 +43,8 @@ type AuthService interface {
 	RevokeSessions(ctx context.Context, userID string) error
 	AuthenticatePAT(ctx context.Context, rawToken string) (*models.User, *models.APIToken, error)
 	AuthorizeTeamRole(ctx context.Context, teamID, userID string, requiredRole models.TeamRole) (models.TeamRole, error)
+	// UpdateGitIdentity sets the author name and email the user's tasks are committed as; both empty clears it.
+	UpdateGitIdentity(ctx context.Context, userID, name, email string) (*models.User, error)
 }
 
 type authService struct {
@@ -233,6 +235,17 @@ func (s *authService) LoginWithCredentials(ctx context.Context, email, password 
 }
 
 func (s *authService) GetUserByID(ctx context.Context, userID string) (*models.User, error) {
+	return s.userRepo.GetByID(ctx, userID)
+}
+
+func (s *authService) UpdateGitIdentity(ctx context.Context, userID, name, email string) (*models.User, error) {
+	name, email, err := NormalizeGitIdentity(name, email)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.userRepo.Update(ctx, &models.User{ID: userID}, map[string]any{"git_name": name, "git_email": email}); err != nil {
+		return nil, err
+	}
 	return s.userRepo.GetByID(ctx, userID)
 }
 

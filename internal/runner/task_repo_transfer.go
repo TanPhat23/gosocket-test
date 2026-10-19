@@ -95,6 +95,16 @@ func (t *TaskRepoTransfer) RemoveTaskWorkspace(ctx context.Context, projectID, t
 	return nil
 }
 
+// RemoveTaskDependencies deletes the task's node_modules from the project volume and leaves the rest of its workspace.
+func (t *TaskRepoTransfer) RemoveTaskDependencies(ctx context.Context, projectID, taskID string) error {
+	if err := t.mgr.RemoveTaskDependencies(ctx, transfer.WorkspaceRequest{
+		ProjectID: projectID, RepoID: projectID, TaskID: taskID,
+	}); err != nil {
+		return fmt.Errorf("remove dependencies of task %s: %w", taskID, err)
+	}
+	return nil
+}
+
 // cappedWriter keeps the first max bytes written to it and drops the rest. Every write reports success, so a
 // long diff is truncated rather than failing the read.
 type cappedWriter struct {

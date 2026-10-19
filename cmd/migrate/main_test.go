@@ -31,7 +31,7 @@ func seedTestDB(t *testing.T) *gorm.DB {
 	for _, stmt := range []string{
 		`CREATE TABLE teams (id TEXT PRIMARY KEY, created_at DATETIME, updated_at DATETIME, name TEXT NOT NULL, slug TEXT NOT NULL)`,
 		`CREATE TABLE projects (id TEXT PRIMARY KEY, created_at DATETIME, updated_at DATETIME, team_id TEXT NOT NULL, name TEXT NOT NULL, repo_path TEXT NOT NULL, runtime_config TEXT NOT NULL DEFAULT '{}')`,
-		`CREATE TABLE users (id TEXT PRIMARY KEY, created_at DATETIME, updated_at DATETIME, issuer TEXT NOT NULL, subject TEXT NOT NULL, email TEXT, display_name TEXT, sessions_valid_after DATETIME)`,
+		`CREATE TABLE users (id TEXT PRIMARY KEY, created_at DATETIME, updated_at DATETIME, issuer TEXT NOT NULL, subject TEXT NOT NULL, email TEXT, display_name TEXT, git_name TEXT, git_email TEXT, sessions_valid_after DATETIME)`,
 		`CREATE TABLE team_memberships (team_id TEXT, user_id TEXT, created_at DATETIME, updated_at DATETIME, role INTEGER, PRIMARY KEY (team_id, user_id))`,
 	} {
 		if err := db.Exec(stmt).Error; err != nil {

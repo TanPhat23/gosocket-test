@@ -147,6 +147,12 @@ func TestProjectRuntimeFromEnv_BuildsAndProvisions(t *testing.T) {
 	if err != nil || rt == nil || rt.Manager == nil || rt.Builder == nil {
 		t.Fatalf("want a runtime, got %v, %v", rt, err)
 	}
+	// The container's agent service is probed before the route is handed out; the mock has nothing to answer it.
+	mgr := rt.Manager.(*projectSandboxManager)
+	if mgr.readyProbe == nil {
+		t.Fatal("the assembled manager must wait for the agent service to be ready")
+	}
+	mgr.readyProbe = func(context.Context, string, string) error { return nil }
 	_, err = rt.Manager.EnsureProjectContainer(context.Background(), &models.Project{ID: "p1"}, "img")
 	if err != nil {
 		t.Fatalf("want provisioning to succeed, got %v", err)
@@ -166,6 +172,7 @@ func TestProjectRuntimeFromEnv_DraftProvisionsOnlyAfterFirewallProof(t *testing.
 		t.Fatal(err)
 	}
 	m := rt.Manager.(*projectSandboxManager)
+	m.readyProbe = func(context.Context, string, string) error { return nil }
 	if _, err := m.ensureProjectContainer(context.Background(), &models.Project{ID: "p1"}, "img"); err != nil {
 		t.Fatal(err)
 	}

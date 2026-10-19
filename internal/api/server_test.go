@@ -131,6 +131,8 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		subject TEXT NOT NULL,
 		email TEXT,
 		display_name TEXT,
+		git_name TEXT,
+		git_email TEXT,
 		sessions_valid_after DATETIME
 	)`).Error
 	if err != nil {

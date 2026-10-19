@@ -137,7 +137,8 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		status TEXT NOT NULL,
 		assignee_type TEXT NOT NULL DEFAULT 'agent',
 		priority INTEGER NOT NULL DEFAULT 50,
-		parent_task_id TEXT
+		parent_task_id TEXT,
+		created_by_id TEXT
 	)`).Error
 	if err != nil {
 		t.Fatalf("failed to create tasks table: %v", err)

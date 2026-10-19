@@ -31,9 +31,29 @@ func NewTeamHandlers(teamRepo repository.TeamRepository, projectRepo repository.
 	}
 }
 
+// teamWithRole is a team as the caller sees it: the team's own fields plus the caller's role on it, so a client
+// can decide which controls to offer without a second request.
+type teamWithRole struct {
+	models.Team
+	Role models.TeamRole `json:"role"`
+}
+
 // memberTeams returns the teams on which userID holds at least RoleViewer, limited to ctx's PAT team
 // scope.
 func (h *TeamHandlers) memberTeams(ctx context.Context, userID string) ([]models.Team, error) {
+	withRoles, err := h.memberTeamsWithRoles(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	teams := make([]models.Team, len(withRoles))
+	for i := range withRoles {
+		teams[i] = withRoles[i].Team
+	}
+	return teams, nil
+}
+
+// memberTeamsWithRoles is memberTeams with the caller's role on each team.
+func (h *TeamHandlers) memberTeamsWithRoles(ctx context.Context, userID string) ([]teamWithRole, error) {
 	if h.teamRepo == nil {
 		return nil, common.ErrServiceUnavailable
 	}
@@ -51,7 +71,7 @@ func (h *TeamHandlers) memberTeams(ctx context.Context, userID string) ([]models
 	for i := range memberships {
 		roles[memberships[i].TeamID] = memberships[i].Role
 	}
-	visible := []models.Team{}
+	visible := []teamWithRole{}
 	for i := range teams {
 		if !auth.TeamAllowed(ctx, teams[i].ID) {
 			continue
@@ -61,7 +81,7 @@ func (h *TeamHandlers) memberTeams(ctx context.Context, userID string) ([]models
 			continue
 		}
 		if auth.HasRolePermission(role, models.RoleViewer) {
-			visible = append(visible, teams[i])
+			visible = append(visible, teamWithRole{Team: teams[i], Role: role})
 		}
 	}
 	return visible, nil
@@ -128,7 +148,7 @@ func (h *TeamHandlers) ListTeams(c fiber.Ctx) error {
 	if user == nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
-	teams, err := h.memberTeams(c.Context(), user.ID)
+	teams, err := h.memberTeamsWithRoles(c.Context(), user.ID)
 	if err != nil {
 		return CentralErrorHandler(c, err)
 	}

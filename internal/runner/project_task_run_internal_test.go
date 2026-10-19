@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/config"
 	"agent-task-manager/internal/crypto"
 	"agent-task-manager/internal/integrations"
@@ -157,6 +158,8 @@ type ptrOC struct {
 	bound    string
 	updated  time.Time
 	status   string
+	// unavailable is how many prompts are refused with ErrServiceUnavailable before one is accepted.
+	unavailable int
 
 	mu         sync.Mutex
 	childPolls int
@@ -176,6 +179,10 @@ func (o *ptrOC) GetSession(_ context.Context, id string) (*OpenCodeSessionDTO, e
 }
 
 func (o *ptrOC) PromptSession(_ context.Context, _, p string) error {
+	if o.unavailable > 0 {
+		o.unavailable--
+		return common.ErrServiceUnavailable
+	}
 	o.prompts = append(o.prompts, p)
 	o.updated = o.updated.Add(time.Second)
 	o.status = o.outcomes[len(o.prompts)-1]
@@ -296,6 +303,173 @@ func TestProjectTaskRun_HappyPathCommitsPushesAndOpensPR(t *testing.T) {
 	}
 	if f.task.BranchName == nil || *f.task.BranchName != "task/t1" {
 		t.Fatalf("branch not recorded")
+	}
+}
+
+func TestProjectTaskRun_PutsTheWorktreeBackOnTheTaskBranchBeforeCommitting(t *testing.T) {
+	f := newPtrFixture(t, []string{"succeeded"}, []int{0}, true)
+	if err := f.run(t); err != nil {
+		t.Fatal(err)
+	}
+
+	checkout, commit := -1, -1
+	for i, argv := range f.dk.calls {
+		joined := strings.Join(argv, " ")
+		if strings.Contains(joined, "checkout -q -B task/t1") {
+			checkout = i
+		}
+		if strings.Contains(joined, " commit -q") {
+			commit = i
+		}
+	}
+	if checkout < 0 || commit < 0 || checkout > commit {
+		t.Fatalf("checkout at %d, commit at %d; the worktree must be on task/t1 before the commit", checkout, commit)
+	}
+}
+
+func TestProjectTaskRun_PushesWorkTheAgentCommittedItself(t *testing.T) {
+	f := newPtrFixture(t, []string{"succeeded"}, []int{0}, false)
+	handler := f.dk.handler
+	revParses := 0
+	f.dk.handler = func(argv []string) (int, string) {
+		if strings.Contains(strings.Join(argv, " "), "rev-parse") {
+			revParses++
+			if revParses > 1 {
+				return 0, "agentcommit\n" // HEAD moved past the base: the agent committed on its own
+			}
+		}
+		return handler(argv)
+	}
+
+	if err := f.run(t); err != nil {
+		t.Fatal(err)
+	}
+	if f.dk.ran(" commit -q") {
+		t.Fatal("nothing was staged, so the runner must not commit")
+	}
+	if f.tm.push == nil || f.pr.n != 1 {
+		t.Fatalf("push %+v prs %d, want the agent's own commits pushed", f.tm.push, f.pr.n)
+	}
+}
+
+type ptrUserRepo struct {
+	repository.UserRepository
+	user *models.User
+}
+
+func (u ptrUserRepo) GetByID(context.Context, string) (*models.User, error) {
+	if u.user == nil {
+		return nil, errors.New("not found")
+	}
+	return u.user, nil
+}
+
+func (f *ptrFixture) creator(u *models.User) {
+	id := "u1"
+	f.task.CreatedByID = &id
+	f.r.userRepo = ptrUserRepo{user: u}
+}
+
+func (d *ptrDocker) commitArgv() string {
+	for _, c := range d.argvs() {
+		if strings.Contains(c, " commit -q -m ") {
+			return c
+		}
+	}
+	return ""
+}
+
+func TestProjectTaskRun_CommitsAsTheCreatorsGitIdentity(t *testing.T) {
+	f := newPtrFixture(t, []string{"succeeded"}, []int{0}, true)
+	f.creator(&models.User{GitName: "Jane Dev", GitEmail: "jane@example.com"})
+	if err := f.run(t); err != nil {
+		t.Fatal(err)
+	}
+	got := f.dk.commitArgv()
+	for _, want := range []string{"GIT_AUTHOR_NAME=Jane Dev", "GIT_AUTHOR_EMAIL=jane@example.com", "GIT_COMMITTER_NAME=Jane Dev", "GIT_COMMITTER_EMAIL=jane@example.com"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("commit %q lacks %q", got, want)
+		}
+	}
+}
+
+func TestProjectTaskRun_CommitsAsTheControlPlaneWithoutACreatorIdentity(t *testing.T) {
+	for name, setup := range map[string]func(*ptrFixture){
+		"creator set none": func(f *ptrFixture) { f.creator(&models.User{}) },
+		"creator missing":  func(f *ptrFixture) { f.creator(nil) },
+		"no creator":       func(*ptrFixture) {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newPtrFixture(t, []string{"succeeded"}, []int{0}, true)
+			setup(f)
+			if err := f.run(t); err != nil {
+				t.Fatal(err)
+			}
+			got := f.dk.commitArgv()
+			if !strings.Contains(got, "GIT_AUTHOR_NAME=Agent Task Manager") || !strings.Contains(got, "GIT_AUTHOR_EMAIL=agent@task-manager.invalid") {
+				t.Errorf("commit %q is not under the control plane identity", got)
+			}
+		})
+	}
+}
+
+func TestProjectTaskRun_RewritesCommitsMadeUnderAnotherIdentity(t *testing.T) {
+	f := newPtrFixture(t, []string{"succeeded"}, []int{0}, true)
+	f.creator(&models.User{GitName: "Jane Dev", GitEmail: "jane@example.com"})
+	inner := f.dk.handler
+	f.dk.handler = func(argv []string) (int, string) {
+		if strings.Contains(strings.Join(argv, " "), "log --format") {
+			return 0, "Jane Dev\tjane@example.com\tJane Dev\tjane@example.com\nAntigravity\tantigravity@google.com\tAntigravity\tantigravity@google.com\n"
+		}
+		return inner(argv)
+	}
+	if err := f.run(t); err != nil {
+		t.Fatal(err)
+	}
+	var rewrite string
+	for _, c := range f.dk.argvs() {
+		if strings.Contains(c, "filter-branch") {
+			rewrite = c
+		}
+	}
+	for _, want := range []string{"ATM_GIT_NAME=Jane Dev", "ATM_GIT_EMAIL=jane@example.com", "basesha..HEAD"} {
+		if !strings.Contains(rewrite, want) {
+			t.Errorf("rewrite %q lacks %q", rewrite, want)
+		}
+	}
+	if !f.dk.ran("update-ref -d refs/original/refs/heads/task/t1") {
+		t.Errorf("the pre-rewrite backup ref was not removed: %v", f.dk.argvs())
+	}
+	// The identity reaches the filter as environment, so it cannot be mistaken for script.
+	if strings.Contains(rewrite, "--env-filter GIT_AUTHOR_NAME=\"Jane") {
+		t.Error("the identity was spliced into the filter script")
+	}
+}
+
+func TestProjectTaskRun_KeepsHistoryWhoseIdentityAlreadyMatches(t *testing.T) {
+	f := newPtrFixture(t, []string{"succeeded"}, []int{0}, true)
+	inner := f.dk.handler
+	f.dk.handler = func(argv []string) (int, string) {
+		if strings.Contains(strings.Join(argv, " "), "log --format") {
+			return 0, "Agent Task Manager\tagent@task-manager.invalid\tAgent Task Manager\tagent@task-manager.invalid\n"
+		}
+		return inner(argv)
+	}
+	if err := f.run(t); err != nil {
+		t.Fatal(err)
+	}
+	if f.dk.ran("filter-branch") {
+		t.Errorf("history that already matches was rewritten: %v", f.dk.argvs())
+	}
+}
+
+func TestProjectTaskRun_ClearsAnIdentityTheAgentLeftInTheRepoConfig(t *testing.T) {
+	f := newPtrFixture(t, []string{"succeeded"}, []int{0}, true)
+	if err := f.run(t); err != nil {
+		t.Fatal(err)
+	}
+	if !f.dk.ran("config --local --unset-all user.name") || !f.dk.ran("config --local --unset-all user.email") {
+		t.Fatalf("expected the repo's user.name and user.email to be cleared, got %v", f.dk.argvs())
 	}
 }
 
@@ -562,5 +736,25 @@ func TestInjectConfigScript_WritesFilesAndKeepsThemOutOfGitStatus(t *testing.T) 
 	out, err := exec.Command("git", "-C", dir, "status", "--porcelain").Output()
 	if err != nil || strings.TrimSpace(string(out)) != "" {
 		t.Fatalf("injected files are visible to git add -A: %q %v", out, err)
+	}
+}
+
+func TestProjectTaskRun_WaitsOutAnAgentServiceThatIsStillStarting(t *testing.T) {
+	f := newPtrFixture(t, []string{"succeeded"}, []int{0}, true)
+	f.oc.unavailable = 2
+	if err := f.run(t); err != nil {
+		t.Fatalf("a slow-starting agent service failed the task: %v", err)
+	}
+	if len(f.oc.prompts) != 1 {
+		t.Fatalf("prompts = %d, want the one accepted prompt", len(f.oc.prompts))
+	}
+}
+
+func TestProjectTaskRun_GivesUpWhenTheAgentServiceStaysDown(t *testing.T) {
+	f := newPtrFixture(t, []string{"succeeded"}, []int{0}, true)
+	f.oc.unavailable = promptStartupAttempts
+	err := f.run(t)
+	if !errors.Is(err, common.ErrServiceUnavailable) || !strings.Contains(err.Error(), "failed to prompt session") {
+		t.Fatalf("err = %v, want a failed-to-prompt error wrapping ErrServiceUnavailable", err)
 	}
 }

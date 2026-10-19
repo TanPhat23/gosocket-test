@@ -43,6 +43,10 @@ type GitTransferManager interface {
 	// task branch and its base pin stay in the shared repository.
 	RemoveTaskWorkspace(ctx context.Context, req WorkspaceRequest) error
 
+	// RemoveTaskDependencies deletes only the task's node_modules, keeping its checkout, git state and uncommitted
+	// edits, so an idle task stops holding the largest part of its workspace.
+	RemoveTaskDependencies(ctx context.Context, req WorkspaceRequest) error
+
 	// ListWorkspaceFiles lists the files of a task's workspace (its working tree, or its committed branch).
 	ListWorkspaceFiles(ctx context.Context, req WorkspaceRequest) (WorkspaceListing, error)
 	// ReadWorkspaceFile reads one file of a task's workspace, capped at MaxBytes.
@@ -126,6 +130,7 @@ type VolumeHelper interface {
 	ExportTaskBundle(ctx context.Context, repoID, taskID string, outStream io.Writer) error
 	DiffTask(ctx context.Context, repoID, taskID, baseRef string, outStream io.Writer) error
 	RemoveTaskWorkspace(ctx context.Context, repoID, taskID string) error
+	RemoveTaskDependencies(ctx context.Context, repoID, taskID string) error
 
 	// LastSyncAge reports how long ago the project was last fetched; found is false when the base must be fetched.
 	LastSyncAge(ctx context.Context, repoID, baseRef string) (age time.Duration, found bool, err error)

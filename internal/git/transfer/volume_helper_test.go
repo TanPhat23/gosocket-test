@@ -219,6 +219,35 @@ func TestVolumeHelper_RemoveTaskWorkspaceDeletesOnlyTheCheckout(t *testing.T) {
 	}
 }
 
+// Trimming dependencies is offline and removes node_modules only: no worktree or branch operation.
+func TestVolumeHelper_RemoveTaskDependenciesDeletesOnlyNodeModules(t *testing.T) {
+	mockDocker := sandbox.NewMockDockerClient()
+	helper := transfer.NewVolumeTransferHelper(mockDocker, "atm-helper:latest")
+
+	if err := helper.RemoveTaskDependencies(context.Background(), "repo-1", "task-1"); err != nil {
+		t.Fatalf("RemoveTaskDependencies: %v", err)
+	}
+	if len(mockDocker.CreateCalls) != 1 {
+		t.Fatalf("expected one container, got %d", len(mockDocker.CreateCalls))
+	}
+	call := mockDocker.CreateCalls[0]
+	if call.HostConfig.NetworkMode != "none" || !call.HostConfig.ReadonlyRootfs {
+		t.Errorf("expected an offline, read-only root, got network=%q readonly=%v", call.HostConfig.NetworkMode, call.HostConfig.ReadonlyRootfs)
+	}
+	script := strings.Join(call.Config.Cmd, " ")
+	if !strings.Contains(script, `rm -rf "/workspaces/repo-1/tasks/task-1/node_modules"`) {
+		t.Errorf("script must remove the task's node_modules, got %q", script)
+	}
+	for _, forbidden := range []string{"worktree", "branch", "update-ref", "git "} {
+		if strings.Contains(script, forbidden) {
+			t.Errorf("dependency removal must not run %q", forbidden)
+		}
+	}
+	if err := helper.RemoveTaskDependencies(context.Background(), "repo-1", "../etc"); err == nil || len(mockDocker.CreateCalls) != 1 {
+		t.Errorf("a path-like task ID must be rejected before any container starts")
+	}
+}
+
 func TestVolumeHelper_RemoveTaskWorkspaceRejectsBadIDsBeforeAnyContainer(t *testing.T) {
 	mockDocker := sandbox.NewMockDockerClient()
 	helper := transfer.NewVolumeTransferHelper(mockDocker, "atm-helper:latest")

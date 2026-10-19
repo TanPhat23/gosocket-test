@@ -51,6 +51,8 @@ func setupTestDB(t *testing.T) *gorm.DB {
 			subject TEXT NOT NULL,
 			email TEXT,
 			display_name TEXT,
+			git_name TEXT,
+			git_email TEXT,
 			sessions_valid_after DATETIME
 		);
 		CREATE TABLE team_memberships (
@@ -128,7 +130,8 @@ func setupTestDB(t *testing.T) *gorm.DB {
 			status TEXT NOT NULL,
 			assignee_type TEXT NOT NULL DEFAULT 'agent',
 			priority INTEGER NOT NULL DEFAULT 50,
-			parent_task_id TEXT
+			parent_task_id TEXT,
+			created_by_id TEXT
 		);
 		CREATE TABLE task_attempts (
 			id TEXT PRIMARY KEY,

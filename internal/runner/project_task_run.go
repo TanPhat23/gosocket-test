@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/models"
 	"agent-task-manager/internal/sandbox"
 
@@ -28,6 +29,10 @@ const (
 	containerExecOutputCap = 256 << 10
 	diffBroadcastCap       = 1 << 20
 	defaultSessionPoll     = 2 * time.Second
+	// promptStartupAttempts bounds how often a prompt is re-sent while the agent service in a freshly started
+	// container still answers "unavailable"; the wait between tries doubles from promptStartupBackoff.
+	promptStartupAttempts = 5
+	promptStartupBackoff  = time.Second
 )
 
 // hardenedGit prefixes every in-container git call: no hooks and no fsmonitor from an agent-writable repo.
@@ -115,6 +120,15 @@ func (r *AgentTaskRunner) runGitStatus(ctx context.Context, containerID, dir str
 	return execInContainer(ctx, r.dockerCli, containerID, dir, argv)
 }
 
+// clearAgentGitIdentity removes a user.name and user.email that an earlier agent run wrote into the project's
+// shared repo config. Best effort: the container environment already fixes the identity of new commits.
+func (r *AgentTaskRunner) clearAgentGitIdentity(ctx context.Context, containerID, worktree string) {
+	for _, key := range []string{"user.name", "user.email"} {
+		// Exit code 5 only means the key was not set.
+		_, _ = r.runGitStatus(ctx, containerID, worktree, "config", "--local", "--unset-all", key)
+	}
+}
+
 // detectContainerVerifyCommand mirrors DetectVerificationCommand but reads the in-container worktree.
 // ATM_VERIFY_CMD overrides detection, as on the host.
 func (r *AgentTaskRunner) detectContainerVerifyCommand(ctx context.Context, containerID, dir string) (string, error) {
@@ -133,6 +147,32 @@ func (r *AgentTaskRunner) detectContainerVerifyCommand(ctx context.Context, cont
 		return "", fmt.Errorf("verification detection exited with code %d", res.ExitCode)
 	}
 	return strings.TrimSpace(res.Output), nil
+}
+
+// promptWithStartupRetry sends the prompt, and while the agent service reports itself unavailable (it can still be
+// starting right after the container comes up) waits and tries again, so a slow start is not recorded as a failed
+// task. Any other error, and the last unavailable error, is returned as is.
+func (r *AgentTaskRunner) promptWithStartupRetry(ctx context.Context, oc OpenCodeClient, sessionID, prompt string) error {
+	backoff := promptStartupBackoff
+	if r.sessionPoll > 0 {
+		backoff = r.sessionPoll
+	}
+	var err error
+	for attempt := 1; attempt <= promptStartupAttempts; attempt++ {
+		if err = oc.PromptSession(ctx, sessionID, prompt); !errors.Is(err, common.ErrServiceUnavailable) {
+			return err
+		}
+		if attempt == promptStartupAttempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+	}
+	return err
 }
 
 // waitForSessionOutcome polls the container's OpenCode session until it reports a terminal outcome that is
@@ -395,6 +435,12 @@ func (r *AgentTaskRunner) runTaskInProjectContainer(ctx context.Context, task *m
 		return err
 	}
 
+	if r.seedTaskDependencies(ctx, route.ContainerID, worktree) {
+		r.broadcastLog(ctx, task.ID, attempt.ID, "\x1b[36m[Agent Control Plane]\x1b[0m Reusing the project's cached node_modules.\r\n")
+	}
+
+	r.clearAgentGitIdentity(ctx, route.ContainerID, worktree)
+
 	baseSHA, err := r.runGit(ctx, route.ContainerID, worktree, "rev-parse", "HEAD")
 	if err != nil {
 		return err
@@ -429,7 +475,7 @@ func (r *AgentTaskRunner) runTaskInProjectContainer(ctx context.Context, task *m
 			before = sess.UpdatedAt
 		}
 		stopStream := r.startSessionStream(ctx, oc, task.ID, attempt.ID, sessionID, streamSince, streamSeen)
-		if err := oc.PromptSession(ctx, sessionID, prompt); err != nil {
+		if err := r.promptWithStartupRetry(ctx, oc, sessionID, prompt); err != nil {
 			stopStream()
 			return fmt.Errorf("failed to prompt session: %w", err)
 		}
@@ -467,6 +513,18 @@ func (r *AgentTaskRunner) runTaskInProjectContainer(ctx context.Context, task *m
 		prompt = FormatVerificationFeedbackPrompt(iteration, maxIterations, vRes.Output)
 	}
 
+	if err := r.publishTaskDependencies(ctx, route.ContainerID, worktree); err != nil {
+		r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[33m[Agent Control Plane] Could not cache node_modules: %v\x1b[0m\r\n", err))
+	}
+
+	// The agent has a shell in this worktree and may switch branches or merge into main, which would leave
+	// task/<id> missing for the export. Put the worktree back on the task branch; its commits and files stay.
+	if _, err := r.runGit(ctx, route.ContainerID, worktree, "checkout", "-q", "-B", branch); err != nil {
+		return err
+	}
+
+	identity := r.taskGitIdentity(ctx, task)
+
 	// Commit whatever the agent left, so the transfer helper can export task/<id> from the volume.
 	if _, err := r.runGit(ctx, route.ContainerID, worktree, "add", "-A"); err != nil {
 		return err
@@ -477,20 +535,30 @@ func (r *AgentTaskRunner) runTaskInProjectContainer(ctx context.Context, task *m
 	}
 	switch staged.ExitCode {
 	case 0:
-		r.broadcastLog(ctx, task.ID, attempt.ID, "\x1b[33m[Agent Control Plane]\x1b[0m The agent made no changes; nothing to push.\r\n")
-		return nil
+		head, err := r.runGit(ctx, route.ContainerID, worktree, "rev-parse", "HEAD")
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(head) == baseSHA {
+			r.broadcastLog(ctx, task.ID, attempt.ID, "\x1b[33m[Agent Control Plane]\x1b[0m The agent made no changes; nothing to push.\r\n")
+			return nil
+		}
+		// The agent committed its work itself, so there is nothing left to commit.
 	case 1:
+		msg := task.Title
+		if msg == "" {
+			msg = "Task " + task.ID
+		}
+		if _, err := r.runGitAs(ctx, route.ContainerID, worktree, identity, "commit", "-q", "-m", msg); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("git diff --cached exited with code %d", staged.ExitCode)
 	}
-	msg := task.Title
-	if msg == "" {
-		msg = "Task " + task.ID
-	}
-	if _, err := r.runGit(ctx, route.ContainerID, worktree,
-		"-c", "user.name=Agent Task Manager", "-c", "user.email=agent@task-manager.invalid",
-		"commit", "-q", "-m", msg); err != nil {
-		return err
+	if rewrote, err := r.alignCommitIdentity(ctx, route.ContainerID, worktree, baseSHA, branch, identity); err != nil {
+		return fmt.Errorf("could not set the commit author: %w", err)
+	} else if rewrote {
+		r.broadcastLog(ctx, task.ID, attempt.ID, fmt.Sprintf("\x1b[36m[Agent Control Plane]\x1b[0m Commits on the task branch now carry %s <%s>.\r\n", identity.name, identity.email))
 	}
 
 	numstat, err := r.runGit(ctx, route.ContainerID, worktree, "diff", "--no-ext-diff", "--no-textconv", "--numstat", baseSHA, "HEAD")

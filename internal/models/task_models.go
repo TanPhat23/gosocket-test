@@ -10,6 +10,8 @@ type Task struct {
 	UpdatedAt     time.Time    `gorm:"type:timestamptz;not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
 	HeartbeatAt   *time.Time   `gorm:"type:timestamptz" json:"heartbeat_at,omitempty"`
 	IntegrationID *string      `gorm:"type:uuid;index:idx_tasks_integration" json:"integration_id,omitempty"`
+	// CreatedByID is the user who created the task; tasks from webhooks have none.
+	CreatedByID   *string      `gorm:"type:uuid" json:"created_by_id,omitempty"`
 	ParentTaskID  *string      `gorm:"type:uuid;index:idx_tasks_parent" json:"parent_task_id,omitempty" validate:"omitempty,uuid"`
 	AsynqTaskID   *string      `gorm:"type:text;index:idx_tasks_asynq_id" json:"asynq_task_id,omitempty"`
 	SessionID     *string      `gorm:"type:text;index:idx_tasks_session" json:"session_id,omitempty"`

@@ -121,6 +121,7 @@ func ProjectRuntimeFromEnv(
 		gatewayURL:   gwURL,
 		gw:           &GatewayAccess{Broker: broker, Models: models, ContextTokens: ctxTokens, OutputTokens: outTokens},
 		routes:       make(map[string]*ProjectRouteHandle),
+		readyProbe:   defaultReadyProbe,
 		egressVerify: func(ctx context.Context, network string) error {
 			return sandbox.VerifyEgressFirewall(ctx, cli, sandbox.EgressVerifyConfig{
 				Image: image, Network: network, Control: control, Canaries: canaries,

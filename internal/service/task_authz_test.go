@@ -314,6 +314,9 @@ func TestTaskAuthz_CreateTask(t *testing.T) {
 	if err != nil || created == nil || f.taskCount(t) != before+1 || f.queue.enqueues.Load() != 1 {
 		t.Fatalf("member create failed: %+v / %v", created, err)
 	}
+	if created.CreatedByID == nil || *created.CreatedByID != f.memberA.ID {
+		t.Errorf("created_by_id = %v, want the creating user %s", created.CreatedByID, f.memberA.ID)
+	}
 }
 
 func TestTaskAuthz_CreateTask_ParentAndIntegrationMustMatchProject(t *testing.T) {

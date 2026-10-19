@@ -158,6 +158,7 @@ func (s *Server) setupRoutes() {
 	authGroup.Get("/callback", authHandlers.Callback)
 	authGroup.Post("/logout", trustedOrigin, authHandlers.Logout)
 	authGroup.Get("/me", authHandlers.Me)
+	v1.Put("/me/git-identity", RequireAuth(s.AuthService, s.SessionManager), trustedOrigin, authHandlers.UpdateGitIdentity)
 
 	// Webhook endpoint
 	v1.Post("/webhooks/:provider", webhookHandlers.HandleWebhook)
@@ -185,6 +186,15 @@ func (s *Server) setupRoutes() {
 		if s.ProjectRepo != nil {
 			v1.Post("/projects/:id/runtime", RequireAuth(s.AuthService, s.SessionManager),
 				RequireProjectRole(s.AuthService, s.ProjectRepo, "id", models.RoleMember), taskHandlers.StartProjectRuntime)
+			// Container management: state and logs for members; stop and restart need an admin.
+			v1.Get("/projects/:id/runtime", RequireAuth(s.AuthService, s.SessionManager),
+				RequireProjectRole(s.AuthService, s.ProjectRepo, "id", models.RoleMember), taskHandlers.GetProjectRuntime)
+			v1.Get("/projects/:id/runtime/logs", RequireAuth(s.AuthService, s.SessionManager),
+				RequireProjectRole(s.AuthService, s.ProjectRepo, "id", models.RoleMember), taskHandlers.GetProjectRuntimeLogs)
+			v1.Post("/projects/:id/runtime/stop", RequireAuth(s.AuthService, s.SessionManager),
+				RequireProjectRole(s.AuthService, s.ProjectRepo, "id", models.RoleAdmin), taskHandlers.StopProjectRuntime)
+			v1.Post("/projects/:id/runtime/restart", RequireAuth(s.AuthService, s.SessionManager),
+				RequireProjectRole(s.AuthService, s.ProjectRepo, "id", models.RoleAdmin), taskHandlers.RestartProjectRuntime)
 		}
 		v1.Post("/tasks/:id/pr/sync", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.SyncPR)
 		v1.Get("/tasks/:id/diff", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.GetDiff)

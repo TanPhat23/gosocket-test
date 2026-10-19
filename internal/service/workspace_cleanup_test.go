@@ -160,3 +160,45 @@ func TestCleanupFinishedWorkspaces_UnwiredRemovesNothing(t *testing.T) {
 		t.Fatalf("unwired sweep: %v", err)
 	}
 }
+
+func TestCleanupFinishedWorkspaces_TrimsDependenciesOfIdleReviewTasksOnce(t *testing.T) {
+	ctx := context.Background()
+	db := setupTestDB(t)
+	taskRepo := repository.NewTaskRepository(db)
+	team := &models.Team{ID: common.NewID(), Name: "Deps Team"}
+	db.Create(team)
+	project := &models.Project{ID: common.NewID(), TeamID: team.ID, Name: "Deps Project"}
+	db.Create(project)
+
+	mk := func(status models.TaskStatus, age time.Duration) *models.Task {
+		task := &models.Task{
+			ID: common.NewID(), ProjectID: project.ID, Title: "Deps", Prompt: "p",
+			Status: status, Priority: models.PriorityNormal,
+			Skills: models.StringArray{}, MCPServers: models.StringArray{},
+		}
+		db.Create(task)
+		db.Model(task).Update("updated_at", time.Now().UTC().Add(-age))
+		return task
+	}
+	staleReview := mk(models.TaskStatusReview, 25*time.Hour)
+	freshReview := mk(models.TaskStatusReview, time.Hour)
+	staleRunning := mk(models.TaskStatusInProgress, 48*time.Hour)
+
+	rec := &cleanerRecorder{}
+	svc := service.NewTaskService(taskRepo, repository.NewAttemptRepository(db), &mockQueueClient{}, nil,
+		service.WithTaskDependencyCleaner(rec.clean))
+
+	for i := 0; i < 2; i++ {
+		if err := svc.CleanupFinishedWorkspaces(ctx); err != nil {
+			t.Fatalf("CleanupFinishedWorkspaces: %v", err)
+		}
+	}
+	if len(rec.calls) != 1 || !rec.cleaned(staleReview.ID) {
+		t.Fatalf("calls = %v, want only the stale review task, once", rec.calls)
+	}
+	for _, skip := range []*models.Task{freshReview, staleRunning} {
+		if rec.cleaned(skip.ID) {
+			t.Errorf("%s task %s must keep its node_modules", skip.Status, skip.ID)
+		}
+	}
+}

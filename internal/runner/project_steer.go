@@ -98,9 +98,9 @@ func (r *AgentTaskRunner) FinalizeSteeredTurn(ctx context.Context, task *models.
 		msg = "Task " + task.ID
 	}
 	msg += " (steered)"
-	if _, err := r.runGit(ctx, route.ContainerID, worktree,
-		"-c", "user.name=Agent Task Manager", "-c", "user.email=agent@task-manager.invalid",
-		"commit", "-q", "-m", msg); err != nil {
+	// Only this commit is made under the creator's identity: earlier commits may already be pushed, and rewriting
+	// them would make the next push a non-fast-forward.
+	if _, err := r.runGitAs(ctx, route.ContainerID, worktree, r.taskGitIdentity(ctx, task), "commit", "-q", "-m", msg); err != nil {
 		return nil, err
 	}
 	numstat, err := r.runGit(ctx, route.ContainerID, worktree, "diff", "--no-ext-diff", "--no-textconv", "--numstat", prevHead, "HEAD")

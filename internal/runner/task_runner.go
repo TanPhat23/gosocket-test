@@ -77,6 +77,11 @@ func WithRunnerRuntimeImage(resolver RuntimeResolver, builder RuntimeImageBuilde
 	}
 }
 
+// WithRunnerUserRepo lets the runner read a task creator's git identity, which their commits are made under.
+func WithRunnerUserRepo(repo repository.UserRepository) RunnerOption {
+	return func(r *AgentTaskRunner) { r.userRepo = repo }
+}
+
 // WithRunnerWorkspaceManager sets the workspace manager for in-container worktree provisioning.
 func WithRunnerWorkspaceManager(mgr WorkspaceManager) RunnerOption {
 	return func(r *AgentTaskRunner) {
@@ -96,6 +101,7 @@ type AgentTaskRunner struct {
 	hub               *ws.Hub
 	integRepo         repository.IntegrationRepository
 	credRepo          repository.CredentialRepository
+	userRepo          repository.UserRepository
 	cipher            *crypto.SecretCipher
 	ghProvider        integrations.PullRequestProvider
 	openCodeClient    OpenCodeClient

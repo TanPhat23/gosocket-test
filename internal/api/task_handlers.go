@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"strconv"
 
 	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/dto"
@@ -304,6 +305,42 @@ func (h *TaskHandlers) StartProjectRuntime(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "project id is required"})
 	}
 	if err := h.taskService.StartProjectRuntime(c.Context(), projectID, currentUserID(c)); err != nil {
+		return CentralErrorHandler(c, err)
+	}
+	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{"status": "starting"})
+}
+
+// GetProjectRuntime handles GET /api/v1/projects/:id/runtime: the state of the project's container.
+func (h *TaskHandlers) GetProjectRuntime(c fiber.Ctx) error {
+	info, err := h.taskService.GetProjectRuntime(c.Context(), c.Params("id"), currentUserID(c))
+	if err != nil {
+		return CentralErrorHandler(c, err)
+	}
+	return c.JSON(info)
+}
+
+// GetProjectRuntimeLogs handles GET /api/v1/projects/:id/runtime/logs?tail=N: the container's recent output.
+func (h *TaskHandlers) GetProjectRuntimeLogs(c fiber.Ctx) error {
+	tail, _ := strconv.Atoi(c.Query("tail"))
+	logs, err := h.taskService.GetProjectRuntimeLogs(c.Context(), c.Params("id"), currentUserID(c), tail)
+	if err != nil {
+		return CentralErrorHandler(c, err)
+	}
+	return c.JSON(fiber.Map{"logs": logs})
+}
+
+// StopProjectRuntime handles POST /api/v1/projects/:id/runtime/stop. Tasks still running need ?force=true (409 else).
+func (h *TaskHandlers) StopProjectRuntime(c fiber.Ctx) error {
+	if err := h.taskService.StopProjectRuntime(c.Context(), c.Params("id"), currentUserID(c), c.Query("force") == "true"); err != nil {
+		return CentralErrorHandler(c, err)
+	}
+	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{"status": "stopping"})
+}
+
+// RestartProjectRuntime handles POST /api/v1/projects/:id/runtime/restart; same rules as stop. The start is in the
+// background, so the answer is 202.
+func (h *TaskHandlers) RestartProjectRuntime(c fiber.Ctx) error {
+	if err := h.taskService.RestartProjectRuntime(c.Context(), c.Params("id"), currentUserID(c), c.Query("force") == "true"); err != nil {
 		return CentralErrorHandler(c, err)
 	}
 	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{"status": "starting"})

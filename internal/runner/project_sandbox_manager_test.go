@@ -292,6 +292,10 @@ func TestProjectSandboxManager_HostAuth(t *testing.T) {
 	expectedEnv := []string{
 		"OPENCODE_SERVER_HOST=0.0.0.0",
 		"OPENCODE_SERVER_PORT=4096",
+		"GIT_AUTHOR_NAME=Agent Task Manager",
+		"GIT_AUTHOR_EMAIL=agent@task-manager.invalid",
+		"GIT_COMMITTER_NAME=Agent Task Manager",
+		"GIT_COMMITTER_EMAIL=agent@task-manager.invalid",
 	}
 	for _, expected := range expectedEnv {
 		found := false

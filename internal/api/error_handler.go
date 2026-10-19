@@ -69,6 +69,11 @@ func CentralErrorHandler(c fiber.Ctx, err error) error {
 			statusCode = fiber.StatusUnauthorized
 			clientMessage = err.Error()
 
+		// 409 Conflict
+		case errors.Is(err, service.ErrRuntimeBusy):
+			statusCode = fiber.StatusConflict
+			clientMessage = err.Error()
+
 		// 429 Too Many Requests
 		case err.Error() == "github api rate limit exceeded":
 			statusCode = fiber.StatusTooManyRequests

@@ -165,6 +165,20 @@ func (m *gitTransferManager) DiffTask(ctx context.Context, req DiffRequest, outS
 	return nil
 }
 
+// RemoveTaskDependencies validates the request and deletes the task's node_modules from the volume.
+func (m *gitTransferManager) RemoveTaskDependencies(ctx context.Context, req WorkspaceRequest) error {
+	if err := ValidateRepoID(req.RepoID); err != nil {
+		return err
+	}
+	if err := ValidateTaskID(req.TaskID); err != nil {
+		return err
+	}
+	if err := m.volumeHelper.RemoveTaskDependencies(ctx, req.RepoID, req.TaskID); err != nil {
+		return fmt.Errorf("helper dependency removal failed: %w", err)
+	}
+	return nil
+}
+
 // RemoveTaskWorkspace validates the request and deletes the task's worktree from the volume.
 func (m *gitTransferManager) RemoveTaskWorkspace(ctx context.Context, req WorkspaceRequest) error {
 	if err := ValidateRepoID(req.RepoID); err != nil {

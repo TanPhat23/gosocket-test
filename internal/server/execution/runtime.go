@@ -99,6 +99,7 @@ func BuildTaskRuntime(
 		log.Printf("dev host-auth project runtime configured (host OpenCode authentication mounted into container sandboxes)")
 	}
 
+	runnerOpts = append(runnerOpts, runner.WithRunnerUserRepo(repos.User))
 	agentRunner := runner.NewAgentTaskRunner(
 		cfg,
 		repos.Project,

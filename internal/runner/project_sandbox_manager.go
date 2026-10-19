@@ -39,6 +39,22 @@ const opencodeStateDir = "/var/lib/opencode"
 // task shell and unsets the OpenCode password and gateway token, which OpenCode itself needs in its own environment.
 const taskShellScrubFile = "/usr/local/lib/atm-scrub.sh"
 
+// Every commit made in a project container is attributed to the control plane. The agent can set its own git
+// identity (one wrote "Antigravity <antigravity@google.com>" into the shared repo config, and GitHub then showed
+// the stranger who owns that address as the author), so the identity is fixed in the environment, which git
+// prefers over any config value.
+const (
+	gitAgentName  = "Agent Task Manager"
+	gitAgentEmail = "agent@task-manager.invalid"
+)
+
+func gitIdentityEnv() []string {
+	return []string{
+		"GIT_AUTHOR_NAME=" + gitAgentName, "GIT_AUTHOR_EMAIL=" + gitAgentEmail,
+		"GIT_COMMITTER_NAME=" + gitAgentName, "GIT_COMMITTER_EMAIL=" + gitAgentEmail,
+	}
+}
+
 // ErrQuarantineActive is returned by EnsureProjectContainer while project container
 // provisioning is disabled. It wraps common.ErrRuntimeQuarantined.
 var ErrQuarantineActive = fmt.Errorf("%w", common.ErrRuntimeQuarantined)
@@ -280,6 +296,7 @@ func (m *projectSandboxManager) ensureProjectContainer(ctx context.Context, proj
 	// The root filesystem is read-only: OpenCode's data, config, cache and logs (XDG dirs under $HOME) must
 	// land on the state volume, otherwise it exits at startup with a FileSystem.makeDirectory error.
 	env = append(env, "OPENCODE_SERVER_PORT=4096", "HOME="+opencodeStateDir, "BASH_ENV="+taskShellScrubFile)
+	env = append(env, gitIdentityEnv()...)
 	if m.devHostAuth.Enabled {
 		env = append(env, "OPENCODE_SERVER_HOST=0.0.0.0")
 	}
