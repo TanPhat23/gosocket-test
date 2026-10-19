@@ -17,7 +17,7 @@ interface SessionInfoBarProps {
   onRefresh: () => void;
 }
 
-const ghostButton = 'h-7 gap-1.5 px-2 text-xs text-muted-foreground hover:text-foreground';
+const ghostButton = 'h-7 gap-1.5 px-1.5 sm:px-2 text-xs text-muted-foreground hover:text-foreground';
 
 function TokenMetrics({ session }: { session: TaskSessionResponse | null }) {
   const pill = 'font-mono text-[10px] px-2 py-0.5';
@@ -93,7 +93,7 @@ export function SessionInfoBar({ session, sessionId, showStatus, loading, contro
             <span className="hidden font-semibold text-foreground sm:inline">Session Info</span>
             <Badge
               variant="secondary"
-              className="max-w-[160px] select-all truncate bg-muted/60 font-mono text-[10px] text-muted-foreground sm:max-w-xs"
+              className="max-w-[6.5rem] select-all truncate bg-muted/60 font-mono text-[10px] text-muted-foreground sm:max-w-xs"
               title={sessionId}
               data-testid="session-id-display"
               onClick={(e) => e.stopPropagation()}
@@ -102,8 +102,8 @@ export function SessionInfoBar({ session, sessionId, showStatus, loading, contro
             </Badge>
           </div>
 
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+          <div className="flex shrink-0 items-center gap-1">
+            <div className="flex items-center gap-0.5 sm:gap-1.5" onClick={(e) => e.stopPropagation()}>
               <Button
                 type="button"
                 variant="ghost"
@@ -150,7 +150,7 @@ export function SessionInfoBar({ session, sessionId, showStatus, loading, contro
 
         <div className="p-3 pt-0 border-t border-border/60 space-y-2 mt-1">
           <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="text-muted-foreground text-[11px] uppercase tracking-wider font-semibold">Model:</span>
               <span className="font-mono text-xs">{session?.model || 'default'}</span>
               {sessionId !== 'Unavailable' && <CopySessionIdButton sessionId={sessionId} />}

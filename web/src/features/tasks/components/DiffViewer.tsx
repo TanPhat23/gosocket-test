@@ -97,8 +97,8 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
   return (
     <div className="flex flex-col h-full w-full rounded-lg border border-border bg-card overflow-hidden">
       {/* Top Review Bar */}
-      <div className="flex items-center justify-between gap-3 p-3 bg-muted/40 border-b border-border">
-        <div className="flex items-center gap-3 min-w-0">
+      <div className="flex flex-col gap-2 p-3 bg-muted/40 border-b border-border sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 min-w-0">
           <FileCode2 className="size-4 text-primary shrink-0" />
           <span className="font-semibold text-xs tracking-tight truncate">Code Review &amp; Pull Request Diff</span>
           <div className="flex items-center gap-1.5 text-xs font-mono shrink-0">
@@ -110,7 +110,7 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
           </Badge>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center gap-2 sm:shrink-0">
           {isMerged && prUrl ? (
             <a
               href={prUrl}
@@ -166,9 +166,9 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
       </div>
 
       {/* Main Diff Content: Sidebar + Editor */}
-      <div className="flex flex-1 min-h-[350px] overflow-hidden">
+      <div className="flex flex-1 min-h-[350px] flex-col overflow-y-auto md:flex-row md:overflow-hidden">
         {/* Left: Changed files */}
-        <div className="w-64 border-r border-border bg-muted/20 flex flex-col shrink-0">
+        <div className="max-h-44 w-full shrink-0 border-b border-border bg-muted/20 flex flex-col md:max-h-none md:w-64 md:border-b-0 md:border-r">
           <div className="p-2 border-b border-border/50 text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
             Changed Files
           </div>
@@ -201,12 +201,12 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
         </div>
 
         {/* Right: the selected file's diff in the editor */}
-        <div className="flex-1 flex flex-col overflow-hidden bg-background min-w-0">
+        <div className="min-h-[320px] flex-1 flex flex-col overflow-hidden bg-background min-w-0">
           {activeFile ? (
             <>
-              <div className="p-2.5 px-4 bg-muted/30 border-b border-border/50 flex items-center justify-between text-xs">
-                <span className="font-mono font-medium text-foreground">{activeFile.newPath}</span>
-                <div className="flex items-center gap-2 text-xs font-mono text-muted-foreground">
+              <div className="p-2.5 px-3 sm:px-4 gap-2 bg-muted/30 border-b border-border/50 flex items-center justify-between text-xs">
+                <span className="min-w-0 truncate font-mono font-medium text-foreground" title={activeFile.newPath}>{activeFile.newPath}</span>
+                <div className="flex shrink-0 items-center gap-2 text-xs font-mono text-muted-foreground">
                   <span className="text-emerald-600 dark:text-emerald-400">+{activeFile.additions}</span>
                   <span className="text-rose-600 dark:text-rose-400">-{activeFile.deletions}</span>
                 </div>

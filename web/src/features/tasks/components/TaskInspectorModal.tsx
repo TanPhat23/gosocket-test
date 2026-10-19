@@ -190,16 +190,16 @@ export const TaskInspectorModal: React.FC<TaskInspectorModalProps> = ({
     <Dialog open={isOpen} onOpenChange={handleOpenChange}>
       <DialogContent className="w-full h-full max-h-screen rounded-none p-3 sm:rounded-xl sm:p-6 sm:w-[96vw] sm:max-w-[1680px] sm:h-[92vh] sm:max-h-[94vh] flex flex-col">
         <DialogHeader className="pb-3 border-b border-border">
-          <div className="flex items-center justify-between gap-4 pr-6">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-mono text-muted-foreground">
+          <div className="flex flex-col gap-2 pr-6 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="shrink-0 text-xs font-mono text-muted-foreground">
                 #{task.id.slice(0, 8)}
               </span>
-              <DialogTitle className="text-base font-semibold truncate max-w-lg">
+              <DialogTitle className="min-w-0 text-base font-semibold truncate sm:max-w-lg">
                 {task.title}
               </DialogTitle>
             </div>
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex flex-wrap items-center gap-2 sm:shrink-0">
               {/* GitHub Issue Link */}
               {task.external_url ? (
                 <a
@@ -268,13 +268,13 @@ export const TaskInspectorModal: React.FC<TaskInspectorModalProps> = ({
 
         {/* Actions Bar for Tasks (Only shown when PR error or PR action is available) */}
         {(prError || (isCompleted && !prLink) || prLink) && (
-          <div className="flex items-center justify-between gap-3 p-2.5 rounded-lg border border-border bg-muted/20">
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <div className="flex flex-col gap-2 p-2.5 rounded-lg border border-border bg-muted/20 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+            <div className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
               <span className="font-medium text-foreground">Task Workflow:</span>
               <span>Status is <strong className="text-foreground">{task.status}</strong></span>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {/* PR Action: completed and no PR yet */}
               {isCompleted && !prLink && (
                 <Button

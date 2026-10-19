@@ -22,10 +22,10 @@ export function AssistantMessage({ msg, msgIdx, parsed, hasSubsequentUserMessage
 
   return (
     <div className="flex justify-start gap-3" data-testid="assistant-message">
-      <div className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+      <div className="mt-0.5 hidden size-7 sm:flex shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
         <Bot className="size-4" />
       </div>
-      <div className="min-w-0 max-w-[92%] flex-1 space-y-2.5 text-sm">
+      <div className="min-w-0 max-w-full flex-1 sm:max-w-[92%] space-y-2.5 text-sm">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
           <span className="font-semibold text-foreground">{msg.agent ? `Agent (${msg.agent})` : 'Assistant'}</span>
           {msg.model && <span className="rounded bg-muted/60 px-1.5 py-px font-mono text-[10px]">{msg.model}</span>}

@@ -103,7 +103,7 @@ export const AgentSessionView: React.FC<AgentSessionViewProps> = ({ taskId, defa
                 <div
                   ref={scroll.containerRef}
                   onScroll={scroll.handleScroll}
-                  className="flex-1 overflow-y-auto px-4 py-5 space-y-5"
+                  className="flex-1 overflow-y-auto px-3 py-4 space-y-5 sm:px-4 sm:py-5"
                   data-testid="session-transcript-container"
                 >
                   <SessionTranscriptMessages transcript={transcript} endRef={scroll.endRef} />

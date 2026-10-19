@@ -22,7 +22,7 @@ export function UserMessage({ rawText, timeString }: UserMessageProps) {
 
   return (
     <div className="flex justify-end" data-testid="user-message">
-      <div className="max-w-[85%] space-y-1">
+      <div className="max-w-[92%] space-y-1 sm:max-w-[85%]">
         <div className="rounded-2xl rounded-br-md border border-primary/20 bg-primary/10 px-3.5 py-2.5 text-sm leading-relaxed text-foreground">
           <Markdown content={prompt} />
 
