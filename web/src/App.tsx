@@ -7,8 +7,7 @@ import { useTeamStore, useActiveProjectId } from '@/features/teams/store/useTeam
 import { useTaskSubscription } from '@/features/tasks/hooks/useTaskSubscription';
 import { tasksQueryOptions } from '@/features/tasks/queries';
 import { teamsQueryOptions } from '@/features/teams/queries';
-import { AppSidebar } from '@/components/layout/AppSidebar';
-import { Header } from '@/components/layout/Header';
+import { AppShell } from '@/components/layout/AppShell';
 import { Footer } from '@/components/layout/Footer';
 import { WorkspaceControlBar } from '@/features/tasks/components/WorkspaceControlBar';
 import { KanbanBoard } from '@/features/tasks/components/KanbanBoard';
@@ -64,31 +63,23 @@ export const WorkspaceView: React.FC = () => {
   useTaskSubscription();
 
   return (
-    <div className="h-screen bg-background text-foreground flex overflow-hidden font-sans">
-      {/* Left Sidebar */}
-      <AppSidebar />
+    <AppShell>
+      {/* Main Workspace */}
+      <div className="flex-1 w-full px-6 py-6 flex flex-col gap-6">
+        {/* Workspace Control Panel with Project/Model Selectors, Live Filters, and New Task */}
+        <WorkspaceControlBar />
 
-      {/* Main Area */}
-      <div className="flex-1 flex flex-col h-full overflow-y-auto">
-        <Header />
+        {/* 4-Lane Kanban Board */}
+        <section className="flex-1 flex flex-col gap-3">
+          <KanbanBoard />
+        </section>
 
-        {/* Main Workspace */}
-        <main className="flex-1 w-full px-6 py-6 flex flex-col gap-6">
-          {/* Workspace Control Panel with Project/Model Selectors, Live Filters, and New Task */}
-          <WorkspaceControlBar />
-
-          {/* 4-Lane Kanban Board */}
-          <section className="flex-1 flex flex-col gap-3">
-            <KanbanBoard />
-          </section>
-
-          {/* Task Inspector Modal (opens when selectedTaskId is set) */}
-          <LazyTaskInspector />
-        </main>
-
-        <Footer />
+        {/* Task Inspector Modal (opens when selectedTaskId is set) */}
+        <LazyTaskInspector />
       </div>
-    </div>
+
+      <Footer />
+    </AppShell>
   );
 };
 

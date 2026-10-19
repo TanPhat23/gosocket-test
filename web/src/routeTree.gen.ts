@@ -13,6 +13,7 @@ import { Route as AuthRouteImport } from './routes/_auth'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AuthIndexRouteImport } from './routes/_auth.index'
 import { Route as AuthTasksTaskIdRouteImport } from './routes/_auth.tasks.$taskId'
+import { Route as AuthProjectsProjectIdRuntimeRouteImport } from './routes/_auth.projects.$projectId.runtime'
 
 const AuthRoute = AuthRouteImport.update({
   id: '/_auth',
@@ -33,16 +34,24 @@ const AuthTasksTaskIdRoute = AuthTasksTaskIdRouteImport.update({
   path: '/tasks/$taskId',
   getParentRoute: () => AuthRoute,
 } as any)
+const AuthProjectsProjectIdRuntimeRoute =
+  AuthProjectsProjectIdRuntimeRouteImport.update({
+    id: '/projects/$projectId/runtime',
+    path: '/projects/$projectId/runtime',
+    getParentRoute: () => AuthRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AuthIndexRoute
   '/login': typeof LoginRoute
   '/tasks/$taskId': typeof AuthTasksTaskIdRoute
+  '/projects/$projectId/runtime': typeof AuthProjectsProjectIdRuntimeRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/': typeof AuthIndexRoute
   '/tasks/$taskId': typeof AuthTasksTaskIdRoute
+  '/projects/$projectId/runtime': typeof AuthProjectsProjectIdRuntimeRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -50,13 +59,20 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/_auth/': typeof AuthIndexRoute
   '/_auth/tasks/$taskId': typeof AuthTasksTaskIdRoute
+  '/_auth/projects/$projectId/runtime': typeof AuthProjectsProjectIdRuntimeRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/login' | '/tasks/$taskId'
+  fullPaths: '/' | '/login' | '/tasks/$taskId' | '/projects/$projectId/runtime'
   fileRoutesByTo: FileRoutesByTo
-  to: '/login' | '/' | '/tasks/$taskId'
-  id: '__root__' | '/_auth' | '/login' | '/_auth/' | '/_auth/tasks/$taskId'
+  to: '/login' | '/' | '/tasks/$taskId' | '/projects/$projectId/runtime'
+  id:
+    | '__root__'
+    | '/_auth'
+    | '/login'
+    | '/_auth/'
+    | '/_auth/tasks/$taskId'
+    | '/_auth/projects/$projectId/runtime'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -94,17 +110,26 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthTasksTaskIdRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_auth/projects/$projectId/runtime': {
+      id: '/_auth/projects/$projectId/runtime'
+      path: '/projects/$projectId/runtime'
+      fullPath: '/projects/$projectId/runtime'
+      preLoaderRoute: typeof AuthProjectsProjectIdRuntimeRouteImport
+      parentRoute: typeof AuthRoute
+    }
   }
 }
 
 interface AuthRouteChildren {
   AuthIndexRoute: typeof AuthIndexRoute
   AuthTasksTaskIdRoute: typeof AuthTasksTaskIdRoute
+  AuthProjectsProjectIdRuntimeRoute: typeof AuthProjectsProjectIdRuntimeRoute
 }
 
 const AuthRouteChildren: AuthRouteChildren = {
   AuthIndexRoute: AuthIndexRoute,
   AuthTasksTaskIdRoute: AuthTasksTaskIdRoute,
+  AuthProjectsProjectIdRuntimeRoute: AuthProjectsProjectIdRuntimeRoute,
 }
 
 const AuthRouteWithChildren = AuthRoute._addFileChildren(AuthRouteChildren)
