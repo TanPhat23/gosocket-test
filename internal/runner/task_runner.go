@@ -101,6 +101,8 @@ type AgentTaskRunner struct {
 	openCodeClient    OpenCodeClient
 	projectSandboxMgr ProjectSandboxManager
 	workspaceMgr      WorkspaceManager
+	// warming marks projects with a background container start in flight (guarded by mu).
+	warming map[string]bool
 
 	// Project-container run settings (see project_task_run.go). Unused while the runtime is quarantined.
 	projectImage     string

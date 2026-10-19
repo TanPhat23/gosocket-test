@@ -295,3 +295,16 @@ func (h *TaskHandlers) ReadFile(c fiber.Ctx) error {
 	}
 	return c.JSON(resp)
 }
+
+// StartProjectRuntime handles POST /api/v1/projects/:id/runtime. The project container starts in the background,
+// so the answer is 202 Accepted: the caller does not wait for the image build or the container start.
+func (h *TaskHandlers) StartProjectRuntime(c fiber.Ctx) error {
+	projectID := c.Params("id")
+	if projectID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "project id is required"})
+	}
+	if err := h.taskService.StartProjectRuntime(c.Context(), projectID, currentUserID(c)); err != nil {
+		return CentralErrorHandler(c, err)
+	}
+	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{"status": "starting"})
+}

@@ -181,6 +181,11 @@ func (s *Server) setupRoutes() {
 		v1.Post("/tasks/:id/cancel", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.Cancel)
 		v1.Post("/tasks/:id/pr", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.CreatePR)
 		v1.Post("/tasks/:id/sync-pr", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.SyncPR)
+		// Warm start of a project's container when a member opens the project; the task run never waits on it.
+		if s.ProjectRepo != nil {
+			v1.Post("/projects/:id/runtime", RequireAuth(s.AuthService, s.SessionManager),
+				RequireProjectRole(s.AuthService, s.ProjectRepo, "id", models.RoleMember), taskHandlers.StartProjectRuntime)
+		}
 		v1.Post("/tasks/:id/pr/sync", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.SyncPR)
 		v1.Get("/tasks/:id/diff", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.GetDiff)
 		v1.Get("/tasks/:id/files", RequireAuth(s.AuthService, s.SessionManager), taskHandlers.ListFiles)

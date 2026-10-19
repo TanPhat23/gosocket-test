@@ -22,4 +22,9 @@ export const teamApi = {
   async deleteProject(projectId: string): Promise<void> {
     await axiosClient.delete(`/projects/${encodeURIComponent(projectId)}`);
   },
+
+  // Asks the control plane to start the project's container in the background. It answers 202 at once.
+  async startProjectRuntime(projectId: string): Promise<void> {
+    await axiosClient.post(`/projects/${encodeURIComponent(projectId)}/runtime`);
+  },
 };

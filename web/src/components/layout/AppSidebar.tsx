@@ -10,6 +10,7 @@ import {
 import { useTaskStore } from '@/features/tasks/store/useTaskStore';
 import { TeamSwitcher } from '@/features/teams/components/TeamSwitcher';
 import { ProjectIntegrationModal } from '@/features/integrations/components/ProjectIntegrationModal';
+import { useWarmProjectRuntime } from '@/features/teams/hooks/useWarmProjectRuntime';
 import { FolderKanban, GitBranch, Layers, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -29,6 +30,7 @@ export const AppSidebar: React.FC = () => {
   const projects = useProjectsList();
   const activeTeamId = useActiveTeamId();
   const activeProjectId = useActiveProjectId();
+  useWarmProjectRuntime(activeProjectId);
   const setActiveProjectId = useTeamStore((state) => state.setActiveProjectId);
   const createProject = useTeamStore((state) => state.createProject);
   const deleteProject = useTeamStore((state) => state.deleteProject);

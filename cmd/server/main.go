@@ -119,6 +119,8 @@ func run() error {
 		service.WithTaskPullRequestPublisher(taskRt.Runner.PublishTaskPullRequest, taskRt.Runner.TaskDiff),
 		service.WithTaskWorkspaceCleaner(taskRt.Runner.RemoveTaskWorkspace),
 		service.WithTaskFileBrowser(taskRt.Runner.TaskFiles, taskRt.Runner.TaskFile),
+		// Opening a project starts its container in the background, so the first task does not pay for the start.
+		service.WithTaskProjectRuntimeWarmer(taskRt.Runner.WarmProjectRuntime),
 	)
 	logService := service.NewLogService(repos.Log, hub)
 	integrationService := service.NewIntegrationService(repos.Integration, repos.Project, repos.Cred)

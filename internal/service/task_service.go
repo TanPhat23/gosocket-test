@@ -49,6 +49,7 @@ type TaskService interface {
 	CleanupFinishedWorkspaces(ctx context.Context) error
 	ListTaskFiles(ctx context.Context, taskID, userID string) (*dto.TaskFilesResponse, error)
 	ReadTaskFile(ctx context.Context, taskID, userID, path string) (*dto.TaskFileResponse, error)
+	StartProjectRuntime(ctx context.Context, projectID, userID string) error
 }
 
 type taskService struct {
@@ -71,6 +72,7 @@ type taskService struct {
 	cleanedAt       sync.Map // task ID -> UpdatedAt of the state whose workspace was removed
 	listFiles       TaskFileLister
 	readFile        TaskFileReader
+	warmRuntime     ProjectRuntimeWarmer
 	logRepo         repository.LogRepository
 	simulated       bool
 
