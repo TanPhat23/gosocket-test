@@ -2,6 +2,7 @@ package transfer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -83,6 +84,10 @@ func (m *gitTransferManager) IngestRemoteBranch(ctx context.Context, req IngestR
 	}()
 
 	wg.Wait()
+
+	if helperErr != nil && workerErr != nil && errors.Is(workerErr, io.ErrClosedPipe) {
+		return nil, fmt.Errorf("volume helper apply failed: %w", helperErr)
+	}
 
 	if workerErr != nil {
 		return nil, fmt.Errorf("worker fetch failed: %w", workerErr)

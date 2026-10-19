@@ -89,7 +89,8 @@ if [ ! -d "$REPO_DIR" ]; then
 else
     # Forced: the volume's base branch mirrors upstream, and upstream may be behind a ref that was moved locally
     # (a non-forced fetch refuses that as non-fast-forward and fails every later ingest of the project).
-    git -C "$REPO_DIR" -c core.hooksPath=/dev/null -c core.fsmonitor=false fetch "$TMP_BUNDLE" "+%s:%s"
+    git -C "$REPO_DIR" -c core.hooksPath=/dev/null worktree prune 2>/dev/null || true
+    git -C "$REPO_DIR" -c core.hooksPath=/dev/null -c core.fsmonitor=false fetch -u "$TMP_BUNDLE" "+%s:%s"
 fi
 rm -f "$TMP_BUNDLE"
 # Stamp the sync so tasks started soon after can reuse the fetched base instead of pulling it again.

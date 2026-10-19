@@ -177,7 +177,7 @@ func TestVolumeHelper_IngestForcesTheBaseBranchFetch(t *testing.T) {
 		t.Fatalf("expected a provisioning container")
 	}
 	script := strings.Join(mockDocker.CreateCalls[0].Config.Cmd, " ")
-	if !strings.Contains(script, `fetch "$TMP_BUNDLE" "+refs/heads/main:refs/heads/main"`) {
+	if !strings.Contains(script, `fetch -u "$TMP_BUNDLE" "+refs/heads/main:refs/heads/main"`) {
 		t.Errorf("ingest must force the base branch fetch")
 	}
 }
