@@ -301,6 +301,7 @@ describe('apiClient (axios)', () => {
     await apiClient.promptTaskSession('task-123', 'Focus on unit tests');
     expect(postSpy).toHaveBeenCalledWith('/tasks/task-123/session/prompt', {
       prompt: 'Focus on unit tests',
+      images: [],
     });
 
     await apiClient.compactTaskSession('task-123');

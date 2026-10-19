@@ -1081,7 +1081,11 @@ func (s *taskService) broadcastTaskLog(ctx context.Context, taskID, chunk string
 // task status or start a completion watcher.
 func (s *taskService) PromptTaskSession(ctx context.Context, taskID, userID string, req *dto.TaskSessionPromptRequest) error {
 	if req == nil || strings.TrimSpace(req.Prompt) == "" {
-		return errors.New("prompt cannot be empty")
+		return badSteer("a message is required")
+	}
+	files, err := steerFiles(req.Images)
+	if err != nil {
+		return err
 	}
 
 	oc, sessionID, task, err := s.projectSession(ctx, taskID, userID, models.RoleMember)

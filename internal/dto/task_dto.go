@@ -102,7 +102,15 @@ func ToTaskResponse(t *models.Task) TaskResponse {
 
 // TaskSessionPromptRequest represents the payload for prompting an ongoing OpenCode session.
 type TaskSessionPromptRequest struct {
-	Prompt string `json:"prompt" validate:"required,min=1,max=32768"`
+	Prompt string            `json:"prompt" validate:"required,min=1,max=32768"`
+	Images []SessionImageDTO `json:"images,omitempty"`
+}
+
+// SessionImageDTO is an image attached to a steer. Data is standard base64 without a data: prefix.
+type SessionImageDTO struct {
+	Name string `json:"name,omitempty"`
+	MIME string `json:"mime"`
+	Data string `json:"data"`
 }
 
 // OpenCodeMessageDTO represents an individual message returned from OpenCode session history.

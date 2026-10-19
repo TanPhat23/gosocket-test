@@ -591,14 +591,16 @@ func (c *openCodeClient) ListChildSessions(ctx context.Context, parentID string)
 }
 
 func (c *openCodeClient) PromptSession(ctx context.Context, sessionID, prompt string) error {
+	return c.sendPrompt(ctx, sessionID, map[string]any{"text": prompt})
+}
+
+// sendPrompt posts one prompt body to the session's prompt route and maps the answer to an error.
+func (c *openCodeClient) sendPrompt(ctx context.Context, sessionID string, payload map[string]any) error {
 	escapedID, err := validateSessionID(sessionID)
 	if err != nil {
 		return err
 	}
 
-	payload := map[string]any{
-		"text": prompt,
-	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return err

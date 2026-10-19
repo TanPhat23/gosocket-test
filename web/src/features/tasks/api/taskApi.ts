@@ -4,6 +4,7 @@ import {
   TaskDTO,
   CreateTaskInput,
 } from '../schemas/taskSchemas';
+import type { SteerImage } from '../utils/steerImages';
 
 // TaskFilesResponse lists a task workspace. Source is "workspace" for the live worktree or "committed" for the branch.
 export interface TaskFilesResponse {
@@ -65,8 +66,11 @@ export const taskApi = {
     return res.data;
   },
 
-  async promptTaskSession(taskId: string, prompt: string): Promise<void> {
-    await axiosClient.post(`/tasks/${encodeURIComponent(taskId)}/session/prompt`, { prompt });
+  async promptTaskSession(taskId: string, prompt: string, images: SteerImage[] = []): Promise<void> {
+    await axiosClient.post(`/tasks/${encodeURIComponent(taskId)}/session/prompt`, {
+      prompt,
+      images: images.map(({ name, mime, data }) => ({ name, mime, data })),
+    });
   },
 
   async compactTaskSession(taskId: string): Promise<void> {

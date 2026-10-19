@@ -157,7 +157,7 @@ describe('TaskInspectorModal Agent Session Tab and Steering', () => {
     fireEvent.click(sendBtn);
 
     await waitFor(() => {
-      expect(promptSpy).toHaveBeenCalledWith('task-sess-123', 'Fix failing test in task_handlers.go');
+      expect(promptSpy).toHaveBeenCalledWith('task-sess-123', 'Fix failing test in task_handlers.go', []);
     });
 
     // Input should be cleared
