@@ -76,6 +76,8 @@ export interface SessionToolCall {
   output?: string | Record<string, unknown>;
   status?: string;
   exit_code?: number;
+  // For a subagent call, the child session it ran in (from the tool's metadata).
+  session_id?: string;
 }
 
 export interface SessionMessage {
@@ -96,6 +98,8 @@ export interface SessionChild {
   status?: string;
   cost?: number;
   updated_at?: string | null;
+  // The subagent's most recent activity, so the session view can show it while the subagent runs.
+  messages?: SessionMessage[];
 }
 
 export interface TaskSessionResponse {

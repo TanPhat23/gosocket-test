@@ -134,13 +134,15 @@ type SessionTokensDTO struct {
 	CacheWrite int64 `json:"cache_write,omitempty"`
 }
 
-// SessionChildDTO is a subagent (child) session spawned by the task's session.
+// SessionChildDTO is a subagent (child) session spawned by the task's session. Messages holds its most recent
+// activity, so a running subagent streams to the session view along with the root transcript.
 type SessionChildDTO struct {
-	ID        string     `json:"id"`
-	Title     string     `json:"title,omitempty"`
-	Status    string     `json:"status,omitempty"`
-	Cost      float64    `json:"cost,omitempty"`
-	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+	ID        string               `json:"id"`
+	Title     string               `json:"title,omitempty"`
+	Status    string               `json:"status,omitempty"`
+	Cost      float64              `json:"cost,omitempty"`
+	UpdatedAt *time.Time           `json:"updated_at,omitempty"`
+	Messages  []OpenCodeMessageDTO `json:"messages,omitempty"`
 }
 
 // TaskSessionResponseDTO represents the aggregated session information and history.

@@ -960,8 +960,13 @@ func (s *taskService) GetTaskSession(ctx context.Context, taskID, userID string)
 	// Subagent sessions are best effort: the transcript is still useful without them.
 	var children []dto.SessionChildDTO
 	if kids, kerr := oc.ListChildSessions(ctx, sessionID); kerr == nil {
+		kids = newestSubagents(kids)
 		for _, k := range kids {
-			children = append(children, dto.SessionChildDTO{ID: k.ID, Title: k.Title, Status: k.Status, Cost: k.Cost, UpdatedAt: k.UpdatedAt})
+			child := dto.SessionChildDTO{ID: k.ID, Title: k.Title, Status: k.Status, Cost: k.Cost, UpdatedAt: k.UpdatedAt}
+			if cm, cerr := oc.GetSessionMessages(ctx, k.ID); cerr == nil {
+				child.Messages = recentSubagentMessages(cm)
+			}
+			children = append(children, child)
 		}
 	}
 	return &dto.TaskSessionResponseDTO{
@@ -1118,7 +1123,7 @@ func (s *taskService) PromptTaskSession(ctx context.Context, taskID, userID stri
 	if sess, err := oc.GetSession(ctx, sessionID); err == nil {
 		before = sess.UpdatedAt
 	}
-	if err := oc.PromptSession(ctx, sessionID, req.Prompt); err != nil {
+	if err := sendSteer(ctx, oc, sessionID, req.Prompt, files); err != nil {
 		release()
 		return err
 	}
