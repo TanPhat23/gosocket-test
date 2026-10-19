@@ -6,6 +6,8 @@ export const UserSchema = z.object({
   subject: z.string().min(1).optional().nullable(),
   email: z.string().optional().nullable(),
   display_name: z.string().optional().nullable(),
+  git_name: z.string().optional().nullable(),
+  git_email: z.string().optional().nullable(),
 });
 
 export type UserDTO = z.infer<typeof UserSchema>;
