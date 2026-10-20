@@ -4,6 +4,7 @@ import { useActiveProjectId } from '@/features/teams/store/useTeamStore';
 import { useWorkspaceSettingsStore } from '../store/useWorkspaceSettingsStore';
 import { useShallow } from 'zustand/react/shallow';
 import { TaskCard } from './TaskCard';
+import { TaskPeekSheet } from './TaskPeekSheet';
 import { Badge } from '@/components/ui/badge';
 import { Inbox, Clock, PlayCircle, Eye, CheckCircle2 } from 'lucide-react';
 
@@ -56,6 +57,11 @@ const KanbanLane: React.FC<KanbanLaneProps> = ({ column }) => {
   const selectedRepoId = useWorkspaceSettingsStore((s) => s.selectedRepoId);
   const searchQuery = useWorkspaceSettingsStore((s) => s.searchQuery);
   const priorityFilter = useWorkspaceSettingsStore((s) => s.priorityFilter);
+  const selectTask = useTaskStore((s) => s.selectTask);
+
+  const [peekTaskId, setPeekTaskId] = React.useState<string | null>(null);
+  const lastTriggerRef = React.useRef<HTMLButtonElement | null>(null);
+  const headingRef = React.useRef<HTMLHeadingElement | null>(null);
 
   // Use shallow selector to subscribe only to IDs belonging to this lane, active project, and filters
   const taskIds = useTaskStore(
@@ -87,6 +93,30 @@ const KanbanLane: React.FC<KanbanLaneProps> = ({ column }) => {
     )
   );
 
+  const handlePreview = React.useCallback((id: string, trigger: HTMLButtonElement) => {
+    lastTriggerRef.current = trigger;
+    setPeekTaskId(id);
+  }, []);
+
+  const handleTaskChange = React.useCallback((id: string) => {
+    setPeekTaskId(id);
+  }, []);
+
+  const handleOpenInspector = React.useCallback(
+    (id: string) => {
+      setPeekTaskId(null);
+      selectTask(id);
+    },
+    [selectTask]
+  );
+
+  const handleFinalFocus = React.useCallback(() => {
+    if (lastTriggerRef.current && lastTriggerRef.current.isConnected) {
+      return lastTriggerRef.current;
+    }
+    return headingRef.current;
+  }, []);
+
   return (
     <div
       className="flex flex-col bg-muted/40 rounded-xl border border-border/60 p-3 min-h-[500px]"
@@ -96,7 +126,11 @@ const KanbanLane: React.FC<KanbanLaneProps> = ({ column }) => {
       <div className="flex items-center justify-between pb-3 mb-3 border-b border-border/50 px-1">
         <div className="flex items-center gap-2">
           <column.icon className="size-4 text-muted-foreground" />
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-foreground">
+          <h2
+            ref={headingRef}
+            tabIndex={-1}
+            className="text-xs font-semibold uppercase tracking-wider text-foreground outline-none"
+          >
             {column.title}
           </h2>
         </div>
@@ -119,9 +153,24 @@ const KanbanLane: React.FC<KanbanLaneProps> = ({ column }) => {
             </p>
           </div>
         ) : (
-          taskIds.map((id) => <TaskCard key={id} id={id} />)
+          taskIds.map((id) => <TaskCard key={id} id={id} onPreview={handlePreview} />)
         )}
       </div>
+
+      {/* Per-lane Task Peek Sheet */}
+      <TaskPeekSheet
+        taskId={peekTaskId}
+        taskIds={taskIds}
+        open={Boolean(peekTaskId)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPeekTaskId(null);
+          }
+        }}
+        onTaskChange={handleTaskChange}
+        onOpenInspector={handleOpenInspector}
+        finalFocus={handleFinalFocus}
+      />
     </div>
   );
 };

@@ -10,14 +10,16 @@ import {
   CornerDownRight,
   GitPullRequest,
   GitBranch,
+  PanelRightOpen,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export interface TaskCardProps {
   id: string;
+  onPreview?: (taskId: string, trigger: HTMLButtonElement) => void;
 }
 
-export const TaskCard: React.FC<TaskCardProps> = ({ id }) => {
+export const TaskCard: React.FC<TaskCardProps> = ({ id, onPreview }) => {
   const task = useTask(id);
   const selectTask = useTaskStore((state) => state.selectTask);
   const cancelTask = useTaskStore((state) => state.cancelTask);
@@ -138,8 +140,23 @@ export const TaskCard: React.FC<TaskCardProps> = ({ id }) => {
           )}
         </div>
 
-        {/* Live indicator or status */}
-        <div className="shrink-0">
+        {/* Live indicator or status, plus preview trigger */}
+        <div className="shrink-0 flex items-center gap-1.5">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            className="size-5 p-0 text-muted-foreground/80 hover:text-foreground hover:bg-muted"
+            aria-label={`Preview task #${task.id.slice(0, 8)}: ${task.title}`}
+            title={`Preview task #${task.id.slice(0, 8)}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              onPreview?.(task.id, event.currentTarget);
+            }}
+          >
+            <PanelRightOpen className="size-3" aria-hidden="true" />
+          </Button>
+
           {isLive ? (
             <span className="flex items-center gap-1 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 font-mono">
               <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
