@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1187,4 +1188,37 @@ func (m *mockDockerClientForRunner) ContainerExecAttach(ctx context.Context, exe
 
 func (m *mockDockerClientForRunner) ContainerExecInspect(ctx context.Context, execID string) (container.ExecInspect, error) {
 	return container.ExecInspect{}, nil
+}
+
+type activitySpyProjectSandboxManager struct {
+	mockProjectSandboxManagerForRunner
+	mu         sync.Mutex
+	acquires   []string
+	releases   []string
+	releaseMap map[string]int
+}
+
+func newActivitySpyProjectSandboxManager() *activitySpyProjectSandboxManager {
+	return &activitySpyProjectSandboxManager{
+		releaseMap: make(map[string]int),
+	}
+}
+
+func (m *activitySpyProjectSandboxManager) BeginProjectRuntimeActivity(projectID string) func() {
+	m.mu.Lock()
+	m.acquires = append(m.acquires, projectID)
+	m.mu.Unlock()
+
+	return func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.releases = append(m.releases, projectID)
+		m.releaseMap[projectID]++
+	}
+}
+
+func TestRunTask_RuntimeActivityLease_NonActivityManagerSafe(t *testing.T) {
+	f := newRefusalFixture(t, "task-activity-plain", true) // with default mockProjectSandboxManagerForRunner
+	err := f.ar.RunTask(context.Background(), f.task, f.attempt)
+	assertRuntimeRefused(t, err)
 }

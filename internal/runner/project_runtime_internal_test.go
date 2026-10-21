@@ -86,7 +86,7 @@ func newRuntimeEnv(t *testing.T) *runtimeEnv {
 }
 
 func (r *runtimeEnv) build(cli *gwClient) (*ProjectRuntime, error) {
-	return ProjectRuntimeFromEnv(r.getenv, r.readFile, cli, NewDefaultRuntimeCatalog(), r.gw)
+	return ProjectRuntimeFromEnv(r.getenv, r.readFile, cli, NewDefaultRuntimeCatalog(), r.gw, 15*time.Minute)
 }
 
 func TestProjectRuntimeFromEnv_OffByDefault(t *testing.T) {
@@ -131,10 +131,10 @@ func TestProjectRuntimeFromEnv_FailsClosed(t *testing.T) {
 		})
 	}
 	r := newRuntimeEnv(t)
-	if _, err := ProjectRuntimeFromEnv(r.getenv, r.readFile, nil, NewDefaultRuntimeCatalog(), r.gw); err == nil {
+	if _, err := ProjectRuntimeFromEnv(r.getenv, r.readFile, nil, NewDefaultRuntimeCatalog(), r.gw, 15*time.Minute); err == nil {
 		t.Error("a nil Docker client must be refused")
 	}
-	if _, err := ProjectRuntimeFromEnv(r.getenv, r.readFile, newGWClient(), NewDefaultRuntimeCatalog(), nil); err == nil {
+	if _, err := ProjectRuntimeFromEnv(r.getenv, r.readFile, newGWClient(), NewDefaultRuntimeCatalog(), nil, 15*time.Minute); err == nil {
 		t.Error("a disabled gateway must be refused")
 	}
 }

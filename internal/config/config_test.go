@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-task-manager/internal/config"
 )
@@ -18,6 +19,7 @@ func TestConfigLoadDefaultsAndEnv(t *testing.T) {
 		"SECRET_ENCRYPTION_KEY", "SESSION_SECRET", "MAX_CONCURRENT_TASKS",
 		"TASK_TIMEOUT_MINUTES", "HOST_WORKTREE_ROOT", "HOST_REPO_ROOT",
 		"OIDC_ISSUER_URL", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "OIDC_REDIRECT_URL",
+		"ATM_PROJECT_RUNTIME_IDLE_TIMEOUT",
 	}
 	for _, k := range envKeys {
 		os.Unsetenv(k)
@@ -55,6 +57,9 @@ func TestConfigLoadDefaultsAndEnv(t *testing.T) {
 	if defaultCfg.AppEnv != "development" {
 		t.Errorf("expected default AppEnv development, got %s", defaultCfg.AppEnv)
 	}
+	if defaultCfg.ProjectRuntimeIdleTimeout != 15*time.Minute {
+		t.Errorf("expected default ProjectRuntimeIdleTimeout 15m, got %v", defaultCfg.ProjectRuntimeIdleTimeout)
+	}
 
 	// Now set custom env vars
 	os.Setenv("PORT", "8080")
@@ -70,10 +75,15 @@ func TestConfigLoadDefaultsAndEnv(t *testing.T) {
 	os.Setenv("OIDC_CLIENT_ID", "client-123")
 	os.Setenv("OIDC_CLIENT_SECRET", "client-secret-xyz")
 	os.Setenv("OIDC_REDIRECT_URL", "http://localhost:8080/api/v1/auth/callback")
+	os.Setenv("ATM_PROJECT_RUNTIME_IDLE_TIMEOUT", "45s")
 
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
+	}
+
+	if cfg.ProjectRuntimeIdleTimeout != 45*time.Second {
+		t.Errorf("expected ProjectRuntimeIdleTimeout 45s, got %v", cfg.ProjectRuntimeIdleTimeout)
 	}
 
 	if cfg.Port != 8080 {
@@ -105,6 +115,87 @@ func TestConfigLoadDefaultsAndEnv(t *testing.T) {
 	}
 	if cfg.OIDCIssuerURL != "https://accounts.google.com" {
 		t.Errorf("expected OIDC issuer URL, got %s", cfg.OIDCIssuerURL)
+	}
+}
+
+func TestLoadProjectRuntimeIdleTimeout(t *testing.T) {
+	cases := []struct {
+		name      string
+		val       string
+		set       bool
+		expected  time.Duration
+		expectErr bool
+	}{
+		{
+			name:      "default 15m when unset",
+			set:       false,
+			expected:  15 * time.Minute,
+			expectErr: false,
+		},
+		{
+			name:      "0s disables idle stop",
+			set:       true,
+			val:       "0s",
+			expected:  0,
+			expectErr: false,
+		},
+		{
+			name:      "valid 45s",
+			set:       true,
+			val:       "45s",
+			expected:  45 * time.Second,
+			expectErr: false,
+		},
+		{
+			name:      "valid 30s minimum boundary",
+			set:       true,
+			val:       "30s",
+			expected:  30 * time.Second,
+			expectErr: false,
+		},
+		{
+			name:      "sub-30s rejected (29s)",
+			set:       true,
+			val:       "29s",
+			expectErr: true,
+		},
+		{
+			name:      "negative duration rejected (-1s)",
+			set:       true,
+			val:       "-1s",
+			expectErr: true,
+		},
+		{
+			name:      "malformed duration rejected",
+			set:       true,
+			val:       "not-a-duration",
+			expectErr: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.set {
+				os.Setenv("ATM_PROJECT_RUNTIME_IDLE_TIMEOUT", tc.val)
+			} else {
+				os.Unsetenv("ATM_PROJECT_RUNTIME_IDLE_TIMEOUT")
+			}
+			defer os.Unsetenv("ATM_PROJECT_RUNTIME_IDLE_TIMEOUT")
+
+			cfg, err := config.Load()
+			if tc.expectErr {
+				if err == nil {
+					t.Fatalf("expected error for value %q, got nil", tc.val)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error for value %q: %v", tc.val, err)
+			}
+			if cfg.ProjectRuntimeIdleTimeout != tc.expected {
+				t.Errorf("expected ProjectRuntimeIdleTimeout %v, got %v", tc.expected, cfg.ProjectRuntimeIdleTimeout)
+			}
+		})
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/volume"
+	"github.com/docker/docker/errdefs"
 
 	"agent-task-manager/internal/common"
 	"agent-task-manager/internal/gateway"
@@ -94,6 +95,7 @@ type DevHostAuthOptions struct {
 	ConfigDir     string
 	DataDir       string
 	SkipReadiness bool
+	IdleTimeout   time.Duration
 }
 
 // ProjectSandboxManager manages project sandbox container lifecycle, isolation, and routing.
@@ -103,12 +105,28 @@ type ProjectSandboxManager interface {
 	GetProjectRoute(ctx context.Context, projectID string) (*ProjectRouteHandle, bool, error)
 }
 
+// ProjectRuntimeActivityManager is an optional interface implemented by ProjectSandboxManager instances
+// that track task activity leases to prevent premature idle shutdown.
+type ProjectRuntimeActivityManager interface {
+	BeginProjectRuntimeActivity(projectID string) func()
+}
+
+type projectIdleState struct {
+	lastActivity       time.Time
+	activeLeases       int
+	timer              *time.Timer
+	retryTimer         *time.Timer
+	manualStopFailedAt time.Time
+}
+
 type projectSandboxManager struct {
 	dockerCli    sandbox.DockerClient
 	egressPolicy *sandbox.EgressPolicy
 	gatewayURL   string
 	gw           *GatewayAccess
 	devHostAuth  DevHostAuthOptions
+	idleTimeout  time.Duration
+	retryDelay   time.Duration
 	readyProbe   func(ctx context.Context, endpointURL, password string) error
 	// egressVerify, when set, proves the operator's firewall on the project's own sandbox network before any
 	// sandbox container is created there (Gate 0D fail-closed contract). An error aborts provisioning.
@@ -116,6 +134,7 @@ type projectSandboxManager struct {
 
 	mu     sync.RWMutex
 	routes map[string]*ProjectRouteHandle
+	idle   map[string]*projectIdleState
 }
 
 func defaultReadyProbe(ctx context.Context, endpointURL, password string) error {
@@ -155,7 +174,9 @@ func NewProjectSandboxManager(
 		dockerCli:    dockerCli,
 		egressPolicy: egressPolicy,
 		gatewayURL:   gatewayURL,
+		retryDelay:   1 * time.Minute,
 		routes:       make(map[string]*ProjectRouteHandle),
+		idle:         make(map[string]*projectIdleState),
 	}
 }
 
@@ -172,7 +193,9 @@ func NewProjectSandboxManagerWithGateway(
 		egressPolicy: egressPolicy,
 		gatewayURL:   gatewayURL,
 		gw:           gw,
+		retryDelay:   1 * time.Minute,
 		routes:       make(map[string]*ProjectRouteHandle),
+		idle:         make(map[string]*projectIdleState),
 	}
 }
 
@@ -188,8 +211,11 @@ func NewProjectSandboxManagerWithDevHostAuth(
 	return &projectSandboxManager{
 		dockerCli:   dockerCli,
 		devHostAuth: opts,
+		idleTimeout: opts.IdleTimeout,
+		retryDelay:  1 * time.Minute,
 		readyProbe:  probe,
 		routes:      make(map[string]*ProjectRouteHandle),
+		idle:        make(map[string]*projectIdleState),
 	}
 }
 
@@ -445,6 +471,7 @@ func (m *projectSandboxManager) ensureProjectContainer(ctx context.Context, proj
 	}
 
 	m.routes[project.ID] = routeHandle
+	m.recordActivityUnderLock(project.ID, routeHandle)
 	return routeHandle, nil
 }
 
@@ -452,6 +479,8 @@ func (m *projectSandboxManager) ensureProjectContainer(ctx context.Context, proj
 func (m *projectSandboxManager) StopProjectContainer(ctx context.Context, projectID string, gracePeriod time.Duration) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	m.cancelTimersUnderLock(projectID)
 
 	route, ok := m.routes[projectID]
 	if !ok || route == nil {
@@ -464,9 +493,19 @@ func (m *projectSandboxManager) StopProjectContainer(ctx context.Context, projec
 	}
 
 	err := m.dockerCli.ContainerStop(ctx, route.ContainerID, stopOpts)
+	if err != nil && !errdefs.IsNotFound(err) && !strings.Contains(strings.ToLower(err.Error()), "no such container") {
+		fmt.Printf("project runtime manual stop failed for project %s (container %s): %v; scheduling retry\n", projectID, route.ContainerID, err)
+		m.armRetryTimerUnderLock(projectID, route.ContainerID, route.Generation)
+		if st := m.idle[projectID]; st != nil {
+			st.manualStopFailedAt = time.Now()
+		}
+		return err
+	}
+
 	m.releaseGateway(route.ContainerID)
 	delete(m.routes, projectID)
-	return err
+	delete(m.idle, projectID)
+	return nil
 }
 
 // GetProjectRoute returns the active route handle for a project, if cached and valid.
@@ -479,7 +518,253 @@ func (m *projectSandboxManager) GetProjectRoute(ctx context.Context, projectID s
 		return nil, false, nil
 	}
 
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Recheck under write lock in case route was modified
+	route, ok = m.routes[projectID]
+	if !ok || route == nil {
+		return nil, false, nil
+	}
+
+	m.recordActivityUnderLock(projectID, route)
 	return route, true, nil
+}
+
+// BeginProjectRuntimeActivity begins an activity lease for a project runtime, returning a release callback.
+// The lease prevents idle container shutdown while active.
+func (m *projectSandboxManager) BeginProjectRuntimeActivity(projectID string) func() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	st, ok := m.idle[projectID]
+	if !ok {
+		st = &projectIdleState{}
+		m.idle[projectID] = st
+	}
+	st.activeLeases++
+	st.lastActivity = time.Now()
+	if st.timer != nil {
+		st.timer.Stop()
+		st.timer = nil
+	}
+	if st.retryTimer != nil {
+		st.retryTimer.Stop()
+		st.retryTimer = nil
+	}
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+
+			st, ok := m.idle[projectID]
+			if !ok {
+				return
+			}
+			if st.activeLeases > 0 {
+				st.activeLeases--
+			}
+			st.lastActivity = time.Now()
+			route := m.routes[projectID]
+			if route != nil && st.activeLeases == 0 {
+				m.armIdleTimerUnderLock(projectID, route)
+			}
+		})
+	}
+}
+
+// SetIdleStopRetryDelay overrides the delayed retry interval for idle container stops (used in tests).
+func (m *projectSandboxManager) SetIdleStopRetryDelay(d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.retryDelay = d
+}
+
+func (m *projectSandboxManager) cancelTimersUnderLock(projectID string) {
+	st, ok := m.idle[projectID]
+	if !ok || st == nil {
+		return
+	}
+	if st.timer != nil {
+		st.timer.Stop()
+		st.timer = nil
+	}
+	if st.retryTimer != nil {
+		st.retryTimer.Stop()
+		st.retryTimer = nil
+	}
+}
+
+func (m *projectSandboxManager) recordActivityUnderLock(projectID string, route *ProjectRouteHandle) {
+	st, ok := m.idle[projectID]
+	if !ok {
+		st = &projectIdleState{}
+		m.idle[projectID] = st
+	}
+	st.lastActivity = time.Now()
+	if st.retryTimer != nil {
+		st.retryTimer.Stop()
+		st.retryTimer = nil
+	}
+	if st.activeLeases == 0 && route != nil {
+		m.armIdleTimerUnderLock(projectID, route)
+	}
+}
+
+func (m *projectSandboxManager) armIdleTimerUnderLock(projectID string, route *ProjectRouteHandle) {
+	if m.idleTimeout <= 0 || route == nil {
+		return
+	}
+	st, ok := m.idle[projectID]
+	if !ok {
+		st = &projectIdleState{lastActivity: time.Now()}
+		m.idle[projectID] = st
+	}
+	if st.timer != nil {
+		st.timer.Stop()
+	}
+
+	containerID := route.ContainerID
+	generation := route.Generation
+
+	st.timer = time.AfterFunc(m.idleTimeout, func() {
+		m.handleIdleTimeout(projectID, containerID, generation)
+	})
+}
+
+func (m *projectSandboxManager) handleIdleTimeout(projectID, containerID string, generation int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	route, ok := m.routes[projectID]
+	if !ok || route == nil {
+		return
+	}
+	if route.ContainerID != containerID || route.Generation != generation {
+		return
+	}
+
+	st, ok := m.idle[projectID]
+	if !ok || st == nil {
+		return
+	}
+	if st.activeLeases > 0 {
+		return
+	}
+
+	// Verify idle duration has truly elapsed since lastActivity
+	elapsed := time.Since(st.lastActivity)
+	if elapsed < m.idleTimeout {
+		remaining := m.idleTimeout - elapsed
+		st.timer = time.AfterFunc(remaining, func() {
+			m.handleIdleTimeout(projectID, containerID, generation)
+		})
+		return
+	}
+
+	// Graceful stop
+	timeoutSec := 10
+	stopOpts := container.StopOptions{
+		Timeout: &timeoutSec,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	err := m.dockerCli.ContainerStop(ctx, containerID, stopOpts)
+	if err != nil && !errdefs.IsNotFound(err) && !strings.Contains(strings.ToLower(err.Error()), "no such container") {
+		// Log error, preserve route and gateway lease, schedule delayed retry
+		fmt.Printf("project runtime idle stop failed for project %s (container %s): %v; scheduling retry\n", projectID, containerID, err)
+		m.armRetryTimerUnderLock(projectID, containerID, generation)
+		return
+	}
+
+	// Success or container not found: release gateway lease and remove route
+	m.releaseGateway(containerID)
+	delete(m.routes, projectID)
+	delete(m.idle, projectID)
+}
+
+func (m *projectSandboxManager) armRetryTimerUnderLock(projectID, containerID string, generation int64) {
+	st, ok := m.idle[projectID]
+	if !ok {
+		st = &projectIdleState{lastActivity: time.Now()}
+		m.idle[projectID] = st
+	}
+	if st.retryTimer != nil {
+		return
+	}
+	delay := m.retryDelay
+	if delay <= 0 {
+		delay = 1 * time.Minute
+	}
+	st.retryTimer = time.AfterFunc(delay, func() {
+		m.handleRetryTimeout(projectID, containerID, generation)
+	})
+}
+
+func (m *projectSandboxManager) handleRetryTimeout(projectID, containerID string, generation int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	st, ok := m.idle[projectID]
+	if ok && st != nil {
+		st.retryTimer = nil
+	}
+
+	route, ok := m.routes[projectID]
+	if !ok || route == nil {
+		return
+	}
+	if route.ContainerID != containerID || route.Generation != generation {
+		return
+	}
+	if st != nil && st.activeLeases > 0 {
+		return
+	}
+
+	// Verify inactivity duration: if activity happened recently, re-arm idle timer instead of stopping
+	// Only apply this postponement if idle timeout is positive AND stop wasn't triggered by manual stop failure retry
+	if st != nil && m.idleTimeout > 0 {
+		elapsed := time.Since(st.lastActivity)
+		// If lastActivity is recent (e.g. from route access or task lease), re-arm idle timer
+		if elapsed < m.idleTimeout && st.lastActivity.After(st.manualStopFailedAt) {
+			remaining := m.idleTimeout - elapsed
+			st.timer = time.AfterFunc(remaining, func() {
+				m.handleIdleTimeout(projectID, containerID, generation)
+			})
+			return
+		}
+	}
+
+	timeoutSec := 10
+	stopOpts := container.StopOptions{
+		Timeout: &timeoutSec,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	err := m.dockerCli.ContainerStop(ctx, containerID, stopOpts)
+	if err != nil && !errdefs.IsNotFound(err) && !strings.Contains(strings.ToLower(err.Error()), "no such container") {
+		fmt.Printf("project runtime idle stop retry failed for project %s (container %s): %v; scheduling retry\n", projectID, containerID, err)
+		m.armRetryTimerUnderLock(projectID, containerID, generation)
+		return
+	}
+
+	m.releaseGateway(containerID)
+	delete(m.routes, projectID)
+	delete(m.idle, projectID)
+}
+
+// PeekProjectRoute returns the cached route handle without updating activity or timers (used for tests and inspection).
+func (m *projectSandboxManager) PeekProjectRoute(projectID string) (*ProjectRouteHandle, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	route, ok := m.routes[projectID]
+	return route, ok && route != nil
 }
 
 // deliverSecret writes the password to /run/secrets/opencode inside the running container.

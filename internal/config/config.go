@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 )
 
 // RawEnvironmentConfig captures the initial unmarshaled environment inputs.
@@ -102,6 +103,9 @@ type Config struct {
 	OpenCodeConfigDir string
 	DevHostAuth       bool
 	OpenCodeDataDir   string
+
+	// Project runtime settings
+	ProjectRuntimeIdleTimeout time.Duration
 }
 
 // Load loads the configuration from environment variables with sensible defaults.
@@ -208,6 +212,12 @@ func Load() (*Config, error) {
 		}
 		cfg.VerificationTimeoutSeconds = vTimeout
 	}
+
+	idleTimeout, err := time.ParseDuration(getEnv("ATM_PROJECT_RUNTIME_IDLE_TIMEOUT", "15m"))
+	if err != nil || idleTimeout < 0 || (idleTimeout > 0 && idleTimeout < 30*time.Second) {
+		return nil, fmt.Errorf("invalid ATM_PROJECT_RUNTIME_IDLE_TIMEOUT: expected 0s or at least 30s")
+	}
+	cfg.ProjectRuntimeIdleTimeout = idleTimeout
 
 	return cfg, nil
 }

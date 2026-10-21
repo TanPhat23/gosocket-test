@@ -43,6 +43,7 @@ func ProjectRuntimeFromEnv(
 	cli sandbox.DockerClient,
 	catalog RuntimeCatalog,
 	gw *gateway.Service,
+	idleTimeout time.Duration,
 ) (*ProjectRuntime, error) {
 	switch getenv("ATM_PROJECT_RUNTIME_ENABLED") {
 	case "", "false":
@@ -120,7 +121,10 @@ func ProjectRuntimeFromEnv(
 		egressPolicy: sandbox.DefaultEgressPolicy(proxyURL),
 		gatewayURL:   gwURL,
 		gw:           &GatewayAccess{Broker: broker, Models: models, ContextTokens: ctxTokens, OutputTokens: outTokens},
+		idleTimeout:  idleTimeout,
+		retryDelay:   1 * time.Minute,
 		routes:       make(map[string]*ProjectRouteHandle),
+		idle:         make(map[string]*projectIdleState),
 		readyProbe:   defaultReadyProbe,
 		egressVerify: func(ctx context.Context, network string) error {
 			return sandbox.VerifyEgressFirewall(ctx, cli, sandbox.EgressVerifyConfig{

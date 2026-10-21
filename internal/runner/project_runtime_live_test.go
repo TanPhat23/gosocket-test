@@ -70,7 +70,7 @@ func liveRuntime(t *testing.T, override map[string]string) (*ProjectRuntime, *do
 	if err != nil {
 		t.Fatalf("gateway: %v", err)
 	}
-	rt, err := ProjectRuntimeFromEnv(getenv, readFile, cli, NewDefaultRuntimeCatalog(), gw)
+	rt, err := ProjectRuntimeFromEnv(getenv, readFile, cli, NewDefaultRuntimeCatalog(), gw, 15*time.Minute)
 	if err != nil || rt == nil {
 		t.Fatalf("runtime: %v", err)
 	}

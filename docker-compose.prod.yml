@@ -104,6 +104,7 @@ services:
         condition: service_started
     environment:
       APP_ENV: production
+      ATM_PROJECT_RUNTIME_IDLE_TIMEOUT: ${ATM_PROJECT_RUNTIME_IDLE_TIMEOUT:-15m}
       PORT: "8080"
       DATABASE_HOST: postgres
       DATABASE_PORT: "5432"

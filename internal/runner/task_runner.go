@@ -117,6 +117,9 @@ type AgentTaskRunner struct {
 	projectClientFor func(endpointURL, password string) (OpenCodeClient, error)
 	sessionPoll      time.Duration
 
+	// Option 1: runTaskFn seam for testing or internal lifecycle override
+	runTaskFn func(ctx context.Context, task *models.Task, attempt *models.TaskAttempt) error
+
 	mu        sync.RWMutex
 	doneChans map[string][]chan error
 	running   map[string]bool
@@ -406,6 +409,11 @@ func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attemp
 		return errors.New("task cannot be nil")
 	}
 
+	if actMgr, ok := r.projectSandboxMgr.(ProjectRuntimeActivityManager); ok && actMgr != nil {
+		release := actMgr.BeginProjectRuntimeActivity(task.ProjectID)
+		defer release()
+	}
+
 	r.mu.Lock()
 	if r.doneChans == nil {
 		r.doneChans = make(map[string][]chan error)
@@ -436,6 +444,10 @@ func (r *AgentTaskRunner) RunTask(ctx context.Context, task *models.Task, attemp
 			close(ch)
 		}
 	}()
+
+	if r.runTaskFn != nil {
+		return r.runTaskFn(ctx, task, attempt)
+	}
 
 	return r.runTaskInProjectContainer(ctx, task, attempt)
 }

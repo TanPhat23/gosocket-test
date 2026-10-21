@@ -62,7 +62,7 @@ func BuildTaskRuntime(
 	// The project runtime (sandbox manager with gateway tokens and firewall proof, image builder with the gateway CA)
 	// is assembled only when ATM_PROJECT_RUNTIME_ENABLED=true.
 	runtimeCatalog := runner.NewDefaultRuntimeCatalog()
-	projectRuntime, err := runner.ProjectRuntimeFromEnv(os.Getenv, os.ReadFile, dockerCli, runtimeCatalog, gatewaySvc)
+	projectRuntime, err := runner.ProjectRuntimeFromEnv(os.Getenv, os.ReadFile, dockerCli, runtimeCatalog, gatewaySvc, cfg.ProjectRuntimeIdleTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -84,10 +84,11 @@ func BuildTaskRuntime(
 		hostAuthSandboxMgr := runner.NewProjectSandboxManagerWithDevHostAuth(
 			dockerCli,
 			runner.DevHostAuthOptions{
-				Enabled:     true,
-				OpenCodeBin: cfg.OpenCodeBinPath,
-				ConfigDir:   cfg.OpenCodeConfigDir,
-				DataDir:     cfg.OpenCodeDataDir,
+				Enabled:       true,
+				OpenCodeBin:   cfg.OpenCodeBinPath,
+				ConfigDir:     cfg.OpenCodeConfigDir,
+				DataDir:       cfg.OpenCodeDataDir,
+				IdleTimeout:   cfg.ProjectRuntimeIdleTimeout,
 			},
 		)
 		sandboxes = hostAuthSandboxMgr
