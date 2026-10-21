@@ -135,4 +135,149 @@ What next?
     expect(extractQuestionsFromText(null as unknown as string)).toEqual([]);
     expect(extractQuestionsFromText(undefined as unknown as string)).toEqual([]);
   });
+
+  it('extracts numbered title with bullet descriptions format (split-line and inline numbers)', () => {
+    const reportedMarkdown = `Proposed Improvements
+
+Before writing the plan, please let me know your preferences or priorities:
+
+1.
+Production Reliability & Lifecycle (Recommended):
+- Add ping/pong heartbeat mechanism and read/write deadlines (\`pongWait\`, \`pingPeriod\`, \`writeWait\`, \`maxMessageSize\`).
+- Add graceful shutdown support to \`Hub\` (using \`context.Context\`) and \`main.go\` (handling SIGINT/SIGTERM and graceful HTTP shutdown).
+- Harden client cleanup with \`sync.Once\` and non-blocking or coordinated unregistration to eliminate channel panics and goroutine leaks.
+- Replace flaky sleeps in tests with deterministic channel sync.
+
+2.
+Feature Additions (Optional):
+- Room / Channel support (grouping clients into topics/rooms).
+- Structured JSON messages (event types, payloads).
+- Configurable settings (via environment variables or flags).
+
+Which direction would you like to take, or should we proceed with Option 1 (Production Reliability, Lifecycles, and Hardening)?`;
+
+    const questions = extractQuestionsFromText(reportedMarkdown);
+    expect(questions).toHaveLength(1);
+    expect(questions[0].header).toBe('Proposed Improvements');
+    expect(questions[0].question).toBe(
+      'Which direction would you like to take, or should we proceed with Option 1 (Production Reliability, Lifecycles, and Hardening)?'
+    );
+    expect(questions[0].multiple).toBe(false);
+    expect(questions[0].options).toHaveLength(2);
+
+    expect(questions[0].options?.[0].label).toBe('Production Reliability & Lifecycle (Recommended)');
+    expect(questions[0].options?.[0].value).toBe('Production Reliability & Lifecycle (Recommended)');
+    expect(questions[0].options?.[0].description).toContain('Add ping/pong heartbeat mechanism');
+    expect(questions[0].options?.[0].description).toContain('graceful shutdown support to `Hub`');
+
+    expect(questions[0].options?.[1].label).toBe('Feature Additions (Optional)');
+    expect(questions[0].options?.[1].value).toBe('Feature Additions (Optional)');
+    expect(questions[0].options?.[1].description).toContain('Room / Channel support');
+  });
+
+  it('extracts inline numbered title with bullet descriptions format', () => {
+    const inlineMarkdown = `Architecture Proposal
+
+1. **Option 1: In-Memory Storage Engine (Recommended):**
+- Fast execution using map and RWMutex.
+- Zero network dependencies.
+
+2. **Option 2: Redis Key-Value Store:**
+- Multi-instance state synchronization.
+- Requires external Redis instance.
+
+Which direction would you like to take?`;
+
+    const questions = extractQuestionsFromText(inlineMarkdown);
+    expect(questions).toHaveLength(1);
+    expect(questions[0].header).toBe('Architecture Proposal');
+    expect(questions[0].question).toBe('Which direction would you like to take?');
+    expect(questions[0].options).toHaveLength(2);
+    expect(questions[0].options?.[0].label).toBe('Option 1: In-Memory Storage Engine (Recommended)');
+    expect(questions[0].options?.[0].description).toBe(
+      'Fast execution using map and RWMutex.\nZero network dependencies.'
+    );
+    expect(questions[0].options?.[1].label).toBe('Option 2: Redis Key-Value Store');
+    expect(questions[0].options?.[1].description).toBe(
+      'Multi-instance state synchronization.\nRequires external Redis instance.'
+    );
+  });
+
+  it('bounds long questions, labels, descriptions, and headers to safe limits', () => {
+    const longDesc1 = 'A'.repeat(3000);
+    const longLabel1 = 'B'.repeat(500);
+    const longQuestion = 'Which option do you prefer? ' + 'C'.repeat(800) + '?';
+    const longHeader = 'D'.repeat(300);
+
+    const longMarkdown = `${longHeader}
+
+1. ${longLabel1}
+- ${longDesc1}
+
+2. Normal Option
+- Simple bullet
+
+${longQuestion}`;
+
+    const questions = extractQuestionsFromText(longMarkdown);
+    expect(questions).toHaveLength(1);
+    expect(questions[0].header?.length).toBeLessThanOrEqual(150);
+    expect(questions[0].question.length).toBeLessThanOrEqual(500);
+    expect(questions[0].options?.[0].label.length).toBeLessThanOrEqual(200);
+    expect(questions[0].options?.[0].description?.length).toBeLessThanOrEqual(2000);
+  });
+
+  it('strips C0 and C1 control characters from extracted fields', () => {
+    const dirtyMarkdown = `Header\u0000\u001F
+
+1. Option One\u0007 (Recommended):
+- Bullet description\u0008 here.
+
+2. Option Two\u0080:
+- Bullet two\u009F here.
+
+Which direction would you like to take?`;
+
+    const questions = extractQuestionsFromText(dirtyMarkdown);
+    expect(questions).toHaveLength(1);
+    expect(questions[0].header).toBe('Header');
+    expect(questions[0].options?.[0].label).toBe('Option One (Recommended)');
+    expect(questions[0].options?.[0].description).toBe('Bullet description here.');
+    expect(questions[0].options?.[1].label).toBe('Option Two');
+    expect(questions[0].options?.[1].description).toBe('Bullet two here.');
+  });
+
+  it('does not false-positive on standard execution steps with bullet details without a choice question', () => {
+    const stepsMarkdown = `Migration Plan
+
+1. Prepare database
+- Create backup
+- Run pre-checks
+
+2. Execute migration
+- Apply DDL schema
+- Validate tables
+
+3. Post-verification
+- Check logs
+- Run test suite`;
+
+    const questions = extractQuestionsFromText(stepsMarkdown);
+    expect(questions).toHaveLength(0);
+  });
+
+  it('does not parse when sections have no bullet descriptions', () => {
+    const noBulletsMarkdown = `Options
+
+1. First Option
+2. Second Option
+
+Which direction do you prefer?`;
+
+    // Should fall back to extractNumberedChoice
+    const questions = extractQuestionsFromText(noBulletsMarkdown);
+    expect(questions).toHaveLength(1);
+    expect(questions[0].options?.[0].label).toBe('First Option');
+    expect(questions[0].options?.[0].description).toBeUndefined();
+  });
 });
