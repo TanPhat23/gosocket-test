@@ -1,0 +1,141 @@
+version: "3.8"
+
+networks:
+  ingress:
+    name: agent_ingress
+    driver: bridge
+  backend:
+    name: agent_backend
+    driver: bridge
+    internal: true
+
+volumes:
+  postgres_data:
+    name: agent_postgres_data
+  redis_data:
+    name: agent_redis_data
+  traefik_acme:
+    name: agent_traefik_acme
+
+services:
+  traefik:
+    image: traefik:v3.1
+    container_name: agent-traefik
+    restart: unless-stopped
+    command:
+      - "--configFile=/etc/traefik/traefik.yml"
+    environment:
+      - DOMAIN=${DOMAIN}
+      - TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_EMAIL=${ACME_EMAIL}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - "./deploy/traefik/traefik.yml:/etc/traefik/traefik.yml:ro"
+      - "./deploy/traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro"
+      - "./deploy/traefik/dashboard.htpasswd:/etc/traefik/dashboard.htpasswd:ro"
+      - "traefik_acme:/letsencrypt"
+    networks:
+      - ingress
+    # NOTICE: /var/run/docker.sock is NOT mounted here.
+
+  postgres:
+    image: postgres:18-alpine
+    container_name: agent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # Official PostgreSQL 18+ images define PGDATA as version-specific (/var/lib/postgresql/18/docker)
+      # and the base declared VOLUME as /var/lib/postgresql.
+      PGDATA: /var/lib/postgresql/18/docker
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: agent-redis
+    restart: unless-stopped
+    # Redis configuration is supplied via a configuration file mount to avoid exposing passwords in process arguments (argv)
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - redis_data:/data
+      - ./deploy/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - ./deploy/redis/redis-healthcheck.sh:/usr/local/bin/redis-healthcheck.sh:ro
+    networks:
+      - backend
+    healthcheck:
+      # Healthcheck invokes dedicated helper mounted read-only, reading credentials from file
+      test: ["CMD", "/usr/local/bin/redis-healthcheck.sh"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  dex:
+    image: dexidp/dex:v2.41.1
+    container_name: agent-dex
+    restart: unless-stopped
+    # Proposed production Dex config generated at bootstrap from deploy/dex/config.prod.yml.template
+    # Replaces development client secrets and removes hardcoded 'password123' static accounts
+    volumes:
+      - ./deploy/dex/config.prod.yml:/etc/dex/config.docker.yaml:ro
+    networks:
+      - ingress
+      - backend
+
+  control-plane:
+    image: agent-control-plane:latest
+    container_name: agent-control-plane
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      dex:
+        condition: service_started
+    environment:
+      APP_ENV: production
+      ATM_PROJECT_RUNTIME_IDLE_TIMEOUT: ${ATM_PROJECT_RUNTIME_IDLE_TIMEOUT:-15m}
+      PORT: "8080"
+      DATABASE_HOST: postgres
+      DATABASE_PORT: "5432"
+      DATABASE_USER: ${POSTGRES_USER}
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
+      DATABASE_NAME: ${POSTGRES_DB}
+      DATABASE_SSLMODE: disable
+      DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY}
+      OIDC_ISSUER_URL: https://${DOMAIN}/dex
+      OIDC_INTERNAL_ISSUER_URL: http://dex:5556/dex
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
+      OIDC_REDIRECT_URL: https://${DOMAIN}/api/v1/auth/callback
+      SESSION_SECRET: ${SESSION_SECRET}
+      MAX_CONCURRENT_TASKS: ${MAX_CONCURRENT_TASKS:-4}
+      TASK_TIMEOUT_MINUTES: ${TASK_TIMEOUT_MINUTES:-60}
+      GIT_SSL_NO_VERIFY: "false"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    networks:
+      - ingress
+      - backend
+
+  web-ui:
+    image: agent-web-ui:latest
+    container_name: agent-web-ui
+    restart: unless-stopped
+    environment:
+      INTERNAL_API_URL: http://control-plane:8080
+    networks:
+      - ingress

@@ -1,0 +1,39 @@
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    address: ":443"
+    http:
+      tls:
+        certResolver: letsencrypt
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      # NOTICE: In Traefik static configuration, environment variables in the file itself
+      # are not interpolated by Docker Compose. The authoritative Let's Encrypt account email
+      # is supplied via Traefik environment override configured in docker-compose.prod.yml:
+      # TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_EMAIL=${ACME_EMAIL}
+      storage: /letsencrypt/acme.json
+      httpChallenge:
+        entryPoint: web
+
+# NOTICE: 'providers.docker' is completely omitted to eliminate Docker socket access.
+providers:
+  file:
+    filename: /etc/traefik/dynamic.yml
+    watch: true
+
+# Traefik dashboard, served through the router in dynamic.yml behind basic auth.
+api:
+  dashboard: true

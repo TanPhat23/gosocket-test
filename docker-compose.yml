@@ -1,6 +1,187 @@
-# version: "3.0"
+networks:
+  ingress:
+    name: agent_ingress
+    driver: bridge
+  backend:
+    name: agent_backend
+    driver: bridge
+    internal: true
+
+volumes:
+  postgres_data:
+    name: agent_postgres_data
+  redis_data:
+    name: agent_redis_data
+  traefik_acme:
+    name: agent_traefik_acme
+
 services:
-  websocket:
-    build: .
+  traefik:
+    image: traefik:latest
+    container_name: agent-traefik
+    restart: unless-stopped
+    command:
+      - "--configFile=/etc/traefik/traefik.yml"
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+      - TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_EMAIL=${ACME_EMAIL:-admin@agenttaskmanager.io}
+      - TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_STORAGE=/letsencrypt/acme.json
+      - TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_HTTPCHALLENGE_ENTRYPOINT=web
     ports:
-      - "8080:8080"
+      - "80:80"
+      - "443:443"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "./deploy/traefik/traefik.yml:/etc/traefik/traefik.yml:ro"
+      - "./deploy/traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro"
+      - "./deploy/traefik/dashboard.htpasswd:/etc/traefik/dashboard.htpasswd:ro"
+      - "traefik_acme:/letsencrypt"
+    networks:
+      - ingress
+
+  postgres:
+    image: postgres:18-alpine
+    container_name: agent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-agent_tasks}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-agent_tasks}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: agent-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-secretredis}"]
+    volumes:
+      - redis_data:/data
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD:-secretredis}
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "test -n \"$$REDISCLI_AUTH\" && [ \"$$(redis-cli ping 2>&1)\" = \"PONG\" ]"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  dex:
+    image: dexidp/dex:v2.41.1
+    container_name: agent-dex
+    restart: unless-stopped
+    volumes:
+      - ./deploy/dex/config.yml:/etc/dex/config.docker.yaml:ro
+    networks:
+      - ingress
+      - backend
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=agent_ingress"
+      - "traefik.http.routers.dex.rule=Host(`${DOMAIN:-localhost}`) && PathPrefix(`/dex`)"
+      - "traefik.http.routers.dex.entrypoints=web,websecure"
+      - "traefik.http.services.dex.loadbalancer.server.port=5556"
+
+  control-plane:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: agent-control-plane:latest
+    container_name: agent-control-plane
+    restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      dex:
+        condition: service_started
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      ATM_DEV_FAKE_RUNTIME: ${ATM_DEV_FAKE_RUNTIME:-false}
+      ATM_DEV_HOST_AUTH: ${ATM_DEV_HOST_AUTH:-true}
+      ATM_PROJECT_RUNTIME_IDLE_TIMEOUT: ${ATM_PROJECT_RUNTIME_IDLE_TIMEOUT:-15m}
+      ATM_GIT_TRANSFER_ENABLED: ${ATM_GIT_TRANSFER_ENABLED:-true}
+      ATM_GIT_TRANSFER_IMAGE: ${ATM_GIT_TRANSFER_IMAGE:-localhost:5000/atm-git-transfer:dev@sha256:a40faf639143d818b5dd2ca076e70f9b3c3f39bc24646b7264b75325798bed74}
+      ATM_ENABLE_LOCAL_LOGIN: ${ATM_ENABLE_LOCAL_LOGIN:-true}
+      PORT: "8080"
+      DATABASE_HOST: postgres
+      DATABASE_PORT: "5432"
+      DATABASE_USER: ${POSTGRES_USER:-postgres}
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      DATABASE_NAME: ${POSTGRES_DB:-agent_tasks}
+      DATABASE_SSLMODE: disable
+      DATABASE_URL: "postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-agent_tasks}?sslmode=disable"
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-secretredis}
+      SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY:-01234567890123456789012345678901}
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-http://${DOMAIN:-localhost}/dex}
+      OIDC_INTERNAL_ISSUER_URL: ${OIDC_INTERNAL_ISSUER_URL:-http://dex:5556/dex}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-agent-control-plane}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-dev-oidc-secret-change-in-prod-1234}
+      OIDC_REDIRECT_URL: ${OIDC_REDIRECT_URL:-http://${DOMAIN:-localhost}/api/v1/auth/callback}
+      SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret-change-in-prod-1234}
+      MAX_CONCURRENT_TASKS: ${MAX_CONCURRENT_TASKS:-4}
+      TASK_TIMEOUT_MINUTES: ${TASK_TIMEOUT_MINUTES:-60}
+      HOST_WORKTREE_ROOT: ${HOST_WORKTREE_ROOT:-/home/ghug/Code/Go/agent-task-manager/data/worktrees}
+      HOST_REPO_ROOT: ${HOST_REPO_ROOT:-/home/ghug/Code/Go/agent-task-manager/data/repos}
+      OPENCODE_SERVER_URL: ${OPENCODE_SERVER_URL:-http://127.0.0.1:49374}
+      OPENCODE_PASSWORD: ${OPENCODE_PASSWORD:-4YXQ3udRl8k_UkFdyhHSFF-bdInQgKk0F9Qz6zp2y0U}
+      GIT_SSL_NO_VERIFY: ${GIT_SSL_NO_VERIFY:-true}
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "${HOST_WORKTREE_ROOT:-/home/ghug/Code/Go/agent-task-manager/data/worktrees}:${HOST_WORKTREE_ROOT:-/home/ghug/Code/Go/agent-task-manager/data/worktrees}"
+      - "${HOST_REPO_ROOT:-/home/ghug/Code/Go/agent-task-manager/data/repos}:${HOST_REPO_ROOT:-/home/ghug/Code/Go/agent-task-manager/data/repos}"
+      - "${HOME}/.config/opencode:/home/ghug/.config/opencode:ro"
+      - "${HOME}/.local/share/opencode:/home/ghug/.local/share/opencode:rw"
+      - "${HOME}/.opencode:/home/ghug/.opencode:ro"
+    networks:
+      - ingress
+      - backend
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=agent_ingress"
+      - "traefik.http.routers.control-plane.rule=Host(`${DOMAIN:-localhost}`) && (PathPrefix(`/api/v1`) || PathPrefix(`/ws`))"
+      - "traefik.http.routers.control-plane.entrypoints=web,websecure"
+      - "traefik.http.routers.control-plane.middlewares=security-headers@file"
+      - "traefik.http.services.control-plane.loadbalancer.server.port=8080"
+
+  web-ui:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    image: agent-web-ui:latest
+    container_name: agent-web-ui
+    restart: unless-stopped
+    environment:
+      INTERNAL_API_URL: http://control-plane:8080
+    networks:
+      - ingress
+      - backend
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=agent_ingress"
+      - "traefik.http.routers.web-ui.rule=Host(`${DOMAIN:-localhost}`)"
+      - "traefik.http.routers.web-ui.entrypoints=web,websecure"
+      - "traefik.http.routers.web-ui.middlewares=security-headers@file"
+      - "traefik.http.services.web-ui.loadbalancer.server.port=3000"
+
+  opencode-bridge:
+    image: alpine/socat:latest
+    container_name: agent-opencode-bridge
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - "/home/ghug/.local/share/opencode:/opencode:rw"
+    command: ["UNIX-LISTEN:/opencode/opencode.sock,fork,reuseaddr,unlink-early,mode=777", "TCP:127.0.0.1:49374"]

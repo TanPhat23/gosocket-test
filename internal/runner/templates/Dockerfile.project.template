@@ -1,0 +1,70 @@
+FROM {{requirePinnedRef .BaseImageRef}}
+
+# Base utilities and runtime dependencies required for tools and Alpine musl compatibility
+RUN apk add --no-cache \
+    ca-certificates \
+    git \
+    curl \
+    tar \
+    xz \
+    bash \
+    build-base \
+    libstdc++ \
+    libgcc \
+    gcompat \
+    icu-libs \
+    libintl \
+    libssl3 \
+    zlib
+
+# Multi-stage copy pinned OpenCode binary
+COPY --from={{requirePinnedRef .OpenCodeImageRef}} /usr/local/bin/opencode /usr/local/bin/opencode
+
+# Entrypoint that loads the per-instance OpenCode password from the tmpfs secret file (Gate 0G)
+COPY --chmod=0555 atm-entrypoint.sh /usr/local/bin/atm-entrypoint
+
+# Unprivileged user and workspace directory
+RUN addgroup -g 1000 opencode && \
+    adduser -u 1000 -G opencode -s /bin/sh -D opencode && \
+    mkdir -p /workspaces /var/lib/opencode && \
+    chown -R opencode:opencode /workspaces /var/lib/opencode
+
+# Task shells start from OpenCode's environment, which holds the OpenCode password and the gateway capability
+# token. Non-interactive bash sources BASH_ENV (set by the controller) first, so task commands do not inherit them.
+RUN printf '%s\n' 'unset OPENCODE_PASSWORD OPENCODE_SERVER_PASSWORD OPENCODE_CONFIG_CONTENT' > /usr/local/lib/atm-scrub.sh && \
+    chmod 0444 /usr/local/lib/atm-scrub.sh
+
+{{if .GatewayCASHA256}}
+# Trust anchor for the TLS-only LLM gateway (Gate 0G). Public certificate only; the private key never enters an image.
+COPY --chmod=0444 atm-gateway-ca.crt /usr/local/share/atm/gateway-ca.crt
+ENV NODE_EXTRA_CA_CERTS=/usr/local/share/atm/gateway-ca.crt
+LABEL io.atm.gateway-ca.sha256="{{.GatewayCASHA256}}"
+{{end}}
+{{range .Toolchains}}{{$layout := requireInstallLayout .InstallLayout}}
+# Toolchain: {{.Runtime}} {{.Version}}
+RUN set -eu; \
+    mkdir -p {{.ExtractPath}}; \
+    curl --proto '=https' --tlsv1.2 -fsSL -o /tmp/atm-toolchain.archive "{{.ArchiveURL}}"; \
+    echo "{{requireSHA256 .SHA256}}  /tmp/atm-toolchain.archive" | sha256sum -c -; \
+{{- if eq $layout "rust-installer"}}
+    mkdir -p /tmp/atm-toolchain-src; \
+    tar -x{{tarFlag .ArchiveFormat}}f /tmp/atm-toolchain.archive -C /tmp/atm-toolchain-src --strip-components=1; \
+    (cd /tmp/atm-toolchain-src && ./install.sh --prefix={{.ExtractPath}} --disable-ldconfig --without=rust-docs); \
+    rm -rf /tmp/atm-toolchain-src; \
+{{- else}}
+    tar -x{{tarFlag .ArchiveFormat}}f /tmp/atm-toolchain.archive -C {{.ExtractPath}} --strip-components=1; \
+{{- end}}
+    rm -f /tmp/atm-toolchain.archive; \
+    chown -R root:root {{.ExtractPath}}
+{{- if eq $layout "dotnet-root"}}
+ENV DOTNET_ROOT="{{.ExtractPath}}"
+ENV PATH="{{.ExtractPath}}:${PATH}"
+{{- else}}
+ENV PATH="{{.ExtractPath}}/bin:${PATH}"
+{{- end}}
+{{end}}
+
+WORKDIR /workspaces
+USER opencode:opencode
+ENTRYPOINT ["/usr/local/bin/atm-entrypoint"]
+CMD ["opencode", "serve", "--hostname", "0.0.0.0", "--port", "4096"]

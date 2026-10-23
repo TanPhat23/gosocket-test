@@ -1,0 +1,10 @@
+node_modules
+dist
+dist-ssr
+*.local
+*.tsbuildinfo
+*.timestamp_*.js
+*.timestamp-*.js
+.env
+.env.*
+!.env.example

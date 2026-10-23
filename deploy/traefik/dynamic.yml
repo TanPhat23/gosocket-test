@@ -1,0 +1,70 @@
+http:
+  middlewares:
+    security-headers:
+      headers:
+        sslRedirect: true
+        hostsProxyHeaders:
+          - "X-Forwarded-Host"
+        customResponseHeaders:
+          X-Content-Type-Options: "nosniff"
+          X-Frame-Options: "DENY"
+          X-XSS-Protection: "1; mode=block"
+          Referrer-Policy: "strict-origin-when-cross-origin"
+          Permissions-Policy: "camera=(), microphone=(), geolocation=()"
+
+    traefik-auth:
+      basicAuth:
+        usersFile: /etc/traefik/dashboard.htpasswd
+
+  routers:
+    web-ui:
+      rule: 'Host(`{{ env "DOMAIN" }}`)'
+      entryPoints:
+        - websecure
+      priority: 10
+      middlewares:
+        - security-headers
+      service: web-ui-service
+
+    control-plane:
+      rule: 'Host(`{{ env "DOMAIN" }}`) && (PathPrefix(`/api/v1`) || PathPrefix(`/ws`))'
+      entryPoints:
+        - websecure
+      priority: 100
+      middlewares:
+        - security-headers
+      service: control-plane-service
+
+    dex:
+      rule: 'Host(`{{ env "DOMAIN" }}`) && PathPrefix(`/dex`)'
+      entryPoints:
+        - websecure
+      priority: 100
+      service: dex-service
+
+    traefik-dashboard:
+      # Above the web-ui catch-all (priority 10) and the control-plane router (100), so /dashboard reaches Traefik.
+      rule: 'Host(`{{ env "DOMAIN" }}`) && (PathPrefix(`/dashboard`) || (PathPrefix(`/api`) && !PathPrefix(`/api/v1`)))'
+      entryPoints:
+        - websecure
+      priority: 200
+      middlewares:
+        - security-headers
+        - traefik-auth
+      service: api@internal
+
+  services:
+    web-ui-service:
+      loadBalancer:
+        servers:
+          - url: "http://web-ui:3000"
+
+    control-plane-service:
+      loadBalancer:
+        servers:
+          - url: "http://control-plane:8080"
+
+    dex-service:
+      loadBalancer:
+        servers:
+          - url: "http://dex:5556"

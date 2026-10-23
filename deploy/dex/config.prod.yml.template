@@ -1,0 +1,30 @@
+# deploy/dex/config.prod.yml.template
+issuer: https://${DOMAIN}/dex
+
+storage:
+  type: memory
+
+web:
+  http: 0.0.0.0:5556
+
+telemetry:
+  http: 0.0.0.0:5558
+
+frontend:
+  theme: "dark"
+  issuer: "Agent Task Manager"
+
+oauth2:
+  responseTypes: ["code"]
+  skipApprovalScreen: true
+
+staticClients:
+  - id: agent-control-plane
+    redirectURIs:
+      - 'https://${DOMAIN}/api/v1/auth/callback'
+    name: 'Agent Task Manager'
+    secret: '${OIDC_CLIENT_SECRET}'
+
+enablePasswordDB: false
+# Enterprise identity connectors configured by operator (e.g., GitHub, Google, LDAP)
+connectors: []

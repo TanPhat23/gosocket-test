@@ -1,0 +1,292 @@
+// Command gateway-qualify is the Gate 0G qualification harness. It is a test fixture for a disposable
+// VM and must never be deployed: it runs the production gateway.ServiceFromEnv wiring next to a fake
+// TLS upstream provider and a loopback-only admin endpoint that mints and revokes capability tokens.
+//
+//	gateway-qualify certs DIR      write ca.pem, upstream.pem, upstream.key for upstream.test, and gw-ca.pem, gateway.pem,
+//	                               gateway.key (separate CA, leaf for IP 172.29.0.2) for the TLS-only gateway listener
+//	gateway-qualify upstream DIR   fake provider on :9443 and a redirect-target listener on :9444
+//	gateway-qualify gateway        the real gateway (ATM_GATEWAY_* env) plus admin on 127.0.0.1:9100 (override with GWQ_ADMIN)
+//
+// The fake upstream picks a behaviour from a MODE:<name> marker in the prompt: stream, redirect, err500,
+// err429, echo (default). Every request is appended to /run/gwq-upstream.log as one JSON line.
+package main
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/hex"
+	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"math/big"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+
+	"agent-task-manager/internal/gateway"
+)
+
+const upstreamLog = "/run/gwq-upstream.log"
+
+func main() {
+	if len(os.Args) < 2 {
+		log.Fatal("usage: gateway-qualify certs|upstream|gateway")
+	}
+	switch os.Args[1] {
+	case "certs":
+		must(writeCerts(os.Args[2]))
+	case "upstream":
+		must(runUpstream(os.Args[2]))
+	case "config": // config BASEURL TOKEN: the real OpenCodeConfig builder
+		out, err := gateway.OpenCodeConfig(gateway.OpenCodeConfigParams{BaseURL: os.Args[2], Token: os.Args[3], Models: []string{"m1"}, ContextTokens: 8000, OutputTokens: 100})
+		must(err)
+		fmt.Print(out)
+	case "gateway":
+		must(runGateway())
+	default:
+		log.Fatal("unknown command")
+	}
+}
+
+func must(err error) {
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func writeCerts(dir string) error {
+	caKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	caTpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "gwq test CA"}, NotBefore: time.Now().Add(-time.Hour),
+		NotAfter: time.Now().Add(48 * time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTpl, caTpl, &caKey.PublicKey, caKey)
+	if err != nil {
+		return err
+	}
+	srvKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	srvTpl := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "upstream.test"}, DNSNames: []string{"upstream.test"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(48 * time.Hour), ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	caCert, _ := x509.ParseCertificate(caDER)
+	srvDER, err := x509.CreateCertificate(rand.Reader, srvTpl, caCert, &srvKey.PublicKey, caKey)
+	if err != nil {
+		return err
+	}
+	keyDER, _ := x509.MarshalECPrivateKey(srvKey)
+
+	// The gateway's own CA is separate from the fake provider's: sandboxes trust only this one.
+	gcaKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	gcaTpl := &x509.Certificate{SerialNumber: big.NewInt(3), Subject: pkix.Name{CommonName: "gwq gateway CA"}, NotBefore: time.Now().Add(-time.Hour),
+		NotAfter: time.Now().Add(48 * time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	gcaDER, err := x509.CreateCertificate(rand.Reader, gcaTpl, gcaTpl, &gcaKey.PublicKey, gcaKey)
+	if err != nil {
+		return err
+	}
+	gcaCert, _ := x509.ParseCertificate(gcaDER)
+	gwKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	gwTpl := &x509.Certificate{SerialNumber: big.NewInt(4), Subject: pkix.Name{CommonName: "gateway"}, IPAddresses: []net.IP{net.ParseIP("172.29.0.2")},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(48 * time.Hour), ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	gwDER, err := x509.CreateCertificate(rand.Reader, gwTpl, gcaCert, &gwKey.PublicKey, gcaKey)
+	if err != nil {
+		return err
+	}
+	gwKeyDER, _ := x509.MarshalECPrivateKey(gwKey)
+	for name, blk := range map[string]*pem.Block{
+		"gw-ca.pem": {Type: "CERTIFICATE", Bytes: gcaDER}, "gateway.pem": {Type: "CERTIFICATE", Bytes: gwDER}, "gateway.key": {Type: "EC PRIVATE KEY", Bytes: gwKeyDER},
+		"ca.pem": {Type: "CERTIFICATE", Bytes: caDER}, "upstream.pem": {Type: "CERTIFICATE", Bytes: srvDER}, "upstream.key": {Type: "EC PRIVATE KEY", Bytes: keyDER}} {
+		if err := os.WriteFile(filepath.Join(dir, name), pem.EncodeToMemory(blk), 0o600); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+var logMu sync.Mutex
+
+func record(kind string, fields map[string]any) {
+	fields["kind"], fields["t"] = kind, time.Now().UnixMilli()
+	b, _ := json.Marshal(fields)
+	logMu.Lock()
+	defer logMu.Unlock()
+	if f, err := os.OpenFile(upstreamLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+		f.Write(append(b, '\n'))
+		f.Close()
+	}
+}
+
+func runUpstream(dir string) error {
+	cert, err := tlsPair(dir)
+	if err != nil {
+		return err
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		sum := sha256.Sum256(body)
+		mode := "echo"
+		if i := strings.Index(string(body), "MODE:"); i >= 0 {
+			mode = strings.FieldsFunc(string(body)[i+5:], func(c rune) bool { return c < '0' || (c > '9' && c < 'a') || c > 'z' })[0]
+		}
+		var req map[string]any
+		_ = json.Unmarshal(body, &req)
+		record("request", map[string]any{"path": r.URL.Path, "mode": mode, "authorization": r.Header.Get("Authorization"),
+			"x_api_key": r.Header.Get("X-Api-Key"), "proxy_auth": r.Header.Get("Proxy-Authorization"), "cookie": r.Header.Get("Cookie"),
+			"body_sha": hex.EncodeToString(sum[:4]), "max_tokens": req["max_tokens"], "max_completion_tokens": req["max_completion_tokens"]})
+		sbody := string(body)
+		record("flags", map[string]any{"has_tool_result": strings.Contains(sbody, `"role":"tool"`),
+			"has_pw_name":  strings.Contains(sbody, "OPENCODE_PASSWORD"),
+			"has_cfg_name": strings.Contains(sbody, "OPENCODE_CONFIG_CONTENT"),
+			"has_token":    strings.Contains(sbody, "eyJwIjoi"),
+			"has_prov_key": strings.Contains(sbody, "PROVIDER-SECRET") || strings.Contains(sbody, "ROTATED-KEY"),
+			"has_sk":       strings.Contains(sbody, "sk-"),
+			"has_home":     strings.Contains(sbody, "HOME="), "has_port": strings.Contains(sbody, "OPENCODE_SERVER_PORT"), "body_len": len(sbody), "tool_text": toolText(sbody), "tool_names": regexp.MustCompile(`"function":\{"name":"([A-Za-z_]+)"`).FindAllString(sbody, 40),
+			"env_names_seen": envNames(sbody)})
+		stream, _ := req["stream"].(bool)
+		if (mode == "tool" && !strings.Contains(sbody, `"role":"tool"`)) || ((mode == "echo" || mode == "tool") && stream) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			if mode == "tool" && !strings.Contains(sbody, `"role":"tool"`) {
+				cmd := "printenv"
+				if a := strings.Index(sbody, "CMD["); a >= 0 {
+					if b := strings.Index(sbody[a:], "]"); b > 0 {
+						cmd = sbody[a+4 : a+b]
+					}
+				}
+				args, _ := json.Marshal(map[string]string{"command": cmd, "description": "x"})
+				chunk, _ := json.Marshal(map[string]any{"id": "c1", "object": "chat.completion.chunk", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{"index": 0, "id": "call_1", "type": "function", "function": map[string]any{"name": "shell", "arguments": string(args)}}}}, "finish_reason": nil}}})
+				fmt.Fprint(w, "data: "+string(chunk)+"\n\n")
+				fmt.Fprint(w, `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`+"\n\n")
+			} else {
+				fmt.Fprint(w, `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"hello from fake upstream"},"finish_reason":null}]}`+"\n\n")
+				fmt.Fprint(w, `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`+"\n\n")
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			return
+		}
+		switch mode {
+		case "redirect":
+			http.Redirect(w, r, "https://upstream.test:9444/stolen", http.StatusFound)
+		case "err500":
+			http.Error(w, `{"error":"boom","echo":"`+r.Header.Get("Authorization")+` SECRET-PROMPT-TEXT"}`, 500)
+		case "err429":
+			http.Error(w, `{"error":"slow down"}`, 429)
+		case "stream":
+			w.Header().Set("Content-Type", "text/event-stream")
+			fl := w.(http.Flusher)
+			for i := 0; i < 40; i++ {
+				select {
+				case <-r.Context().Done():
+					record("stream_aborted", map[string]any{"after_chunks": i})
+					return
+				default:
+				}
+				fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"tok%d \"}}]}\n\n", i)
+				fl.Flush()
+				time.Sleep(250 * time.Millisecond)
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			record("stream_completed", map[string]any{})
+		case "nousage":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"no usage reported"},"finish_reason":"stop"}]}`)
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"hello from fake upstream"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`)
+		}
+	})
+	redir := http.NewServeMux()
+	redir.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		record("redirect_target_hit", map[string]any{"authorization": r.Header.Get("Authorization"), "x_api_key": r.Header.Get("X-Api-Key")})
+	})
+	go func() { must(serveTLS(":9444", redir, cert)) }()
+	return serveTLS(":9443", mux, cert)
+}
+
+func tlsPair(dir string) (tls.Certificate, error) {
+	return tls.LoadX509KeyPair(filepath.Join(dir, "upstream.pem"), filepath.Join(dir, "upstream.key"))
+}
+
+func serveTLS(addr string, h http.Handler, cert tls.Certificate) error {
+	srv := &http.Server{Addr: addr, Handler: h, TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}}}
+	return srv.ListenAndServeTLS("", "")
+}
+
+// runGateway runs the production wiring (ServiceFromEnv + Run) and, on loopback only, an admin endpoint:
+//
+//	/grant?project=P&lease=L[&ttl=30s]  -> token on stdout body
+//	/release?lease=L
+//	/revoke?lease=L                     -> Issuer.Revoke only (no quota forget)
+func runGateway() error {
+	svc, err := gateway.ServiceFromEnv(os.Getenv, os.ReadFile, log.Printf)
+	if err != nil {
+		return err
+	}
+	if svc == nil {
+		return errors.New("gateway disabled (ATM_GATEWAY_ENABLED not true)")
+	}
+	broker, err := svc.NewBroker("https://"+svc.Addr+"/v1", time.Hour)
+	if err != nil {
+		return err
+	}
+	admin := http.NewServeMux()
+	admin.HandleFunc("/grant", func(w http.ResponseWriter, r *http.Request) {
+		ttl := time.Hour
+		if v := r.URL.Query().Get("ttl"); v != "" {
+			d, err := time.ParseDuration(v)
+			if err != nil {
+				http.Error(w, err.Error(), 400)
+				return
+			}
+			ttl = d
+		}
+		tok := svc.Issuer.Mint(gateway.Claims{ProjectID: r.URL.Query().Get("project"), TaskID: "project", AttemptID: r.URL.Query().Get("lease")}, ttl)
+		fmt.Fprint(w, tok)
+	})
+	admin.HandleFunc("/release", func(w http.ResponseWriter, r *http.Request) { broker.Release(r.URL.Query().Get("lease")) })
+	admin.HandleFunc("/revoke", func(w http.ResponseWriter, r *http.Request) { svc.Issuer.Revoke(r.URL.Query().Get("lease")) })
+	adminAddr := os.Getenv("GWQ_ADMIN")
+	if adminAddr == "" {
+		adminAddr = "127.0.0.1:9100"
+	}
+	go func() { must(http.ListenAndServe(adminAddr, admin)) }()
+	ln, err := svc.Listen()
+	if err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	return svc.Run(ctx, ln)
+}
+
+// envNames lists the sensitive-looking NAME= tokens present in a request body (values are never recorded).
+func envNames(body string) []string {
+	var out []string
+	for _, m := range regexp.MustCompile(`[A-Z_]*(?:KEY|SECRET|TOKEN|PASS[A-Z]*|CONFIG_CONTENT)[A-Z_]*=`).FindAllString(strings.ReplaceAll(body, `\n`, "\n"), -1) {
+		out = append(out, m)
+	}
+	return out
+}
+
+func toolText(body string) string {
+	i := strings.LastIndex(body, `"role":"tool"`)
+	if i < 0 {
+		return ""
+	}
+	j := i + 700
+	if j > len(body) {
+		j = len(body)
+	}
+	return body[i:j]
+}

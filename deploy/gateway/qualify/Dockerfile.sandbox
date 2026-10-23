@@ -1,0 +1,12 @@
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates curl bash libstdc++ libgcc gcompat icu-libs libintl libssl3 zlib
+COPY --from=ghcr.io/anomalyco/opencode:2.0.26 /usr/local/bin/opencode /usr/local/bin/opencode
+COPY --chmod=0555 atm-entrypoint.sh /usr/local/bin/atm-entrypoint
+RUN addgroup -g 1000 opencode && adduser -u 1000 -G opencode -s /bin/sh -D opencode && mkdir -p /workspaces /var/lib/opencode && chown -R opencode:opencode /workspaces /var/lib/opencode
+# Gate 0G transport trust: the gateway CA certificate (public only), exactly as Dockerfile.project.template adds it.
+COPY --chmod=0444 gw-ca.pem /usr/local/share/atm/gateway-ca.crt
+ENV NODE_EXTRA_CA_CERTS=/usr/local/share/atm/gateway-ca.crt
+WORKDIR /workspaces
+USER opencode:opencode
+ENTRYPOINT ["/usr/local/bin/atm-entrypoint"]
+CMD ["opencode", "serve", "--hostname", "0.0.0.0", "--port", "4096"]

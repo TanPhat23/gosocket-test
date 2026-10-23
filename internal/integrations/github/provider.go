@@ -1,0 +1,449 @@
+package github
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"agent-task-manager/internal/dto"
+	"agent-task-manager/internal/integrations"
+	"agent-task-manager/internal/integrations/httpx"
+	"agent-task-manager/internal/models"
+)
+
+const (
+	defaultBaseURL = "https://api.github.com"
+	defaultTimeout = 10 * time.Second
+)
+
+// VerifySignature validates a GitHub webhook payload using HMAC-SHA256.
+func VerifySignature(secret string, payload []byte, signatureHeader string) bool {
+	if secret == "" || signatureHeader == "" {
+		return false
+	}
+	if !strings.HasPrefix(signatureHeader, "sha256=") {
+		return false
+	}
+	sigHex := strings.TrimPrefix(signatureHeader, "sha256=")
+	sigBytes, err := hex.DecodeString(sigHex)
+	if err != nil {
+		return false
+	}
+
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(payload)
+	expectedMAC := mac.Sum(nil)
+
+	return hmac.Equal(sigBytes, expectedMAC)
+}
+
+// Provider implements integrations.SyncProvider and integrations.PullRequestProvider for GitHub.
+type Provider struct {
+	httpClient *http.Client
+	baseURL    string
+}
+
+// Option configures Provider.
+type Option func(*Provider)
+
+// WithBaseURL overrides the GitHub API baseURL (useful for tests or GitHub Enterprise).
+func WithBaseURL(rawURL string) Option {
+	return func(p *Provider) {
+		p.baseURL = strings.TrimRight(rawURL, "/")
+	}
+}
+
+// WithHTTPClient overrides the default HTTP client.
+func WithHTTPClient(client *http.Client) Option {
+	return func(p *Provider) {
+		p.httpClient = client
+	}
+}
+
+// NewProvider creates a new GitHub provider instance.
+func NewProvider(opts ...Option) *Provider {
+	p := &Provider{
+		httpClient: &http.Client{Timeout: defaultTimeout},
+		baseURL:    defaultBaseURL,
+	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
+}
+
+// Provider returns the IntegrationGitHub enum.
+func (p *Provider) Provider() models.IntegrationProvider {
+	return models.IntegrationGitHub
+}
+
+// parseRepo resolves "owner/repo" from ProjectIntegration.
+func parseRepo(integration *models.ProjectIntegration) (string, error) {
+	if integration == nil {
+		return "", errors.New("nil integration")
+	}
+	if integration.ExternalID != "" {
+		parts := strings.Split(integration.ExternalID, "/")
+		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+			return integration.ExternalID, nil
+		}
+	}
+	if integration.Config != nil {
+		if repo, ok := models.ConfigValue[string](integration.Config, "repo"); ok && repo != "" {
+			return repo, nil
+		}
+	}
+	return "", errors.New("missing or invalid repository name in ExternalID (expected 'owner/repo')")
+}
+
+func (p *Provider) doRequest(ctx context.Context, method, endpoint, token string, body any) (*http.Response, error) {
+	headers := map[string]string{"Accept": "application/vnd.github+json"}
+	if token != "" {
+		headers["Authorization"] = "Bearer " + token
+	}
+	return httpx.Do(ctx, p.httpClient, method, p.baseURL+endpoint, body, headers, "github api")
+}
+
+type ghIssue struct {
+	Number      int      `json:"number"`
+	Title       string   `json:"title"`
+	Body        string   `json:"body"`
+	State       string   `json:"state"`
+	HTMLURL     string   `json:"html_url"`
+	PullRequest any      `json:"pull_request,omitempty"`
+	Labels      []struct {
+		Name string `json:"name"`
+	} `json:"labels"`
+}
+
+// FetchIssues fetches open issues for the configured repo.
+func (p *Provider) FetchIssues(ctx context.Context, integration *models.ProjectIntegration, plainSecret string) ([]integrations.ExternalIssue, error) {
+	repo, err := parseRepo(integration)
+	if err != nil {
+		return nil, err
+	}
+
+	// Filter by state=open
+	endpoint := fmt.Sprintf("/repos/%s/issues?state=open", repo)
+	resp, err := p.doRequest(ctx, http.MethodGet, endpoint, plainSecret, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if err := httpx.CheckSuccess(resp, "github api returned status"); err != nil {
+		return nil, err
+	}
+
+	ghIssues, err := httpx.DecodeJSON[[]ghIssue](resp.Body, "issues")
+	if err != nil {
+		return nil, err
+	}
+
+	var issues []integrations.ExternalIssue
+	for _, it := range ghIssues {
+		// Ignore pull requests returned by GitHub issues endpoint
+		if it.PullRequest != nil {
+			continue
+		}
+		var labels []string
+		for _, l := range it.Labels {
+			labels = append(labels, l.Name)
+		}
+		issues = append(issues, integrations.ExternalIssue{
+			ID:          fmt.Sprintf("%d", it.Number),
+			Title:       it.Title,
+			Description: it.Body,
+			Status:      it.State,
+			URL:         it.HTMLURL,
+			Labels:      labels,
+		})
+	}
+
+	return issues, nil
+}
+
+// UpdateIssueStatus updates issue state and/or adds labels (e.g. in-progress:agent).
+func (p *Provider) UpdateIssueStatus(ctx context.Context, integration *models.ProjectIntegration, plainSecret string, externalID string, status string) error {
+	repo, err := parseRepo(integration)
+	if err != nil {
+		return err
+	}
+
+	// GitHub issue state can be 'open' or 'closed'. Other statuses are represented by labels.
+	ghState := ""
+	if status == "closed" || status == "done" {
+		ghState = "closed"
+	} else if status == "open" {
+		ghState = "open"
+	}
+
+	if ghState != "" {
+		endpoint := fmt.Sprintf("/repos/%s/issues/%s", repo, url.PathEscape(externalID))
+		payload := map[string]any{"state": ghState}
+		resp, err := p.doRequest(ctx, http.MethodPatch, endpoint, plainSecret, payload)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if err := httpx.CheckSuccess(resp, "github update issue state returned"); err != nil {
+			return err
+		}
+	}
+
+	// If status represents an agent label transition such as "in_progress" or "in-progress:agent"
+	if strings.Contains(status, "progress") || strings.Contains(status, "agent") || strings.Contains(status, "review") {
+		labelName := status
+		if status == "in_progress" {
+			labelName = "in-progress:agent"
+		}
+		endpoint := fmt.Sprintf("/repos/%s/issues/%s/labels", repo, url.PathEscape(externalID))
+		payload := map[string]any{"labels": []string{labelName}}
+		resp, err := p.doRequest(ctx, http.MethodPost, endpoint, plainSecret, payload)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if err := httpx.CheckSuccess(resp, "github add label returned"); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// AddComment posts a comment to the specified issue.
+func (p *Provider) AddComment(ctx context.Context, integration *models.ProjectIntegration, plainSecret string, externalID string, comment string) error {
+	repo, err := parseRepo(integration)
+	if err != nil {
+		return err
+	}
+
+	endpoint := fmt.Sprintf("/repos/%s/issues/%s/comments", repo, url.PathEscape(externalID))
+	payload := map[string]string{"body": comment}
+	resp, err := p.doRequest(ctx, http.MethodPost, endpoint, plainSecret, payload)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if err := httpx.CheckSuccess(resp, "github add comment returned"); err != nil {
+		return err
+	}
+	return nil
+}
+
+type ghPRResponse struct {
+	HTMLURL string `json:"html_url"`
+}
+
+// CreatePullRequest creates a pull request on the GitHub repository.
+func (p *Provider) CreatePullRequest(ctx context.Context, integration *models.ProjectIntegration, plainSecret string, branch, title, body string) (string, error) {
+	repo, err := parseRepo(integration)
+	if err != nil {
+		return "", err
+	}
+
+	baseBranch := "main"
+	if integration.Config != nil {
+		if b, ok := models.ConfigValue[string](integration.Config, "base_branch"); ok && b != "" {
+			baseBranch = b
+		}
+	}
+
+	endpoint := fmt.Sprintf("/repos/%s/pulls", repo)
+	payload := map[string]string{
+		"title": title,
+		"head":  branch,
+		"base":  baseBranch,
+		"body":  body,
+	}
+
+	resp, err := p.doRequest(ctx, http.MethodPost, endpoint, plainSecret, payload)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if err := httpx.CheckSuccess(resp, "github create pull request returned"); err != nil {
+		return "", err
+	}
+
+	prResp, err := httpx.DecodeJSON[ghPRResponse](resp.Body, "pr response")
+	if err != nil {
+		return "", err
+	}
+
+	return prResp.HTMLURL, nil
+}
+
+func parsePRNumber(prNumberOrURL string) (int, error) {
+	s := strings.TrimSpace(prNumberOrURL)
+	s = strings.TrimRight(s, "/")
+	if idx := strings.LastIndex(s, "/"); idx != -1 {
+		s = s[idx+1:]
+	}
+	var num int
+	_, err := fmt.Sscanf(s, "%d", &num)
+	if err != nil || num <= 0 {
+		return 0, fmt.Errorf("invalid pull request number or URL: %q", prNumberOrURL)
+	}
+	return num, nil
+}
+
+type ghPRDetailResponse struct {
+	Number   int    `json:"number"`
+	State    string `json:"state"`
+	Merged   bool   `json:"merged"`
+	MergedAt string `json:"merged_at"`
+	HTMLURL  string `json:"html_url"`
+}
+
+// GetPullRequestStatus queries GitHub for the status of a pull request.
+func (p *Provider) GetPullRequestStatus(ctx context.Context, integration *models.ProjectIntegration, plainSecret string, prNumberOrURL string) (*integrations.PullRequestStatus, error) {
+	repo, err := parseRepo(integration)
+	if err != nil {
+		return nil, err
+	}
+
+	prNum, err := parsePRNumber(prNumberOrURL)
+	if err != nil {
+		return nil, err
+	}
+
+	endpoint := fmt.Sprintf("/repos/%s/pulls/%d", repo, prNum)
+	resp, err := p.doRequest(ctx, http.MethodGet, endpoint, plainSecret, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if err := httpx.CheckSuccess(resp, "github get pull request returned"); err != nil {
+		return nil, err
+	}
+
+	detail, err := httpx.DecodeJSON[ghPRDetailResponse](resp.Body, "pull request details")
+	if err != nil {
+		return nil, err
+	}
+
+	return &integrations.PullRequestStatus{
+		Number:   detail.Number,
+		State:    detail.State,
+		Merged:   detail.Merged,
+		MergedAt: detail.MergedAt,
+		HTMLURL:  detail.HTMLURL,
+	}, nil
+}
+
+type ghRepoResponse struct {
+	ID            int64  `json:"id"`
+	Name          string `json:"name"`
+	FullName      string `json:"full_name"`
+	Private       bool   `json:"private"`
+	Description   string `json:"description"`
+	HTMLURL       string `json:"html_url"`
+	DefaultBranch string `json:"default_branch"`
+}
+
+// ListRepositories lists repositories accessible by the given GitHub PAT.
+func (p *Provider) ListRepositories(ctx context.Context, token string) ([]dto.GitHubRepositoryDTO, error) {
+	if token == "" {
+		return nil, errors.New("github token cannot be empty")
+	}
+
+	endpoint := "/user/repos?sort=updated&per_page=100&affiliation=owner,collaborator,organization_member"
+	resp, err := p.doRequest(ctx, http.MethodGet, endpoint, token, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, errors.New("invalid or expired github token")
+	}
+	if resp.StatusCode == http.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		if strings.Contains(strings.ToLower(string(body)), "rate limit") {
+			return nil, errors.New("github api rate limit exceeded")
+		}
+		return nil, fmt.Errorf("github api access forbidden: %s", string(body))
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil, errors.New("github api rate limit exceeded")
+	}
+	if err := httpx.CheckSuccess(resp, "github list repositories returned"); err != nil {
+		return nil, err
+	}
+
+	ghRepos, err := httpx.DecodeJSON[[]ghRepoResponse](resp.Body, "github repositories")
+	if err != nil {
+		return nil, err
+	}
+
+	repos := make([]dto.GitHubRepositoryDTO, 0, len(ghRepos))
+	for _, r := range ghRepos {
+		repos = append(repos, dto.GitHubRepositoryDTO{
+			ID:            r.ID,
+			Name:          r.Name,
+			FullName:      r.FullName,
+			Private:       r.Private,
+			Description:   r.Description,
+			HTMLURL:       r.HTMLURL,
+			DefaultBranch: r.DefaultBranch,
+		})
+	}
+
+	return repos, nil
+}
+
+// ListBranches lists all branches for a given repository.
+func (p *Provider) ListBranches(ctx context.Context, token, owner, repo string) ([]string, error) {
+	if token == "" {
+		return nil, errors.New("github token cannot be empty")
+	}
+	if owner == "" || repo == "" {
+		return nil, errors.New("owner and repo cannot be empty")
+	}
+
+	endpoint := fmt.Sprintf("/repos/%s/%s/branches?per_page=100", url.PathEscape(owner), url.PathEscape(repo))
+	resp, err := p.doRequest(ctx, http.MethodGet, endpoint, token, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, errors.New("invalid or expired github token")
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, errors.New("repository not found or token lacks access")
+	}
+	if err := httpx.CheckSuccess(resp, "github list branches returned"); err != nil {
+		return nil, err
+	}
+
+	type ghBranchItem struct {
+		Name string `json:"name"`
+	}
+	ghBranches, err := httpx.DecodeJSON[[]ghBranchItem](resp.Body, "github branches")
+	if err != nil {
+		return nil, err
+	}
+
+	branches := make([]string, 0, len(ghBranches))
+	for _, b := range ghBranches {
+		if b.Name != "" {
+			branches = append(branches, b.Name)
+		}
+	}
+	return branches, nil
+}
