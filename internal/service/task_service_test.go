@@ -458,6 +458,41 @@ func TestTaskServiceSessionIDGenerationAndExecution(t *testing.T) {
 		t.Fatalf("expected SessionID %s, got %+v", expectedSessionID, created.SessionID)
 	}
 
+	// 1b. CreateTask with valid/invalid images
+	badImageReq := &dto.CreateTaskRequest{
+		ProjectID:    project.ID,
+		Title:        "Bad Image Task",
+		Prompt:       "Run prompt",
+		AssigneeID:   "agent-1",
+		AssigneeType: models.AssigneeAgent,
+		Priority:     int(models.PriorityNormal),
+		Images: []dto.SessionImageDTO{
+			{Name: "bad.svg", MIME: "image/svg+xml", Data: "PHN2Zz4="},
+		},
+	}
+	if _, err := taskSvc.CreateTask(ctx, badImageReq, user.ID); err == nil {
+		t.Fatal("expected error for unsupported image type, got nil")
+	}
+
+	validImageReq := &dto.CreateTaskRequest{
+		ProjectID:    project.ID,
+		Title:        "Valid Image Task",
+		Prompt:       "Run prompt with image",
+		AssigneeID:   "agent-1",
+		AssigneeType: models.AssigneeAgent,
+		Priority:     int(models.PriorityNormal),
+		Images: []dto.SessionImageDTO{
+			{Name: "shot.png", MIME: "image/png", Data: "aGVsbG8="},
+		},
+	}
+	createdWithImg, err := taskSvc.CreateTask(ctx, validImageReq, user.ID)
+	if err != nil {
+		t.Fatalf("CreateTask with valid image failed: %v", err)
+	}
+	if createdWithImg.ID == "" {
+		t.Fatal("expected created task with image to have valid ID")
+	}
+
 	// Verify dto.ToTaskResponse mapping includes SessionID
 	resp := dto.ToTaskResponse(created)
 	if resp.SessionID == nil || *resp.SessionID != expectedSessionID {

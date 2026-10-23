@@ -480,6 +480,10 @@ func (s *taskService) CreateTask(ctx context.Context, req *dto.CreateTaskRequest
 		return nil, fmt.Errorf("invalid create task request: %w", err)
 	}
 
+	if _, err := steerFiles(req.Images); err != nil {
+		return nil, err
+	}
+
 	if _, err := s.authorizeUserForProject(ctx, req.ProjectID, userID, models.RoleMember); err != nil {
 		return nil, err
 	}

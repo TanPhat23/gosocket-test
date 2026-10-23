@@ -19,6 +19,7 @@ type CreateTaskRequest struct {
 	Model         *string             `json:"model,omitempty"`
 	Skills        []string            `json:"skills,omitempty"`
 	MCPServers    []string            `json:"mcp_servers,omitempty"`
+	Images        []SessionImageDTO   `json:"images,omitempty"`
 }
 
 // TaskResponse represents the API response serialization for a Task.
