@@ -150,10 +150,12 @@ describe('apiClient (axios)', () => {
       title: 'Fix issue',
       prompt: 'Refactor module',
       assignee_id: 'agent-1',
+      images: [{ name: 'diag.png', mime: 'image/png', data: 'aGVsbG8=' }],
     });
     expect(created.id).toBe('task-1');
     expect(postSpy).toHaveBeenCalledWith('/tasks', expect.objectContaining({
       title: 'Fix issue',
+      images: [{ name: 'diag.png', mime: 'image/png', data: 'aGVsbG8=' }],
     }));
 
     const fetched = await apiClient.getTask('task-1');

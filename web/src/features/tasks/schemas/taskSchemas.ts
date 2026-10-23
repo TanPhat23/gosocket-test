@@ -26,6 +26,15 @@ export const CreateTaskRequestSchema = z.object({
   model: z.string().optional(),
   skills: z.array(z.string()).optional().default([]),
   mcp_servers: z.array(z.string()).optional().default([]),
+  images: z
+    .array(
+      z.object({
+        name: z.string().optional(),
+        mime: z.string(),
+        data: z.string(),
+      })
+    )
+    .optional(),
 });
 
 export type CreateTaskInput = z.input<typeof CreateTaskRequestSchema>;
