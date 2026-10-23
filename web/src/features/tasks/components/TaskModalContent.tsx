@@ -22,7 +22,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { AlertCircle } from 'lucide-react';
+import { AlertCircle, AlertTriangle, ImagePlus, X } from 'lucide-react';
+import {
+  readSteerImages,
+  type SteerImage,
+  MAX_STEER_IMAGES,
+  STEER_IMAGE_TYPES,
+} from '../utils/steerImages';
 import { integrationApi } from '@/features/integrations/api/integrationApi';
 import type { IntegrationDTO } from '@/features/integrations/schemas/integrationSchemas';
 import { projectIntegrationsQueryOptions, gitHubBranchesQueryOptions } from '@/features/integrations/queries';
@@ -70,6 +76,18 @@ export const TaskModalContent: React.FC<TaskModalContentProps> = ({ open, onOpen
   const projects = useProjectsList();
   const activeProjectId = useActiveProjectId();
   const activeTeamId = useActiveTeamId();
+
+  const [images, setImages] = React.useState<SteerImage[]>([]);
+  const [imageError, setImageError] = React.useState<string | null>(null);
+  const imageInputRef = React.useRef<HTMLInputElement>(null);
+
+  const attachImages = async (files: File[]) => {
+    const { images: added, error: attachError } = await readSteerImages(files, images.length);
+    if (attachError) setImageError(attachError);
+    if (added.length) setImages((prev) => [...prev, ...added]);
+  };
+
+  const removeImage = (id: string) => setImages((prev) => prev.filter((img) => img.id !== id));
 
   const defaultModel = useWorkspaceSettingsStore((state) => state.defaultModel);
   const defaultPriority = useWorkspaceSettingsStore((state) => state.defaultPriority);
@@ -130,6 +148,7 @@ export const TaskModalContent: React.FC<TaskModalContentProps> = ({ open, onOpen
             assignee_type: 'agent',
             priority: Number(priority),
             model: value.model.trim() || undefined,
+            images: images.length ? images.map(({ name, mime, data }) => ({ name, mime, data })) : undefined,
           },
           projectId: projectId.trim(),
           integration: selectedInteg,
@@ -204,6 +223,8 @@ export const TaskModalContent: React.FC<TaskModalContentProps> = ({ open, onOpen
 
   const resetDetails = () => {
     form.reset({ ...form.state.values, title: '', prompt: '' });
+    setImages([]);
+    setImageError(null);
     createTaskMutation.reset();
   };
 
@@ -423,15 +444,82 @@ export const TaskModalContent: React.FC<TaskModalContentProps> = ({ open, onOpen
             const error = errorText(field.state.meta.errors);
             return (
               <div className="space-y-1.5">
-                <label htmlFor="task-prompt" className="text-xs font-medium text-foreground">
-                  Prompt
-                </label>
+                <div className="flex items-center justify-between">
+                  <label htmlFor="task-prompt" className="text-xs font-medium text-foreground">
+                    Prompt
+                  </label>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      ref={imageInputRef}
+                      type="file"
+                      accept={STEER_IMAGE_TYPES.join(',')}
+                      multiple
+                      className="hidden"
+                      data-testid="task-image-input"
+                      onChange={(e) => {
+                        void attachImages(Array.from(e.target.files ?? []));
+                        e.target.value = '';
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => imageInputRef.current?.click()}
+                      disabled={isSubmitting || images.length >= MAX_STEER_IMAGES}
+                      className="size-6 text-muted-foreground hover:text-foreground"
+                      aria-label="Attach images"
+                      title={`Attach images (PNG, JPEG, GIF or WebP, up to ${MAX_STEER_IMAGES})`}
+                      data-testid="attach-task-image-btn"
+                    >
+                      <ImagePlus className="size-3.5" />
+                    </Button>
+                    {images.length > 0 && (
+                      <span className="text-[11px] text-muted-foreground tabular-nums">
+                        {images.length}/{MAX_STEER_IMAGES}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {imageError && (
+                  <div role="alert" className="flex items-start gap-1.5 rounded-md border border-destructive/20 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
+                    <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                    <span>{imageError}</span>
+                  </div>
+                )}
+
+                {images.length > 0 && (
+                  <div className="flex flex-wrap gap-2 pt-1 pb-1.5" data-testid="task-image-list">
+                    {images.map((img) => (
+                      <div key={img.id} className="relative size-14 overflow-hidden rounded-lg border border-border bg-muted/30">
+                        <img src={img.preview} alt={img.name} className="size-full object-cover" />
+                        <button
+                          type="button"
+                          onClick={() => removeImage(img.id)}
+                          aria-label={`Remove ${img.name}`}
+                          className="absolute right-1 top-1 rounded-full bg-background/90 p-0.5 text-muted-foreground shadow-sm hover:text-foreground cursor-pointer"
+                        >
+                          <X className="size-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 <Textarea
                   id="task-prompt"
                   value={field.state.value}
                   onBlur={field.handleBlur}
                   onChange={(e) => field.handleChange(e.target.value)}
-                  placeholder="What should the agent do?"
+                  onPaste={(e) => {
+                    const files = Array.from(e.clipboardData?.files ?? []);
+                    if (files.some((f) => f.type.startsWith('image/'))) {
+                      e.preventDefault();
+                      void attachImages(files);
+                    }
+                  }}
+                  placeholder="What should the agent do? Paste or attach screenshots for reference."
                   rows={5}
                   className="min-h-[120px] text-xs"
                 />

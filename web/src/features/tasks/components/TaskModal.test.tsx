@@ -160,4 +160,81 @@ describe('TaskModal', () => {
     // The trigger shows the project's name, not its id.
     expect(screen.getByLabelText('Project')).toHaveTextContent('Project 1');
   });
+
+  it('attaches an image via input and passes it to createTask', async () => {
+    const createTaskSpy = vi.fn().mockResolvedValue({
+      id: 'task-with-image',
+      project_id: 'default-project',
+      title: 'Image Task',
+      prompt: 'Task with screenshot',
+      assignee_id: 'agent-sandbox-1',
+      assignee_type: 'agent',
+      status: 'backlog',
+      priority: 50,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      skills: [],
+      mcp_servers: [],
+    });
+
+    useTaskStore.setState({ createTask: createTaskSpy });
+
+    render(<TaskModal />);
+    fireEvent.click(screen.getByRole('button', { name: /new task/i }));
+    await screen.findByLabelText(/^Title$/i);
+
+    fireEvent.change(screen.getByLabelText(/^Title$/i), { target: { value: 'Image Task' } });
+    fireEvent.change(screen.getByLabelText(/^Prompt$/i), { target: { value: 'Task with screenshot' } });
+
+    const fileInput = screen.getByTestId('task-image-input');
+    const file = new File(['fake-png'], 'screen.png', { type: 'image/png' });
+    fireEvent.change(fileInput, { target: { files: [file] } });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('task-image-list')).toBeInTheDocument();
+      expect(screen.getByAltText('screen.png')).toBeInTheDocument();
+    });
+
+    const submitBtn = screen.getByRole('button', { name: /dispatch task/i });
+    fireEvent.click(submitBtn);
+
+    await waitFor(() => {
+      expect(createTaskSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Image Task',
+          prompt: 'Task with screenshot',
+          images: [
+            expect.objectContaining({
+              name: 'screen.png',
+              mime: 'image/png',
+            }),
+          ],
+        })
+      );
+    });
+  });
+
+  it('allows removing an attached image before submitting', async () => {
+    const createTaskSpy = vi.fn().mockResolvedValue({});
+    useTaskStore.setState({ createTask: createTaskSpy });
+
+    render(<TaskModal />);
+    fireEvent.click(screen.getByRole('button', { name: /new task/i }));
+    await screen.findByLabelText(/^Title$/i);
+
+    const fileInput = screen.getByTestId('task-image-input');
+    const file = new File(['fake-png'], 'remove-me.png', { type: 'image/png' });
+    fireEvent.change(fileInput, { target: { files: [file] } });
+
+    await waitFor(() => {
+      expect(screen.getByAltText('remove-me.png')).toBeInTheDocument();
+    });
+
+    const removeBtn = screen.getByLabelText(/remove remove-me.png/i);
+    fireEvent.click(removeBtn);
+
+    await waitFor(() => {
+      expect(screen.queryByAltText('remove-me.png')).not.toBeInTheDocument();
+    });
+  });
 });
